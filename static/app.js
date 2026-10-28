@@ -1,12 +1,11 @@
 /**
- * yed1z Local Inference Cluster - Frontend Application Logic
- * Supports Dark/Light Theme, Live Telemetry Polling, Canvas Charts,
- * Interactive Model Switching, and Arbitration Queue Visualization.
+ * yed1z Local Inference Cluster - Retro Technical Dashboard
+ * Telemetry Polling, Anonymized Sessions (No IPs), Retro Canvas Charts,
+ * Read-Only Autonomous Multi-User Arbitration State.
  */
 
 // Global State
 let currentTheme = localStorage.getItem('yed1z-theme') || 'dark';
-let isSwitching = false;
 let chartDataCache = null;
 
 // DOM Elements
@@ -18,7 +17,7 @@ const themeIcon = themeToggleBtn ? themeToggleBtn.querySelector('.theme-icon') :
 function initTheme() {
   docHtml.setAttribute('data-theme', currentTheme);
   if (themeIcon) {
-    themeIcon.textContent = currentTheme === 'dark' ? '🌙' : '☀️';
+    themeIcon.textContent = currentTheme.toUpperCase();
   }
 }
 
@@ -29,16 +28,15 @@ if (themeToggleBtn) {
     docHtml.setAttribute('data-theme', currentTheme);
     localStorage.setItem('yed1z-theme', currentTheme);
     if (themeIcon) {
-      themeIcon.textContent = currentTheme === 'dark' ? '🌙' : '☀️';
+      themeIcon.textContent = currentTheme.toUpperCase();
     }
-    // Redraw chart with new theme colors
     if (chartDataCache) {
       renderTokensChart(chartDataCache);
     }
   });
 }
 
-// Helper: Format Numbers with commas/dots
+// Helper: Format Numbers with separators
 function formatNumber(num) {
   if (num === null || num === undefined) return '0';
   return Number(num).toLocaleString('it-IT');
@@ -48,7 +46,7 @@ function formatNumber(num) {
 window.copyToClipboard = function(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => {
-      showToast('Copiato negli appunti: ' + text);
+      showToast('[ COPIED TO CLIPBOARD ]');
     }).catch(() => fallbackCopy(text));
   } else {
     fallbackCopy(text);
@@ -62,7 +60,7 @@ function fallbackCopy(text) {
   ta.select();
   document.execCommand('copy');
   document.body.removeChild(ta);
-  showToast('Copiato negli appunti: ' + text);
+  showToast('[ COPIED TO CLIPBOARD ]');
 }
 
 function showToast(msg) {
@@ -71,19 +69,17 @@ function showToast(msg) {
     toast = document.createElement('div');
     toast.id = 'yed1z-toast';
     toast.style.position = 'fixed';
-    toast.style.bottom = '24px';
-    toast.style.right = '24px';
+    toast.style.bottom = '20px';
+    toast.style.right = '20px';
     toast.style.background = 'var(--bg-card)';
-    toast.style.color = 'var(--text-primary)';
+    toast.style.color = 'var(--accent-cyan)';
     toast.style.border = '1px solid var(--accent-cyan)';
-    toast.style.padding = '12px 20px';
-    toast.style.borderRadius = 'var(--radius-sm)';
-    toast.style.boxShadow = 'var(--card-shadow)';
+    toast.style.padding = '8px 16px';
     toast.style.zIndex = '9999';
-    toast.style.fontSize = '0.9rem';
-    toast.style.fontWeight = '500';
-    toast.style.backdropFilter = 'blur(10px)';
-    toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+    toast.style.fontSize = '0.75rem';
+    toast.style.fontFamily = 'var(--font-mono)';
+    toast.style.boxShadow = 'var(--card-shadow)';
+    toast.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
     document.body.appendChild(toast);
   }
   toast.textContent = msg;
@@ -91,71 +87,9 @@ function showToast(msg) {
   toast.style.transform = 'translateY(0)';
   setTimeout(() => {
     toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-  }, 2800);
+    toast.style.transform = 'translateY(8px)';
+  }, 2200);
 }
-
-// Switch Model Functionality
-window.switchModel = async function(target) {
-  if (isSwitching) return;
-  const statusEl = document.getElementById('switch-status-msg');
-  const spinnerHeader = document.getElementById('header-switch-spinner');
-  const btnDs = document.getElementById('btn-switch-ds');
-  const btnQwen = document.getElementById('btn-switch-qwen');
-
-  const targetName = target === 'deepseek' ? 'DeepSeek V4.1 Flash' : 'Qwen 3.8 Flash Next';
-
-  if (!confirm(`Confermi lo switch del cluster su "${targetName}"? Se ci sono richieste attive, verranno completate prima dello switch.`)) {
-    return;
-  }
-
-  isSwitching = true;
-  if (btnDs) btnDs.disabled = true;
-  if (btnQwen) btnQwen.disabled = true;
-  if (spinnerHeader) spinnerHeader.style.display = 'inline-block';
-
-  if (statusEl) {
-    statusEl.innerHTML = `<span class="spinner-mini"></span> Commutazione in corso su <strong>${targetName}</strong>... (Drain richieste attive, allocazione VRAM e warmup)`;
-    statusEl.className = 'switch-status-msg active-switch';
-  }
-
-  try {
-    const res = await fetch('/api/switch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target: target })
-    });
-    const data = await res.json();
-
-    if (res.ok && data.success) {
-      if (statusEl) {
-        statusEl.innerHTML = `✅ <strong>${targetName}</strong> è ora attivo e pronto per GitHub Copilot!`;
-        statusEl.className = 'switch-status-msg success-switch';
-      }
-      showToast(`Cluster commutato con successo su ${targetName}`);
-    } else {
-      if (statusEl) {
-        statusEl.innerHTML = `❌ Errore switch: ${data.message || 'Errore sconosciuto'}`;
-        statusEl.className = 'switch-status-msg error-switch';
-      }
-      showToast(`Errore durante lo switch: ${data.message}`);
-    }
-  } catch (err) {
-    if (statusEl) {
-      statusEl.innerHTML = `❌ Errore di rete: ${err.message}`;
-      statusEl.className = 'switch-status-msg error-switch';
-    }
-  } finally {
-    isSwitching = false;
-    if (btnDs) btnDs.disabled = false;
-    if (btnQwen) btnQwen.disabled = false;
-    if (spinnerHeader) spinnerHeader.style.display = 'none';
-    fetchTelemetry();
-    setTimeout(() => {
-      if (statusEl && !isSwitching) statusEl.innerHTML = '';
-    }, 8000);
-  }
-};
 
 // Update Telemetry Elements
 function updateUI(data) {
@@ -169,35 +103,32 @@ function updateUI(data) {
   // 1. Header Model Badge
   const headerLabel = document.getElementById('header-model-label');
   const headerBadge = document.getElementById('header-active-model');
-  const headerSpinner = document.getElementById('header-switch-spinner');
 
   if (headerLabel && headerBadge) {
     if (active === 'deepseek') {
-      headerLabel.textContent = 'DeepSeek V4.1 Flash (Dual 50 tok/s)';
+      headerLabel.textContent = 'DEEPSEEK V4.1 FLASH // KIREI HIP (50 TOK/S)';
       headerBadge.className = 'model-badge ds-active';
     } else if (active === 'qwen') {
-      headerLabel.textContent = 'Qwen 3.8 Flash Next Uncensored';
+      headerLabel.textContent = 'QWEN 3.8 FLASH NEXT // GUFO (196K)';
       headerBadge.className = 'model-badge qwen-active';
     } else {
-      headerLabel.textContent = 'Standby / Caricamento';
+      headerLabel.textContent = 'STANDBY // READY TO LOAD';
       headerBadge.className = 'model-badge standby';
     }
-    if (headerSpinner && !isSwitching) headerSpinner.style.display = 'none';
   }
 
-  // 2. Switch Buttons State
-  const btnDs = document.getElementById('btn-switch-ds');
-  const btnQwen = document.getElementById('btn-switch-qwen');
-  if (btnDs && btnQwen) {
-    if (active === 'deepseek') {
-      btnDs.classList.add('active');
-      btnQwen.classList.remove('active');
-    } else if (active === 'qwen') {
-      btnQwen.classList.add('active');
-      btnDs.classList.remove('active');
+  // 2. HUD Cluster State
+  const hudState = document.getElementById('hud-cluster-state');
+  if (hudState) {
+    if (inFlight > 0) {
+      hudState.textContent = `GENERATING // ${busyModel || 'ACTIVE STREAM'}`;
+      hudState.style.color = 'var(--accent-amber)';
+    } else if (active) {
+      hudState.textContent = `ONLINE // ${active.toUpperCase()} READY FOR COPILOT`;
+      hudState.style.color = 'var(--accent-emerald)';
     } else {
-      btnDs.classList.remove('active');
-      btnQwen.classList.remove('active');
+      hudState.textContent = 'STANDBY // WAITING FOR INFERENCE REQUEST';
+      hudState.style.color = 'var(--accent-cyan)';
     }
   }
 
@@ -212,23 +143,23 @@ function updateUI(data) {
       cardModName.innerHTML = `<span style="color:var(--accent-cyan)">DeepSeek V4.1 Flash</span>`;
       if (cardModMeter) {
         cardModMeter.style.width = '72%';
-        cardModMeter.style.background = 'linear-gradient(90deg, var(--accent-cyan), var(--accent-blue))';
+        cardModMeter.style.background = 'var(--accent-cyan)';
       }
       if (cardModRam) cardModRam.textContent = '88.0 GiB occupati / 122.2 GiB (Dual TP2)';
     } else if (active === 'qwen') {
       cardModName.innerHTML = `<span style="color:var(--accent-purple)">Qwen 3.8 Flash Next</span>`;
       if (cardModMeter) {
         cardModMeter.style.width = '78%';
-        cardModMeter.style.background = 'linear-gradient(90deg, var(--accent-purple), var(--accent-rose))';
+        cardModMeter.style.background = 'var(--accent-purple)';
       }
       if (cardModRam) cardModRam.textContent = '95.4 GiB occupati / 122.2 GiB (Gufo Engine)';
     } else {
-      cardModName.textContent = 'Nessun modello caricato';
+      cardModName.textContent = 'Standby (Pronto)';
       if (cardModMeter) cardModMeter.style.width = '0%';
       if (cardModRam) cardModRam.textContent = '0 GiB occupati';
     }
     if (cardModStatus) {
-      cardModStatus.textContent = active ? 'ONLINE & READY' : 'STANDBY';
+      cardModStatus.textContent = active ? 'RESIDENT' : 'STANDBY';
       cardModStatus.className = active ? 'badge badge-success' : 'badge badge-warning';
     }
   }
@@ -261,10 +192,10 @@ function updateUI(data) {
   }
   if (cardQueueStatus) {
     if (inFlight > 0) {
-      cardQueueStatus.textContent = `Generazione attiva (${busyModel || 'client'})`;
+      cardQueueStatus.textContent = `In generazione (${busyModel || 'client'})`;
       cardQueueStatus.style.color = 'var(--accent-amber)';
     } else {
-      cardQueueStatus.textContent = 'Idle (Pronto ad arbitrare)';
+      cardQueueStatus.textContent = 'Idle (FIFO Drain Guard)';
       cardQueueStatus.style.color = 'var(--accent-emerald)';
     }
   }
@@ -319,27 +250,27 @@ function updateUI(data) {
   if (sumDs) sumDs.textContent = formatNumber(totals.deepseek_tokens || 0);
   if (sumQwen) sumQwen.textContent = formatNumber(totals.qwen_tokens || 0);
 
-  // 8. Sessions Table
+  // 8. Sessions Table (Anonymized - NO client IPs or locations)
   renderSessionsTable(stats.recent_sessions || []);
 
-  // 9. Chart Rendering
+  // 9. Chart Rendering (Retro flat bars)
   chartDataCache = stats.daily_tokens || {};
   renderTokensChart(chartDataCache);
 
   // 10. Server Time
   const serverTimeEl = document.getElementById('footer-server-time');
   if (serverTimeEl && data.server_time) {
-    serverTimeEl.textContent = `Gateway Time: ${data.server_time} CET · TLS Cloudflare`;
+    serverTimeEl.textContent = `[ GATEWAY TIME: ${data.server_time} CET · TLS CLOUDFLARE ]`;
   }
 }
 
-// Render Sessions Table
+// Render Sessions Table (Zero IPs, Zero Geolocation)
 function renderSessionsTable(sessions) {
   const tbody = document.getElementById('sessions-table-body');
   if (!tbody) return;
 
   if (!sessions || sessions.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4" style="color:var(--text-muted)">Nessuna sessione registrata finora. Fai una query da GitHub Copilot!</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4" style="color:var(--text-muted)">Nessuna sessione registrata. Invia una query da GitHub Copilot!</td></tr>`;
     return;
   }
 
@@ -350,28 +281,29 @@ function renderSessionsTable(sessions) {
       ? `<span class="badge badge-ds">DeepSeek V4.1</span>`
       : `<span class="badge badge-qwen">Qwen 3.8</span>`;
 
-    const locText = s.location || (s.client === '127.0.0.1' ? 'Localhost' : 'Remote');
+    const userLabel = s.user || (s.client === '127.0.0.1' ? 'funboy (local)' : 'cooper');
+    const appLabel = s.client_app || 'Copilot Chat';
     const tpsVal = s.tok_per_sec ? `${s.tok_per_sec} tok/s` : '—';
 
     html += `
       <tr>
         <td><code>${escapeHtml(s.id || '')}</code></td>
         <td>${escapeHtml(s.time || '')}</td>
-        <td><code>${escapeHtml(s.client || '')}</code></td>
-        <td><span class="location-tag">${escapeHtml(locText)}</span></td>
+        <td><span class="user-tag">${escapeHtml(userLabel)}</span></td>
+        <td><span class="app-tag">${escapeHtml(appLabel)}</span></td>
         <td>${badgeMod}</td>
         <td>${formatNumber(s.prompt_tokens || 0)}</td>
         <td><strong>${formatNumber(s.completion_tokens || 0)}</strong></td>
         <td>${s.duration_s ? s.duration_s + 's' : '—'}</td>
         <td><span class="speed-pill">${tpsVal}</span></td>
-        <td><span class="status-badge ${s.status === 'completed' ? 'success' : 'pending'}">${escapeHtml(s.status || 'done')}</span></td>
+        <td><span class="status-badge ${s.status === 'completed' ? 'success' : 'pending'}">${escapeHtml(s.status || 'done').toUpperCase()}</span></td>
       </tr>
     `;
   }
   tbody.innerHTML = html;
 }
 
-// Render Canvas Daily Chart
+// Render Retro Canvas Daily Chart
 function renderTokensChart(daily) {
   const canvas = document.getElementById('tokens-chart');
   if (!canvas) return;
@@ -391,19 +323,17 @@ function renderTokensChart(daily) {
   const dates = Object.keys(daily).sort();
   if (dates.length === 0) {
     ctx.fillStyle = currentTheme === 'dark' ? '#64748b' : '#94a3b8';
-    ctx.font = '14px Plus Jakarta Sans, sans-serif';
+    ctx.font = '12px JetBrains Mono, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('Nessun dato storico giornaliero disponibile', width / 2, height / 2);
+    ctx.fillText('Nessun dato storico giornaliero', width / 2, height / 2);
     return;
   }
 
-  // Get max volume
   let maxTokens = 1000;
   for (const d of dates) {
     const sum = (daily[d].deepseek || 0) + (daily[d].qwen || 0);
     if (sum > maxTokens) maxTokens = sum;
   }
-  // Round maxTokens to nearest upper round
   maxTokens = Math.ceil(maxTokens * 1.15);
 
   const paddingLeft = 55;
@@ -414,14 +344,14 @@ function renderTokensChart(daily) {
   const chartH = height - paddingTop - paddingBottom;
 
   const isDark = currentTheme === 'dark';
-  const gridColor = isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.06)';
+  const gridColor = isDark ? 'rgba(0, 242, 254, 0.08)' : 'rgba(2, 132, 199, 0.12)';
   const textColor = isDark ? '#94a3b8' : '#64748b';
 
-  // Draw Horizontal Grid & Y Axis
+  // Draw Horizontal Grid
   ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
   ctx.fillStyle = textColor;
-  ctx.font = '11px JetBrains Mono, monospace';
+  ctx.font = '10px JetBrains Mono, monospace';
   ctx.textAlign = 'right';
 
   const gridSteps = 4;
@@ -435,39 +365,39 @@ function renderTokensChart(daily) {
     ctx.fillText(formatNumber(val), paddingLeft - 8, y + 4);
   }
 
-  // Draw Bars
+  // Draw Retro Flat Sharp Bars (No Rounded Corners)
   const numDays = dates.length;
   const slotW = chartW / numDays;
-  const barW = Math.min(42, Math.max(16, slotW * 0.55));
+  const barW = Math.min(38, Math.max(14, slotW * 0.55));
 
   for (let i = 0; i < numDays; i++) {
     const dateStr = dates[i];
     const dsTok = daily[dateStr].deepseek || 0;
     const qwenTok = daily[dateStr].qwen || 0;
 
-    const x = paddingLeft + i * slotW + (slotW - barW) / 2;
+    const x = Math.round(paddingLeft + i * slotW + (slotW - barW) / 2);
 
-    const dsH = (dsTok / maxTokens) * chartH;
-    const qwenH = (qwenTok / maxTokens) * chartH;
+    const dsH = Math.round((dsTok / maxTokens) * chartH);
+    const qwenH = Math.round((qwenTok / maxTokens) * chartH);
 
     const yBase = paddingTop + chartH;
 
-    // Draw DeepSeek Bar (Bottom)
+    // Draw DeepSeek Bar (Bottom - Sharp Cyan)
     if (dsH > 0) {
-      const gradDs = ctx.createLinearGradient(0, yBase - dsH, 0, yBase);
-      gradDs.addColorStop(0, '#00f2fe');
-      gradDs.addColorStop(1, '#0284c7');
-      ctx.fillStyle = gradDs;
-      drawRoundedRect(ctx, x, yBase - dsH, barW, dsH, qwenH > 0 ? 0 : 4);
+      ctx.fillStyle = isDark ? '#00f2fe' : '#0284c7';
+      ctx.fillRect(x, yBase - dsH, barW, dsH);
+      // Subtle top highlight line
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x, yBase - dsH, barW, 1);
     }
 
-    // Draw Qwen Bar (Stacked Top)
+    // Draw Qwen Bar (Top - Sharp Purple)
     if (qwenH > 0) {
-      const gradQwen = ctx.createLinearGradient(0, yBase - dsH - qwenH, 0, yBase - dsH);
-      gradQwen.addColorStop(0, '#a855f7');
-      gradQwen.addColorStop(1, '#7c3aed');
-      ctx.fillStyle = gradQwen;
-      drawRoundedRect(ctx, x, yBase - dsH - qwenH, barW, qwenH, 4);
+      ctx.fillStyle = isDark ? '#c084fc' : '#9333ea';
+      ctx.fillRect(x, yBase - dsH - qwenH, barW, qwenH);
+      // Subtle top highlight line
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x, yBase - dsH - qwenH, barW, 1);
     }
 
     // X axis date label
@@ -477,20 +407,6 @@ function renderTokensChart(daily) {
     const shortDate = dateStr.slice(5); // MM-DD
     ctx.fillText(shortDate, x + barW / 2, height - paddingBottom + 18);
   }
-}
-
-function drawRoundedRect(ctx, x, y, width, height, radius) {
-  if (height <= 0) return;
-  radius = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x, y + height);
-  ctx.lineTo(x, y + radius);
-  ctx.quadraticCurveTo(x, y, x + radius, y);
-  ctx.lineTo(x + width - radius, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-  ctx.lineTo(x + width, y + height);
-  ctx.closePath();
-  ctx.fill();
 }
 
 function escapeHtml(str) {
@@ -511,7 +427,7 @@ async function fetchTelemetry() {
     const data = await res.json();
     updateUI(data);
   } catch (err) {
-    // Silent on normal background tick errors
+    // Silent
   }
 }
 

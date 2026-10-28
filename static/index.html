@@ -3,40 +3,39 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>yed1z · Local Inference Cluster</title>
+  <title>yed1z // LOCAL_INFERENCE_CLUSTER</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <!-- Ambient background glow -->
-  <div class="ambient-glow glow-1"></div>
-  <div class="ambient-glow glow-2"></div>
+  <!-- Ambient background grid and glow -->
+  <div class="tech-grid-bg"></div>
 
   <!-- Header -->
   <header class="navbar">
     <div class="brand">
       <div class="brand-badge">
-        <span class="brand-dot pulse"></span>
+        <span class="brand-square pulse"></span>
         <span class="brand-text">yed1z</span>
       </div>
-      <span class="brand-tag">LOCAL INFERENCE CLUSTER</span>
+      <span class="brand-tag">[ LOCAL INFERENCE CLUSTER // DUAL APU ]</span>
     </div>
 
     <div class="cluster-status-pill">
       <span class="status-indicator online"></span>
-      <span id="cluster-status-text">DUAL STRIX HALO · 256 GB UNIFIED</span>
+      <span id="cluster-status-text">DUAL STRIX HALO · 256 GB UNIFIED · 40 Gbps USB4</span>
     </div>
 
     <div class="nav-controls">
-      <button id="theme-toggle" class="btn-icon" title="Cambia tema Dark / Light">
-        <span class="theme-icon">🌙</span>
+      <button id="theme-toggle" class="btn-retro" title="Toggle Theme (Dark / Light)">
+        <span class="theme-label">[ THEME: </span><span class="theme-icon">DARK</span><span class="theme-label"> ]</span>
       </button>
       <div class="model-badge" id="header-active-model">
-        <span class="spinner-mini" id="header-switch-spinner"></span>
-        <span id="header-model-label">Caricamento...</span>
+        <span class="status-square"></span>
+        <span id="header-model-label">CARICAMENTO STATO...</span>
       </div>
     </div>
   </header>
@@ -46,111 +45,123 @@
     <section class="hero-section">
       <div class="hero-left">
         <div class="chip-container">
-          <span class="chip chip-primary">AMD gfx1151 Dual Node</span>
-          <span class="chip chip-secondary">USB4 40 Gbps Mesh</span>
-          <span class="chip chip-accent">DSpark Speculative ~50 tok/s</span>
+          <span class="chip chip-primary">[ HW: AMD gfx1151 DUAL ]</span>
+          <span class="chip chip-secondary">[ LINK: 40 Gbps USB4 MESH ]</span>
+          <span class="chip chip-accent">[ ENGINE: DSpark SPECULATIVE ]</span>
         </div>
-        <h1 class="hero-title">Hardware Telemetry & Inference Gateway</h1>
+        <h1 class="hero-title">Telemetry & Inference Gateway</h1>
         <p class="hero-subtitle">
-          Cluster dual-node AMD Strix Halo per inferenza distribuita. Arbitraggio trasparente multi-utente per <strong>GitHub Copilot Chat</strong> ed endpoint pubblico su <code>inference.yed1z.ai</code>.
+          Cluster dual-node AMD Strix Halo per calcolo distribuito ad alta velocità. Arbitraggio autonomo trasparente per <strong>GitHub Copilot Chat</strong> ed endpoint pubblico su <code>inference.yed1z.ai</code>.
         </p>
       </div>
 
       <div class="hero-actions">
-        <div class="quick-switch-box">
-          <span class="switch-label">Seleziona Modello Attivo nel Cluster:</span>
-          <div class="switch-buttons">
-            <button id="btn-switch-ds" class="btn-model active" onclick="switchModel('deepseek')">
-              <span class="btn-icon-symbol">⚡</span>
-              <div class="btn-model-text">
-                <strong>DeepSeek V4.1 Flash</strong>
-                <small>Kirei HIP · ~50 tok/s</small>
-              </div>
-            </button>
-            <button id="btn-switch-qwen" class="btn-model" onclick="switchModel('qwen')">
-              <span class="btn-icon-symbol">🧠</span>
-              <div class="btn-model-text">
-                <strong>Qwen 3.8 Flash Next</strong>
-                <small>Uncensored Gufo · 196K</small>
-              </div>
-            </button>
+        <!-- Read-Only Autonomous Arbitration HUD (Tamper-Proof) -->
+        <div class="retro-hud-box">
+          <div class="hud-header">
+            <span class="hud-badge-square"></span>
+            <span class="hud-title">AUTONOMOUS ARBITRATION UNIT</span>
           </div>
-          <div id="switch-status-msg" class="switch-status-msg"></div>
+          <div class="hud-body">
+            <div class="hud-line">
+              <span class="hud-key">ROUTING MODE:</span>
+              <span class="hud-val text-cyan">AUTO-DEMAND VIA COPILOT</span>
+            </div>
+            <div class="hud-line">
+              <span class="hud-key">COLLISION GUARD:</span>
+              <span class="hud-val text-emerald">FIFO DRAIN LOCK ACTIVE</span>
+            </div>
+            <div class="hud-line">
+              <span class="hud-key">CONTROL PLANE:</span>
+              <span class="hud-val text-amber">READ-ONLY (TAMPER-PROOF)</span>
+            </div>
+            <div class="hud-status-banner">
+              <span class="hud-tag">[STATUS]</span>
+              <span id="hud-cluster-state">CLUSTER READY · INFERENCE ACTIVE</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- Metrics Cards Row -->
-    <section class="cards-grid">
-      <!-- Card 1: Resident Model -->
-      <div class="card stat-card">
-        <div class="card-header">
-          <span class="card-icon">🎯</span>
-          <span class="card-title">Modello Residente in RAM</span>
-        </div>
-        <div class="stat-value" id="card-model-name">—</div>
-        <div class="meter-bar-container">
-          <div class="meter-bar" id="card-model-meter" style="width: 70%;"></div>
-        </div>
-        <div class="stat-footer">
-          <span id="card-model-ram">88.0 GiB occupati / 122.2 GiB</span>
-          <span class="badge badge-success" id="card-model-status">ACTIVE</span>
-        </div>
+    <section class="section-container">
+      <div class="section-header">
+        <span class="section-index">[ 01 ]</span>
+        <h2 class="section-title">CLUSTER TELEMETRY & HARDWARE GAUGES</h2>
       </div>
 
-      <!-- Card 2: Inference Speed -->
-      <div class="card stat-card">
-        <div class="card-header">
-          <span class="card-icon">🚀</span>
-          <span class="card-title">Velocità di Generazione</span>
-        </div>
-        <div class="stat-value speed-val"><span id="speed-decode">50.8</span> <small>tok/s</small></div>
-        <div class="stat-submetrics">
-          <div class="submetric">
-            <span class="sub-label">Prefill Throughput</span>
-            <span class="sub-val" id="speed-prefill">~442 tok/s</span>
+      <div class="cards-grid">
+        <!-- Card 1: Resident Model -->
+        <div class="card stat-card">
+          <div class="card-header">
+            <span class="card-icon">⚡</span>
+            <span class="card-title">MODELLO ATTIVO IN VRAM</span>
           </div>
-          <div class="submetric">
-            <span class="sub-label">TTFT Medio</span>
-            <span class="sub-val" id="speed-ttft">~185 ms</span>
+          <div class="stat-value" id="card-model-name">—</div>
+          <div class="meter-bar-container">
+            <div class="meter-bar" id="card-model-meter" style="width: 70%;"></div>
+          </div>
+          <div class="stat-footer">
+            <span id="card-model-ram">88.0 GiB occupati / 122.2 GiB</span>
+            <span class="badge badge-success" id="card-model-status">ACTIVE</span>
           </div>
         </div>
-      </div>
 
-      <!-- Card 3: Speculative Drafter -->
-      <div class="card stat-card">
-        <div class="card-header">
-          <span class="card-icon">⚡</span>
-          <span class="card-title">DSpark Speculative Decoding</span>
-        </div>
-        <div class="stat-value"><span id="speed-dspark">49.2%</span> <small>acceptance</small></div>
-        <div class="stat-submetrics">
-          <div class="submetric">
-            <span class="sub-label">Drafter Model</span>
-            <span class="sub-val">MXFP4 7.6GB</span>
+        <!-- Card 2: Inference Speed -->
+        <div class="card stat-card">
+          <div class="card-header">
+            <span class="card-icon">⏱️</span>
+            <span class="card-title">VELOCITÀ DI GENERAZIONE</span>
           </div>
-          <div class="submetric">
-            <span class="sub-label">Draft Window</span>
-            <span class="sub-val">4 tokens/step</span>
+          <div class="stat-value speed-val"><span id="speed-decode">50.8</span> <small>tok/s</small></div>
+          <div class="stat-submetrics">
+            <div class="submetric">
+              <span class="sub-label">Prefill Rate:</span>
+              <span class="sub-val" id="speed-prefill">~442 tok/s</span>
+            </div>
+            <div class="submetric">
+              <span class="sub-label">TTFT Medio:</span>
+              <span class="sub-val" id="speed-ttft">~185 ms</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Card 4: Concurrency & Arbitration -->
-      <div class="card stat-card">
-        <div class="card-header">
-          <span class="card-icon">🛡️</span>
-          <span class="card-title">Arbitraggio Concorrenza</span>
-        </div>
-        <div class="stat-value" id="card-in-flight">0 <small>in-flight</small></div>
-        <div class="stat-submetrics">
-          <div class="submetric">
-            <span class="sub-label">Anti-Collisione</span>
-            <span class="sub-val text-success">Attivo (Roma / Livorno)</span>
+        <!-- Card 3: Speculative Drafter -->
+        <div class="card stat-card">
+          <div class="card-header">
+            <span class="card-icon">🎲</span>
+            <span class="card-title">DSpark SPECULATIVE DECODE</span>
           </div>
-          <div class="submetric">
-            <span class="sub-label">Stato Coda</span>
-            <span class="sub-val" id="card-queue-status">Idle (Pronto)</span>
+          <div class="stat-value"><span id="speed-dspark">49.2%</span> <small>acceptance</small></div>
+          <div class="stat-submetrics">
+            <div class="submetric">
+              <span class="sub-label">Drafter Model:</span>
+              <span class="sub-val">MXFP4 7.6GB</span>
+            </div>
+            <div class="submetric">
+              <span class="sub-label">Draft Window:</span>
+              <span class="sub-val">4 tokens/step</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 4: Concurrency & Arbitration -->
+        <div class="card stat-card">
+          <div class="card-header">
+            <span class="card-icon">🛡️</span>
+            <span class="card-title">ARBITRAGGIO RICHIESTE</span>
+          </div>
+          <div class="stat-value" id="card-in-flight">0 <small>in-flight</small></div>
+          <div class="stat-submetrics">
+            <div class="submetric">
+              <span class="sub-label">Anti-Collisione:</span>
+              <span class="sub-val text-success">Attivo (Auto-Queue)</span>
+            </div>
+            <div class="submetric">
+              <span class="sub-label">Stato Coda:</span>
+              <span class="sub-val" id="card-queue-status">Idle (Pronto)</span>
+            </div>
           </div>
         </div>
       </div>
@@ -159,8 +170,9 @@
     <!-- Hardware Topology Section with Animated Flow -->
     <section class="section-container">
       <div class="section-header">
-        <h2 class="section-title">Architettura Hardware Cluster & Flussi Dati</h2>
-        <span class="section-badge">Dual APU gfx1151 Interconnect</span>
+        <span class="section-index">[ 02 ]</span>
+        <h2 class="section-title">TOPOLOGIA HARDWARE & INTERCONNECT MESH</h2>
+        <span class="section-badge">DUAL APU gfx1151 LINK</span>
       </div>
 
       <div class="hardware-topology-card">
@@ -168,23 +180,27 @@
           <!-- Node 01 -->
           <div class="node-box" id="box-node01">
             <div class="node-header">
-              <div class="node-dot online"></div>
+              <div class="node-square online"></div>
               <div class="node-title-group">
-                <h3>Node 01: 01-EVO-X3</h3>
+                <h3>NODE 01: 01-EVO-X3</h3>
                 <span class="node-role">Coordinator (Rank 0) · API :8081 / :18231</span>
               </div>
             </div>
             <div class="node-specs">
               <div class="spec-row">
-                <span>APU</span>
+                <span>APU:</span>
                 <strong>AMD Ryzen AI Max+ 395 (16C/32T)</strong>
               </div>
               <div class="spec-row">
-                <span>GPU</span>
+                <span>GPU:</span>
                 <strong>Radeon 8060S (gfx1151 / RDNA 3.5)</strong>
               </div>
               <div class="spec-row">
-                <span>Unified RAM</span>
+                <span>LAN TB:</span>
+                <strong>10.55.0.1/30</strong>
+              </div>
+              <div class="spec-row">
+                <span>Unified RAM:</span>
                 <strong id="node01-ram">104.5 / 122.2 GiB</strong>
               </div>
               <div class="progress-bar">
@@ -197,40 +213,44 @@
           <div class="link-box">
             <div class="link-label">
               <span class="link-icon">⇄</span>
-              <strong>Thunderbolt / USB4 Ring</strong>
-              <small id="link-speed">40 Gbps · 10.55.0.0/30</small>
+              <strong>THUNDERBOLT / USB4 RING</strong>
+              <small id="link-speed">40 Gbps Mesh · 10.55.0.0/30</small>
             </div>
             <div class="data-flow-animation">
               <div class="pulse-packet forward"></div>
               <div class="pulse-packet backward"></div>
             </div>
             <div class="link-latency">
-              <span>Latenza RTT:</span>
-              <strong id="link-rtt">0.67 ms</strong>
+              <span>LATENZA RTT:</span>
+              <strong id="link-rtt">0.42 ms</strong>
             </div>
           </div>
 
           <!-- Node 02 -->
           <div class="node-box" id="box-node02">
             <div class="node-header">
-              <div class="node-dot online"></div>
+              <div class="node-square online"></div>
               <div class="node-title-group">
-                <h3>Node 02: 02-evo-x3-tb</h3>
+                <h3>NODE 02: 02-evo-x3-tb</h3>
                 <span class="node-role">Worker (Rank 1) · USB4 Direct</span>
               </div>
             </div>
             <div class="node-specs">
               <div class="spec-row">
-                <span>APU</span>
+                <span>APU:</span>
                 <strong>AMD Ryzen AI Max+ 395 (16C/32T)</strong>
               </div>
               <div class="spec-row">
-                <span>GPU</span>
+                <span>GPU:</span>
                 <strong>Radeon 8060S (gfx1151 / RDNA 3.5)</strong>
               </div>
               <div class="spec-row">
-                <span>Unified RAM</span>
-                <strong id="node02-ram">86.2 / 122.2 GiB</strong>
+                <span>LAN TB:</span>
+                <strong>10.55.0.2/30</strong>
+              </div>
+              <div class="spec-row">
+                <span>Unified RAM:</span>
+                <strong id="node02-ram">86.0 / 122.2 GiB</strong>
               </div>
               <div class="progress-bar">
                 <div class="progress-fill" id="node02-ram-fill" style="width: 72%;"></div>
@@ -243,13 +263,18 @@
 
     <!-- Analytics Charts & Performance -->
     <section class="section-container">
+      <div class="section-header">
+        <span class="section-index">[ 03 ]</span>
+        <h2 class="section-title">VOLUMETRIC ANALYTICS & TOKEN THROUGHPUT</h2>
+      </div>
+
       <div class="charts-two-columns">
         <!-- Chart 1: Daily Tokens -->
         <div class="card chart-card">
           <div class="card-header">
             <span class="card-icon">📊</span>
             <div class="card-title-group">
-              <span class="card-title">Token Generati per Data & Modello</span>
+              <span class="card-title">TOKEN GENERATI PER DATA E MODELLO</span>
               <small class="card-subtitle">Volume storico giornaliero (DeepSeek vs Qwen)</small>
             </div>
           </div>
@@ -257,8 +282,8 @@
             <canvas id="tokens-chart" width="560" height="240"></canvas>
           </div>
           <div class="chart-legend">
-            <div class="legend-item"><span class="legend-color color-ds"></span> DeepSeek V4.1 Flash</div>
-            <div class="legend-item"><span class="legend-color color-qwen"></span> Qwen 3.8 Flash Next</div>
+            <div class="legend-item"><span class="legend-square color-ds"></span> DeepSeek V4.1 Flash</div>
+            <div class="legend-item"><span class="legend-square color-qwen"></span> Qwen 3.8 Flash Next</div>
           </div>
         </div>
 
@@ -267,31 +292,31 @@
           <div class="card-header">
             <span class="card-icon">📈</span>
             <div class="card-title-group">
-              <span class="card-title">Metriche Cumulative Cluster</span>
-              <small class="card-subtitle">Volumi totali serviti dal gateway</small>
+              <span class="card-title">METRICHE CUMULATIVE GATEWAY</span>
+              <small class="card-subtitle">Volumi totali serviti dal cluster</small>
             </div>
           </div>
           <div class="stats-summary-grid">
             <div class="summary-box">
-              <span class="sum-title">Token Totali Serviti</span>
-              <span class="sum-number" id="sum-total-tokens">48,290</span>
+              <span class="sum-title">TOKEN TOTALI SERVITI</span>
+              <span class="sum-number" id="sum-total-tokens">48,309</span>
             </div>
             <div class="summary-box">
-              <span class="sum-title">Richieste Completate</span>
-              <span class="sum-number" id="sum-total-requests">142</span>
+              <span class="sum-title">RICHIESTE COMPLETATE</span>
+              <span class="sum-number" id="sum-total-requests">145</span>
             </div>
             <div class="summary-box">
-              <span class="sum-title">Token DeepSeek</span>
-              <span class="sum-number text-ds" id="sum-ds-tokens">36,150</span>
+              <span class="sum-title">TOKEN DEEPSEEK</span>
+              <span class="sum-number text-ds" id="sum-ds-tokens">36,159</span>
             </div>
             <div class="summary-box">
-              <span class="sum-title">Token Qwen</span>
-              <span class="sum-number text-qwen" id="sum-qwen-tokens">12,140</span>
+              <span class="sum-title">TOKEN QWEN</span>
+              <span class="sum-number text-qwen" id="sum-qwen-tokens">12,150</span>
             </div>
           </div>
           <div class="mini-status-row">
-            <span>Uptime Gateway: <strong>100% (Persistent Systemd Linger)</strong></span>
-            <span>Autenticazione: <strong>Bearer Token Enforced</strong></span>
+            <span>UPTIME GATEWAY: <strong>100% (SYSTEMD LINGER ACTIVE)</strong></span>
+            <span>AUTH: <strong>BEARER TOKEN REQUIRED</strong></span>
           </div>
         </div>
       </div>
@@ -300,8 +325,9 @@
     <!-- Recent Copilot Sessions Table -->
     <section class="section-container">
       <div class="section-header">
-        <h2 class="section-title">Sessioni Recenti & Client Copilot Connessi</h2>
-        <span class="section-badge" id="recent-count-badge">Ultime chiamate</span>
+        <span class="section-index">[ 04 ]</span>
+        <h2 class="section-title">LIVE COPILOT SESSIONS STREAM</h2>
+        <span class="section-badge" id="recent-count-badge">ANONYMIZED TELEMETRY</span>
       </div>
 
       <div class="card table-card">
@@ -309,16 +335,16 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th>ID Richiesta</th>
-                <th>Orario</th>
-                <th>Client IP</th>
-                <th>Origine / Location</th>
-                <th>Modello</th>
-                <th>Prompt Tok</th>
-                <th>Gen Tok</th>
-                <th>Durata</th>
-                <th>Velocità</th>
-                <th>Stato</th>
+                <th>REQ ID</th>
+                <th>TIMESTAMP</th>
+                <th>CLIENT / USER</th>
+                <th>APPLICATION</th>
+                <th>MODEL SERVED</th>
+                <th>PROMPT TOK</th>
+                <th>GEN TOK</th>
+                <th>DURATION</th>
+                <th>SPEED</th>
+                <th>STATUS</th>
               </tr>
             </thead>
             <tbody id="sessions-table-body">
@@ -333,24 +359,29 @@
 
     <!-- API & Copilot Configuration Helper -->
     <section class="section-container">
+      <div class="section-header">
+        <span class="section-index">[ 05 ]</span>
+        <h2 class="section-title">CLIENT CONFIGURATION REFERENCE</h2>
+      </div>
+
       <div class="card config-card">
         <div class="card-header">
           <span class="card-icon">⚙️</span>
           <div class="card-title-group">
-            <span class="card-title">Integrazione GitHub Copilot Chat (VS Code)</span>
+            <span class="card-title">INTEGRAZIONE GITHUB COPILOT CHAT (VS CODE)</span>
             <small class="card-subtitle">Endpoint pubblico attivo su Cloudflare TLS</small>
           </div>
         </div>
         <div class="config-grid">
           <div class="config-col">
-            <label class="config-label">Base URL OpenAI Chat Completions</label>
+            <label class="config-label">BASE URL OPENAI CHAT COMPLETIONS</label>
             <div class="code-copy-box">
               <code>https://inference.yed1z.ai/v1/chat/completions</code>
-              <button class="btn-copy" onclick="copyToClipboard('https://inference.yed1z.ai/v1/chat/completions')">Copia</button>
+              <button class="btn-copy" onclick="copyToClipboard('https://inference.yed1z.ai/v1/chat/completions')">[ COPY ]</button>
             </div>
           </div>
           <div class="config-col">
-            <label class="config-label">Model IDs Accettati</label>
+            <label class="config-label">ACCEPTED MODEL IDS (AUTO-ROUTED)</label>
             <div class="code-copy-box">
               <code>ds41-abliterated-q2-imatrix</code> · <code>qwen38-uncensored-gufo</code>
             </div>
@@ -362,7 +393,7 @@
 
   <footer class="footer">
     <div class="footer-content">
-      <span>yed1z local inference · AMD Strix Halo Dual APU Cluster · Powered by Kirei HIP & Gufo</span>
+      <span>yed1z local inference // AMD Strix Halo Dual APU Cluster · Powered by Kirei HIP & Gufo Engine</span>
       <span class="footer-time" id="footer-server-time">—</span>
     </div>
   </footer>

@@ -92,7 +92,7 @@ def save_stats(stats: dict):
             print(f"[GATEWAY] Error saving stats: {e}", file=sys.stderr)
 
 
-def record_request_metric(model_id: str, prompt_toks: int, comp_toks: int, duration_s: float, client_ip: str, location: str):
+def record_request_metric(model_id: str, prompt_toks: int, comp_toks: int, duration_s: float, user_name: str, client_app: str):
     stats = load_stats()
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%H:%M:%S")
@@ -117,8 +117,8 @@ def record_request_metric(model_id: str, prompt_toks: int, comp_toks: int, durat
         "id": f"req-{hex(int(time.time()*1000))[8:]}",
         "time": now_time,
         "date": today,
-        "client": client_ip,
-        "location": location,
+        "user": user_name,
+        "client_app": client_app,
         "model": model_id,
         "prompt_tokens": prompt_toks,
         "completion_tokens": comp_toks,
@@ -274,13 +274,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
         return token in load_keys()
 
     def get_client_info(self) -> tuple[str, str]:
+        # Anonymized client identification - never store or expose real IP or city/country
         ip = self.headers.get("cf-connecting-ip") or self.headers.get("x-forwarded-for") or self.address_string()
         if "," in ip:
             ip = ip.split(",")[0].strip()
-        country = self.headers.get("cf-ipcountry", "")
-        city = self.headers.get("cf-ipcity", "")
-        loc = f"{city}, {country}".strip(", ") if (city or country) else ("Localhost" if ip in ("127.0.0.1", "::1") else "Remote")
-        return ip, loc
+        ua = self.headers.get("user-agent", "").lower()
+        app = "Copilot Chat" if ("copilot" in ua or "vscode" in ua) else "Inference Client"
+
+        if ip in ("127.0.0.1", "::1"):
+            user = "funboy (local)"
+        else:
+            # Deterministic, friendly pseudonyms (funboy / cooper)
+            import hashlib
+            h = int(hashlib.md5(ip.encode("utf-8")).hexdigest()[:4], 16)
+            user = "cooper" if (h % 2 == 0) else "funboy"
+        return user, app
 
     def send_json(self, code: int, data: dict):
         body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
@@ -419,26 +427,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
 
-        # Dashboard manual switch trigger
-        if path == "/api/switch":
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            try:
-                p = json.loads(body)
-                target = p.get("target", "")
-            except Exception:
-                self.send_json_error(400, "Invalid JSON payload")
-                return
-
-            if target not in ("deepseek", "qwen"):
-                self.send_json_error(400, "Target must be 'deepseek' or 'qwen'")
-                return
-
-            ok, msg, status = acquire_model(target, max_wait_sec=30.0)
-            self.send_json(status, {"success": ok, "message": msg, "target": target})
-            return
-
-        # OpenAI Chat Completions endpoint
+        # OpenAI Chat Completions endpoint (only authorized endpoint)
         if path != "/v1/chat/completions":
             self.send_json_error(404, f"Endpoint {path} not supported")
             return
@@ -485,7 +474,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         forward_body = json.dumps(payload).encode("utf-8")
         is_stream = bool(payload.get("stream", False))
         t_start = time.time()
-        client_ip, client_loc = self.get_client_info()
+        user_name, client_app = self.get_client_info()
 
         with request_in_flight_scope(target):
             try:
@@ -543,16 +532,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 t_duration = max(0.05, time.time() - t_start)
                 if total_completion_tokens == 0:
                     total_completion_tokens = max(5, int(t_duration * (50 if target == "deepseek" else 42)))
-                # Record metrics asynchronously
-                threading.Thread(target=record_request_metric, args=(req_model or target, prompt_tokens, total_completion_tokens, t_duration, client_ip, client_loc), daemon=True).start()
+                # Record metrics asynchronously (no IP or geolocation stored)
+                threading.Thread(target=record_request_metric, args=(req_model or target, prompt_tokens, total_completion_tokens, t_duration, user_name, client_app), daemon=True).start()
 
             except Exception as e:
                 if not self.wfile.closed:
                     self.send_json_error(502, f"Errore motore cluster su porta {upstream_port}: {e}")
 
     def log_message(self, format: str, *args: object) -> None:
-        client = self.headers.get("cf-connecting-ip") or self.address_string()
-        print(f"[GATEWAY:{self.server.server_port}] {client} {format % args}", flush=True)
+        user_name, _ = self.get_client_info()
+        print(f"[GATEWAY:{self.server.server_port}] user={user_name} {format % args}", flush=True)
 
 
 def run_listener(port: int):
