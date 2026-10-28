@@ -1,0 +1,5 @@
+# Runtime data
+data/stats.json
+data/*.tmp
+__pycache__/
+*.pyc
