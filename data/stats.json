@@ -1,0 +1,84 @@
+{
+  "totals": {
+    "total_tokens": 48295,
+    "total_requests": 143,
+    "deepseek_tokens": 36155,
+    "qwen_tokens": 12140
+  },
+  "daily_tokens": {
+    "2026-10-25": {
+      "deepseek": 6820,
+      "qwen": 1840
+    },
+    "2026-10-26": {
+      "deepseek": 8940,
+      "qwen": 2310
+    },
+    "2026-10-27": {
+      "deepseek": 11200,
+      "qwen": 3490
+    },
+    "2026-10-28": {
+      "deepseek": 6740,
+      "qwen": 3100
+    },
+    "2026-10-29": {
+      "deepseek": 2455,
+      "qwen": 1400
+    }
+  },
+  "recent_sessions": [
+    {
+      "id": "req-b534f",
+      "time": "00:32:08",
+      "date": "2026-10-29",
+      "client": "93.56.125.228",
+      "location": "IT",
+      "model": "ds41-abliterated-q2-imatrix",
+      "prompt_tokens": 15,
+      "completion_tokens": 5,
+      "duration_s": 1.05,
+      "tok_per_sec": 4.8,
+      "status": "completed"
+    },
+    {
+      "id": "req-98f1",
+      "time": "00:18:22",
+      "date": "2026-10-29",
+      "client": "93.56.125.228",
+      "location": "Rome, IT",
+      "model": "ds41-abliterated-q2-imatrix",
+      "prompt_tokens": 14,
+      "completion_tokens": 5,
+      "duration_s": 0.22,
+      "tok_per_sec": 48.7,
+      "status": "completed"
+    },
+    {
+      "id": "req-98f0",
+      "time": "00:16:04",
+      "date": "2026-10-29",
+      "client": "93.56.125.228",
+      "location": "Livorno, IT",
+      "model": "qwen38-uncensored-gufo",
+      "prompt_tokens": 58,
+      "completion_tokens": 50,
+      "duration_s": 1.18,
+      "tok_per_sec": 42.4,
+      "status": "completed"
+    },
+    {
+      "id": "req-98ef",
+      "time": "00:15:27",
+      "date": "2026-10-29",
+      "client": "127.0.0.1",
+      "location": "Localhost",
+      "model": "ds41-abliterated-q2-imatrix",
+      "prompt_tokens": 13,
+      "completion_tokens": 10,
+      "duration_s": 0.21,
+      "tok_per_sec": 47.6,
+      "status": "completed"
+    }
+  ]
+}

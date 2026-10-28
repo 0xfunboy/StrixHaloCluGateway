@@ -1,0 +1,16 @@
+[Unit]
+Description=yed1z Local Inference Gateway & Dashboard (Dual Strix Halo)
+After=network-online.target strix-ds41-kirei.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/funboy/Gateway
+ExecStart=/usr/bin/python3 /home/funboy/Gateway/gateway.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
