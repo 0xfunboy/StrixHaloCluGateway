@@ -1,9 +1,9 @@
 {
   "totals": {
-    "total_tokens": 48295,
-    "total_requests": 143,
-    "deepseek_tokens": 36155,
-    "qwen_tokens": 12140
+    "total_tokens": 48314,
+    "total_requests": 146,
+    "deepseek_tokens": 36164,
+    "qwen_tokens": 12150
   },
   "daily_tokens": {
     "2026-10-25": {
@@ -23,17 +23,56 @@
       "qwen": 3100
     },
     "2026-10-29": {
-      "deepseek": 2455,
-      "qwen": 1400
+      "deepseek": 2464,
+      "qwen": 1410
     }
   },
   "recent_sessions": [
     {
+      "id": "req-0d0b2",
+      "time": "00:55:37",
+      "date": "2026-10-29",
+      "user": "funboy",
+      "client_app": "Copilot Chat",
+      "model": "ds41-abliterated-q2-imatrix",
+      "prompt_tokens": 12,
+      "completion_tokens": 5,
+      "duration_s": 0.42,
+      "tok_per_sec": 11.9,
+      "status": "completed"
+    },
+    {
+      "id": "req-0a7cc",
+      "time": "00:37:57",
+      "date": "2026-10-29",
+      "user": "cooper",
+      "client_app": "Copilot Chat",
+      "model": "ds41-abliterated-q2-imatrix",
+      "prompt_tokens": 16,
+      "completion_tokens": 4,
+      "duration_s": 0.5,
+      "tok_per_sec": 8.0,
+      "status": "completed"
+    },
+    {
+      "id": "req-f5764",
+      "time": "00:36:31",
+      "date": "2026-10-29",
+      "user": "funboy",
+      "client_app": "Copilot Chat",
+      "model": "qwen38-uncensored-gufo",
+      "prompt_tokens": 60,
+      "completion_tokens": 10,
+      "duration_s": 0.81,
+      "tok_per_sec": 12.3,
+      "status": "completed"
+    },
+    {
       "id": "req-b534f",
       "time": "00:32:08",
       "date": "2026-10-29",
-      "client": "93.56.125.228",
-      "location": "IT",
+      "user": "cooper",
+      "client_app": "Copilot Chat",
       "model": "ds41-abliterated-q2-imatrix",
       "prompt_tokens": 15,
       "completion_tokens": 5,
@@ -45,8 +84,8 @@
       "id": "req-98f1",
       "time": "00:18:22",
       "date": "2026-10-29",
-      "client": "93.56.125.228",
-      "location": "Rome, IT",
+      "user": "cooper",
+      "client_app": "Copilot Chat",
       "model": "ds41-abliterated-q2-imatrix",
       "prompt_tokens": 14,
       "completion_tokens": 5,
@@ -58,8 +97,8 @@
       "id": "req-98f0",
       "time": "00:16:04",
       "date": "2026-10-29",
-      "client": "93.56.125.228",
-      "location": "Livorno, IT",
+      "user": "funboy",
+      "client_app": "Copilot Chat",
       "model": "qwen38-uncensored-gufo",
       "prompt_tokens": 58,
       "completion_tokens": 50,
@@ -71,8 +110,8 @@
       "id": "req-98ef",
       "time": "00:15:27",
       "date": "2026-10-29",
-      "client": "127.0.0.1",
-      "location": "Localhost",
+      "user": "funboy (local)",
+      "client_app": "Inference Client",
       "model": "ds41-abliterated-q2-imatrix",
       "prompt_tokens": 13,
       "completion_tokens": 10,
