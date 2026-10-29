@@ -48,11 +48,31 @@ IN_FLIGHT_COUNT = 0
 IN_FLIGHT_MODEL = None
 LAST_ACTIVITY_TIME = 0.0
 
-# Cached telemetry
+# Cached telemetry with comprehensive hardware sensors
 CLUSTER_TELEMETRY = {
-    "node01": {"ram_used_gb": 88.0, "ram_total_gb": 122.2, "status": "online"},
-    "node02": {"ram_used_gb": 86.0, "ram_total_gb": 122.2, "status": "online"},
-    "tb_link": {"rtt_ms": 0.67, "status": "active", "bandwidth": "40 Gbps USB4"},
+    "node01": {
+        "hostname": "01-EVO-X3",
+        "role": "Coordinator (Rank 0)",
+        "status": "online",
+        "alert_level": "healthy",
+        "temps": {"cpu_c": 42.0, "gpu_c": 41.0, "nvme_c": 32.9},
+        "gpu": {"load_pct": 0, "sclk_mhz": 605, "power_w": 11.0, "arch": "gfx1151 / RDNA 3.5"},
+        "cooling": {"fan_rpm": 1940, "fan_pwm_pct": 40, "profile": "Smart Thermal EC"},
+        "ram": {"used_gb": 104.1, "total_gb": 122.2, "free_gb": 18.1, "pct": 85},
+        "disk": {"used_gb": 1190.4, "total_gb": 1831.7, "free_gb": 548.2, "pct": 65}
+    },
+    "node02": {
+        "hostname": "02-evo-x3-tb",
+        "role": "Worker (Rank 1)",
+        "status": "online",
+        "alert_level": "healthy",
+        "temps": {"cpu_c": 48.0, "gpu_c": 45.0, "nvme_c": 31.0},
+        "gpu": {"load_pct": 0, "sclk_mhz": 605, "power_w": 14.0, "arch": "gfx1151 / RDNA 3.5"},
+        "cooling": {"fan_rpm": 2180, "fan_pwm_pct": 45, "profile": "Smart Thermal EC"},
+        "ram": {"used_gb": 102.5, "total_gb": 122.2, "free_gb": 19.7, "pct": 84},
+        "disk": {"used_gb": 1443.9, "total_gb": 1831.7, "free_gb": 294.7, "pct": 79}
+    },
+    "tb_link": {"rtt_ms": 0.42, "status": "active", "bandwidth": "40 Gbps USB4 Mesh", "ip_mesh": "10.55.0.0/30"},
     "live_speed": {"decode_tps": 50.8, "prefill_tps": 442.0, "ttft_ms": 185, "dspark_acc": 48.9},
     "last_updated": 0.0
 }
@@ -212,43 +232,38 @@ def acquire_model(target: str, max_wait_sec: float = 45.0) -> tuple[bool, str, i
 
 
 def update_cluster_telemetry():
-    """Background polling worker for hardware meters."""
+    """Background polling worker for hardware sensors & live metrics."""
     while True:
         try:
-            # Local RAM
-            with open("/proc/meminfo") as f:
-                lines = f.readlines()
-            mem_tot = 122.2
-            mem_avail = 30.0
-            for l in lines:
-                if l.startswith("MemTotal:"):
-                    mem_tot = int(l.split()[1]) / (1024 * 1024)
-                elif l.startswith("MemAvailable:"):
-                    mem_avail = int(l.split()[1]) / (1024 * 1024)
-            ram_used_01 = round(mem_tot - mem_avail, 1)
+            # Probe Node 01 locally
+            r1 = subprocess.run(["/home/funboy/.local/bin/strix-probe.py"], capture_output=True, text=True, timeout=2)
+            if r1.returncode == 0:
+                d1 = json.loads(r1.stdout)
+                CLUSTER_TELEMETRY["node01"].update(d1)
 
-            # Node 02 RAM & Link ping
-            tb_ok = False
-            rtt = 0.67
-            try:
-                res = subprocess.run(["ping", "-c", "1", "-W", "1", "10.55.0.2"], capture_output=True, text=True)
-                if res.returncode == 0:
-                    tb_ok = True
-                    for line in res.stdout.splitlines():
-                        if "rtt min/avg" in line or "round-trip" in line:
-                            rtt = float(line.split("/")[4])
-            except Exception:
-                pass
+            # Probe Node 02 over Thunderbolt
+            r2 = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "02-evo-x3-tb", "/home/funboy/.local/bin/strix-probe.py"], capture_output=True, text=True, timeout=3)
+            if r2.returncode == 0:
+                d2 = json.loads(r2.stdout)
+                CLUSTER_TELEMETRY["node02"].update(d2)
+                CLUSTER_TELEMETRY["node02"]["status"] = "online"
+            else:
+                CLUSTER_TELEMETRY["node02"]["status"] = "offline"
 
-            CLUSTER_TELEMETRY["node01"]["ram_used_gb"] = ram_used_01
-            CLUSTER_TELEMETRY["node01"]["ram_total_gb"] = round(mem_tot, 1)
-            CLUSTER_TELEMETRY["node02"]["status"] = "online" if tb_ok else "offline"
-            CLUSTER_TELEMETRY["tb_link"]["status"] = "active" if tb_ok else "degraded"
-            CLUSTER_TELEMETRY["tb_link"]["rtt_ms"] = round(rtt, 2)
+            # Thunderbolt link ping
+            res = subprocess.run(["ping", "-c", "1", "-W", "1", "10.55.0.2"], capture_output=True, text=True)
+            if res.returncode == 0:
+                CLUSTER_TELEMETRY["tb_link"]["status"] = "active"
+                for line in res.stdout.splitlines():
+                    if "rtt min/avg" in line or "round-trip" in line:
+                        CLUSTER_TELEMETRY["tb_link"]["rtt_ms"] = float(line.split("/")[4])
+            else:
+                CLUSTER_TELEMETRY["tb_link"]["status"] = "degraded"
+
             CLUSTER_TELEMETRY["last_updated"] = time.time()
         except Exception:
             pass
-        time.sleep(4)
+        time.sleep(2)
 
 
 class GatewayHandler(BaseHTTPRequestHandler):

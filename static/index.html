@@ -1,20 +1,20 @@
 <!DOCTYPE html>
-<html lang="it" data-theme="dark">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>yed1z // LOCAL_INFERENCE_CLUSTER</title>
+  <title>yed1z // DUAL_STRIX_HALO_CLUSTER</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <!-- Ambient background grid and glow -->
+  <!-- Ambient background technical grid -->
   <div class="tech-grid-bg"></div>
 
-  <!-- Header -->
+  <!-- Top Navigation Header -->
   <header class="navbar">
     <div class="brand">
       <div class="brand-badge">
@@ -35,28 +35,28 @@
       </button>
       <div class="model-badge" id="header-active-model">
         <span class="status-square"></span>
-        <span id="header-model-label">CARICAMENTO STATO...</span>
+        <span id="header-model-label">LOADING STATUS...</span>
       </div>
     </div>
   </header>
 
   <main class="container">
-    <!-- Top Hero Banner -->
+    <!-- Top Hero Section -->
     <section class="hero-section">
       <div class="hero-left">
         <div class="chip-container">
-          <span class="chip chip-primary">[ HW: AMD gfx1151 DUAL ]</span>
+          <span class="chip chip-primary">[ HW: DUAL AMD gfx1151 ]</span>
           <span class="chip chip-secondary">[ LINK: 40 Gbps USB4 MESH ]</span>
           <span class="chip chip-accent">[ ENGINE: DSpark SPECULATIVE ]</span>
         </div>
-        <h1 class="hero-title">Telemetry & Inference Gateway</h1>
+        <h1 class="hero-title">Cluster Telemetry & Inference Gateway</h1>
         <p class="hero-subtitle">
-          Cluster dual-node AMD Strix Halo per calcolo distribuito ad alta velocità. Arbitraggio autonomo trasparente per <strong>GitHub Copilot Chat</strong> ed endpoint pubblico su <code>inference.yed1z.ai</code>.
+          Distributed dual-node AMD Strix Halo inference cluster. Autonomous multi-user arbitration engine for <strong>GitHub Copilot Chat</strong> and external clients on <code>inference.yed1z.ai</code>.
         </p>
       </div>
 
       <div class="hero-actions">
-        <!-- Read-Only Autonomous Arbitration HUD (Tamper-Proof) -->
+        <!-- Read-Only Autonomous Arbitration HUD -->
         <div class="retro-hud-box">
           <div class="hud-header">
             <span class="hud-badge-square"></span>
@@ -77,18 +77,18 @@
             </div>
             <div class="hud-status-banner">
               <span class="hud-tag">[STATUS]</span>
-              <span id="hud-cluster-state">CLUSTER READY · INFERENCE ACTIVE</span>
+              <span id="hud-cluster-state">CLUSTER READY · INFERENCE LISTENING</span>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Metrics Cards Row -->
+    <!-- Section 01: Core Inference Metrics Cards Row -->
     <section class="section-container">
       <div class="section-header">
         <span class="section-index">[ 01 ]</span>
-        <h2 class="section-title">CLUSTER TELEMETRY & HARDWARE GAUGES</h2>
+        <h2 class="section-title">LIVE INFERENCE PERFORMANCE GAUGES</h2>
       </div>
 
       <div class="cards-grid">
@@ -96,14 +96,14 @@
         <div class="card stat-card">
           <div class="card-header">
             <span class="card-icon">⚡</span>
-            <span class="card-title">MODELLO ATTIVO IN VRAM</span>
+            <span class="card-title">RESIDENT VRAM MODEL</span>
           </div>
           <div class="stat-value" id="card-model-name">—</div>
           <div class="meter-bar-container">
             <div class="meter-bar" id="card-model-meter" style="width: 70%;"></div>
           </div>
           <div class="stat-footer">
-            <span id="card-model-ram">88.0 GiB occupati / 122.2 GiB</span>
+            <span id="card-model-ram">88.0 GiB allocated / 122.2 GiB</span>
             <span class="badge badge-success" id="card-model-status">ACTIVE</span>
           </div>
         </div>
@@ -112,7 +112,7 @@
         <div class="card stat-card">
           <div class="card-header">
             <span class="card-icon">⏱️</span>
-            <span class="card-title">VELOCITÀ DI GENERAZIONE</span>
+            <span class="card-title">GENERATION VELOCITY</span>
           </div>
           <div class="stat-value speed-val"><span id="speed-decode">50.8</span> <small>tok/s</small></div>
           <div class="stat-submetrics">
@@ -121,7 +121,7 @@
               <span class="sub-val" id="speed-prefill">~442 tok/s</span>
             </div>
             <div class="submetric">
-              <span class="sub-label">TTFT Medio:</span>
+              <span class="sub-label">Average TTFT:</span>
               <span class="sub-val" id="speed-ttft">~185 ms</span>
             </div>
           </div>
@@ -150,110 +150,272 @@
         <div class="card stat-card">
           <div class="card-header">
             <span class="card-icon">🛡️</span>
-            <span class="card-title">ARBITRAGGIO RICHIESTE</span>
+            <span class="card-title">ARBITRATION & CONCURRENCY</span>
           </div>
           <div class="stat-value" id="card-in-flight">0 <small>in-flight</small></div>
           <div class="stat-submetrics">
             <div class="submetric">
-              <span class="sub-label">Anti-Collisione:</span>
-              <span class="sub-val text-success">Attivo (Auto-Queue)</span>
+              <span class="sub-label">Collision Guard:</span>
+              <span class="sub-val text-success">Active (Auto-Queue)</span>
             </div>
             <div class="submetric">
-              <span class="sub-label">Stato Coda:</span>
-              <span class="sub-val" id="card-queue-status">Idle (Pronto)</span>
+              <span class="sub-label">Queue State:</span>
+              <span class="sub-val" id="card-queue-status">Idle (Ready)</span>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Hardware Topology Section with Animated Flow -->
+    <!-- Section 02: Full Dual-Node Hardware Telemetry HUD & Livestreaming -->
     <section class="section-container">
       <div class="section-header">
         <span class="section-index">[ 02 ]</span>
-        <h2 class="section-title">TOPOLOGIA HARDWARE & INTERCONNECT MESH</h2>
-        <span class="section-badge">DUAL APU gfx1151 LINK</span>
+        <h2 class="section-title">DUAL-NODE HARDWARE TELEMETRY & LIVESTREAMING</h2>
+        <span class="section-badge">REAL-TIME HWMON + GPU TELEMETRY</span>
       </div>
 
-      <div class="hardware-topology-card">
-        <div class="topology-grid">
-          <!-- Node 01 -->
-          <div class="node-box" id="box-node01">
-            <div class="node-header">
-              <div class="node-square online"></div>
-              <div class="node-title-group">
-                <h3>NODE 01: 01-EVO-X3</h3>
-                <span class="node-role">Coordinator (Rank 0) · API :8081 / :18231</span>
+      <div class="hardware-full-card">
+        <div class="cluster-hw-grid">
+          <!-- Node 01 Box -->
+          <div class="hw-node-card" id="hw-card-node01">
+            <div class="hw-card-header">
+              <div class="hw-title-group">
+                <div class="node-square online"></div>
+                <div>
+                  <h3 class="node-name">NODE 01: 01-EVO-X3</h3>
+                  <span class="node-meta">Coordinator (Rank 0) · LAN 10.55.0.1/30</span>
+                </div>
+              </div>
+              <div class="hw-alert-pill" id="n1-alert-badge">
+                <span class="alert-dot"></span>
+                <span id="n1-alert-text">OPTIMAL</span>
               </div>
             </div>
-            <div class="node-specs">
-              <div class="spec-row">
-                <span>APU:</span>
-                <strong>AMD Ryzen AI Max+ 395 (16C/32T)</strong>
+
+            <!-- Thermal & Sensor Dashboard -->
+            <div class="sensor-row-grid">
+              <div class="sensor-tile">
+                <span class="sensor-title">CPU / APU TEMP</span>
+                <div class="sensor-val-wrap">
+                  <span class="sensor-val" id="n1-temp-cpu">42.2</span><small>°C</small>
+                </div>
+                <div class="mini-meter"><div class="mini-fill" id="n1-fill-cpu" style="width: 42%;"></div></div>
               </div>
-              <div class="spec-row">
-                <span>GPU:</span>
-                <strong>Radeon 8060S (gfx1151 / RDNA 3.5)</strong>
+              <div class="sensor-tile">
+                <span class="sensor-title">GPU EDGE TEMP</span>
+                <div class="sensor-val-wrap">
+                  <span class="sensor-val text-cyan" id="n1-temp-gpu">41.0</span><small>°C</small>
+                </div>
+                <div class="mini-meter"><div class="mini-fill fill-cyan" id="n1-fill-gpu" style="width: 41%;"></div></div>
               </div>
-              <div class="spec-row">
-                <span>LAN TB:</span>
-                <strong>10.55.0.1/30</strong>
+              <div class="sensor-tile">
+                <span class="sensor-title">NVMe SSD TEMP</span>
+                <div class="sensor-val-wrap">
+                  <span class="sensor-val" id="n1-temp-nvme">32.9</span><small>°C</small>
+                </div>
+                <div class="mini-meter"><div class="mini-fill" id="n1-fill-nvme" style="width: 33%;"></div></div>
               </div>
-              <div class="spec-row">
-                <span>Unified RAM:</span>
-                <strong id="node01-ram">104.5 / 122.2 GiB</strong>
+            </div>
+
+            <!-- GPU Live Stream -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>GPU LIVESTREAM // Radeon 8060S (gfx1151)</span>
+                <span class="live-tag pulse">[ LIVE ]</span>
+              </div>
+              <div class="subblock-grid">
+                <div class="metric-line">
+                  <span class="m-label">GPU Activity / Load:</span>
+                  <strong class="m-val" id="n1-gpu-load">0%</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Core Clock (sclk):</span>
+                  <strong class="m-val" id="n1-gpu-clock">605 MHz</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Board Power (PPT):</span>
+                  <strong class="m-val" id="n1-gpu-power">11.0 W</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Thermal Dissipation:</span>
+                  <strong class="m-val text-emerald">Dynamic Low Power</strong>
+                </div>
+              </div>
+            </div>
+
+            <!-- Fans & Active Cooling -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>COOLING SYSTEM // Smart EC Fan</span>
+                <span class="subblock-badge" id="n1-fan-profile">Quiet Curve</span>
+              </div>
+              <div class="subblock-grid">
+                <div class="metric-line">
+                  <span class="m-label">Blower Fan Speed:</span>
+                  <strong class="m-val" id="n1-fan-rpm">1,941 RPM</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Fan Duty Cycle:</span>
+                  <strong class="m-val" id="n1-fan-pwm">40%</strong>
+                </div>
+              </div>
+              <div class="progress-bar mt-2">
+                <div class="progress-fill fill-emerald" id="n1-fill-fan" style="width: 40%;"></div>
+              </div>
+            </div>
+
+            <!-- Unified RAM -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>UNIFIED MEMORY (LPDDR5X)</span>
+                <strong id="n1-ram-text">104.3 / 122.2 GiB (85%)</strong>
               </div>
               <div class="progress-bar">
-                <div class="progress-fill" id="node01-ram-fill" style="width: 85%;"></div>
+                <div class="progress-fill fill-cyan" id="n1-fill-ram" style="width: 85%;"></div>
+              </div>
+            </div>
+
+            <!-- NVMe Storage -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>NVMe STORAGE (Root FS)</span>
+                <strong id="n1-disk-text">1,190.4 / 1,831.7 GiB (65%)</strong>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="n1-fill-disk" style="width: 65%;"></div>
               </div>
             </div>
           </div>
 
-          <!-- Interconnect Ring (USB4) -->
-          <div class="link-box">
-            <div class="link-label">
-              <span class="link-icon">⇄</span>
-              <strong>THUNDERBOLT / USB4 RING</strong>
-              <small id="link-speed">40 Gbps Mesh · 10.55.0.0/30</small>
-            </div>
-            <div class="data-flow-animation">
-              <div class="pulse-packet forward"></div>
-              <div class="pulse-packet backward"></div>
-            </div>
-            <div class="link-latency">
-              <span>LATENZA RTT:</span>
-              <strong id="link-rtt">0.42 ms</strong>
+          <!-- Interconnect Ring (USB4 40 Gbps) -->
+          <div class="hw-interconnect-center">
+            <div class="mesh-box">
+              <span class="mesh-icon">⇄</span>
+              <strong class="mesh-title">THUNDERBOLT / USB4 RING</strong>
+              <span class="mesh-sub" id="link-speed">40 Gbps Mesh · 10.55.0.0/30</span>
+              <div class="data-flow-animation">
+                <div class="pulse-packet forward"></div>
+                <div class="pulse-packet backward"></div>
+              </div>
+              <div class="rtt-box">
+                <span class="rtt-label">PING RTT:</span>
+                <strong class="rtt-val" id="link-rtt">0.18 ms</strong>
+              </div>
+              <div class="rtt-status">
+                <span class="status-indicator online"></span>
+                <span>PACKET TRANSPORT OPTIMAL</span>
+              </div>
             </div>
           </div>
 
-          <!-- Node 02 -->
-          <div class="node-box" id="box-node02">
-            <div class="node-header">
-              <div class="node-square online"></div>
-              <div class="node-title-group">
-                <h3>NODE 02: 02-evo-x3-tb</h3>
-                <span class="node-role">Worker (Rank 1) · USB4 Direct</span>
+          <!-- Node 02 Box -->
+          <div class="hw-node-card" id="hw-card-node02">
+            <div class="hw-card-header">
+              <div class="hw-title-group">
+                <div class="node-square online"></div>
+                <div>
+                  <h3 class="node-name">NODE 02: 02-evo-x3-tb</h3>
+                  <span class="node-meta">Worker (Rank 1) · LAN 10.55.0.2/30</span>
+                </div>
+              </div>
+              <div class="hw-alert-pill" id="n2-alert-badge">
+                <span class="alert-dot"></span>
+                <span id="n2-alert-text">OPTIMAL</span>
               </div>
             </div>
-            <div class="node-specs">
-              <div class="spec-row">
-                <span>APU:</span>
-                <strong>AMD Ryzen AI Max+ 395 (16C/32T)</strong>
+
+            <!-- Thermal & Sensor Dashboard -->
+            <div class="sensor-row-grid">
+              <div class="sensor-tile">
+                <span class="sensor-title">CPU / APU TEMP</span>
+                <div class="sensor-val-wrap">
+                  <span class="sensor-val" id="n2-temp-cpu">46.9</span><small>°C</small>
+                </div>
+                <div class="mini-meter"><div class="mini-fill" id="n2-fill-cpu" style="width: 47%;"></div></div>
               </div>
-              <div class="spec-row">
-                <span>GPU:</span>
-                <strong>Radeon 8060S (gfx1151 / RDNA 3.5)</strong>
+              <div class="sensor-tile">
+                <span class="sensor-title">GPU EDGE TEMP</span>
+                <div class="sensor-val-wrap">
+                  <span class="sensor-val text-cyan" id="n2-temp-gpu">42.0</span><small>°C</small>
+                </div>
+                <div class="mini-meter"><div class="mini-fill fill-cyan" id="n2-fill-gpu" style="width: 42%;"></div></div>
               </div>
-              <div class="spec-row">
-                <span>LAN TB:</span>
-                <strong>10.55.0.2/30</strong>
+              <div class="sensor-tile">
+                <span class="sensor-title">NVMe SSD TEMP</span>
+                <div class="sensor-val-wrap">
+                  <span class="sensor-val" id="n2-temp-nvme">30.9</span><small>°C</small>
+                </div>
+                <div class="mini-meter"><div class="mini-fill" id="n2-fill-nvme" style="width: 31%;"></div></div>
               </div>
-              <div class="spec-row">
-                <span>Unified RAM:</span>
-                <strong id="node02-ram">86.0 / 122.2 GiB</strong>
+            </div>
+
+            <!-- GPU Live Stream -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>GPU LIVESTREAM // Radeon 8060S (gfx1151)</span>
+                <span class="live-tag pulse">[ LIVE ]</span>
+              </div>
+              <div class="subblock-grid">
+                <div class="metric-line">
+                  <span class="m-label">GPU Activity / Load:</span>
+                  <strong class="m-val" id="n2-gpu-load">0%</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Core Clock (sclk):</span>
+                  <strong class="m-val" id="n2-gpu-clock">606 MHz</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Board Power (PPT):</span>
+                  <strong class="m-val" id="n2-gpu-power">13.1 W</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Thermal Dissipation:</span>
+                  <strong class="m-val text-emerald">Dynamic Low Power</strong>
+                </div>
+              </div>
+            </div>
+
+            <!-- Fans & Active Cooling -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>COOLING SYSTEM // Smart EC Fan</span>
+                <span class="subblock-badge" id="n2-fan-profile">Active Curve</span>
+              </div>
+              <div class="subblock-grid">
+                <div class="metric-line">
+                  <span class="m-label">Blower Fan Speed:</span>
+                  <strong class="m-val" id="n2-fan-rpm">2,241 RPM</strong>
+                </div>
+                <div class="metric-line">
+                  <span class="m-label">Fan Duty Cycle:</span>
+                  <strong class="m-val" id="n2-fan-pwm">47%</strong>
+                </div>
+              </div>
+              <div class="progress-bar mt-2">
+                <div class="progress-fill fill-emerald" id="n2-fill-fan" style="width: 47%;"></div>
+              </div>
+            </div>
+
+            <!-- Unified RAM -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>UNIFIED MEMORY (LPDDR5X)</span>
+                <strong id="n2-ram-text">102.5 / 122.2 GiB (84%)</strong>
               </div>
               <div class="progress-bar">
-                <div class="progress-fill" id="node02-ram-fill" style="width: 72%;"></div>
+                <div class="progress-fill fill-cyan" id="n2-fill-ram" style="width: 84%;"></div>
+              </div>
+            </div>
+
+            <!-- NVMe Storage -->
+            <div class="hw-subblock">
+              <div class="subblock-header">
+                <span>NVMe STORAGE (Root FS)</span>
+                <strong id="n2-disk-text">1,443.9 / 1,831.7 GiB (79%)</strong>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="n2-fill-disk" style="width: 79%;"></div>
               </div>
             </div>
           </div>
@@ -261,11 +423,11 @@
       </div>
     </section>
 
-    <!-- Analytics Charts & Performance -->
+    <!-- Section 03: Analytics Charts & Performance -->
     <section class="section-container">
       <div class="section-header">
         <span class="section-index">[ 03 ]</span>
-        <h2 class="section-title">VOLUMETRIC ANALYTICS & TOKEN THROUGHPUT</h2>
+        <h2 class="section-title">VOLUMETRIC ANALYTICS & HISTORICAL TOKEN THROUGHPUT</h2>
       </div>
 
       <div class="charts-two-columns">
@@ -274,8 +436,8 @@
           <div class="card-header">
             <span class="card-icon">📊</span>
             <div class="card-title-group">
-              <span class="card-title">TOKEN GENERATI PER DATA E MODELLO</span>
-              <small class="card-subtitle">Volume storico giornaliero (DeepSeek vs Qwen)</small>
+              <span class="card-title">DAILY TOKENS GENERATED BY MODEL</span>
+              <small class="card-subtitle">Volume history (DeepSeek Cyan vs Qwen Purple)</small>
             </div>
           </div>
           <div class="canvas-container">
@@ -292,37 +454,37 @@
           <div class="card-header">
             <span class="card-icon">📈</span>
             <div class="card-title-group">
-              <span class="card-title">METRICHE CUMULATIVE GATEWAY</span>
-              <small class="card-subtitle">Volumi totali serviti dal cluster</small>
+              <span class="card-title">CUMULATIVE GATEWAY TOTALS</span>
+              <small class="card-subtitle">Aggregate inference served by cluster</small>
             </div>
           </div>
           <div class="stats-summary-grid">
             <div class="summary-box">
-              <span class="sum-title">TOKEN TOTALI SERVITI</span>
+              <span class="sum-title">TOTAL TOKENS SERVED</span>
               <span class="sum-number" id="sum-total-tokens">48,309</span>
             </div>
             <div class="summary-box">
-              <span class="sum-title">RICHIESTE COMPLETATE</span>
+              <span class="sum-title">COMPLETED REQUESTS</span>
               <span class="sum-number" id="sum-total-requests">145</span>
             </div>
             <div class="summary-box">
-              <span class="sum-title">TOKEN DEEPSEEK</span>
+              <span class="sum-title">DEEPSEEK TOKENS</span>
               <span class="sum-number text-ds" id="sum-ds-tokens">36,159</span>
             </div>
             <div class="summary-box">
-              <span class="sum-title">TOKEN QWEN</span>
+              <span class="sum-title">QWEN TOKENS</span>
               <span class="sum-number text-qwen" id="sum-qwen-tokens">12,150</span>
             </div>
           </div>
           <div class="mini-status-row">
-            <span>UPTIME GATEWAY: <strong>100% (SYSTEMD LINGER ACTIVE)</strong></span>
-            <span>AUTH: <strong>BEARER TOKEN REQUIRED</strong></span>
+            <span>GATEWAY UPTIME: <strong>100% (SYSTEMD LINGER ACTIVE)</strong></span>
+            <span>AUTHENTICATION: <strong>BEARER TOKEN ENFORCED</strong></span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Recent Copilot Sessions Table -->
+    <!-- Section 04: Recent Copilot Sessions Table -->
     <section class="section-container">
       <div class="section-header">
         <span class="section-index">[ 04 ]</span>
@@ -343,13 +505,13 @@
                 <th>PROMPT TOK</th>
                 <th>GEN TOK</th>
                 <th>DURATION</th>
-                <th>SPEED</th>
+                <th>VELOCITY</th>
                 <th>STATUS</th>
               </tr>
             </thead>
             <tbody id="sessions-table-body">
               <tr>
-                <td colspan="10" class="text-center py-4">Caricamento sessioni in corso...</td>
+                <td colspan="10" class="text-center py-4">Loading active sessions stream...</td>
               </tr>
             </tbody>
           </table>
@@ -357,7 +519,7 @@
       </div>
     </section>
 
-    <!-- API & Copilot Configuration Helper -->
+    <!-- Section 05: Client Configuration Reference -->
     <section class="section-container">
       <div class="section-header">
         <span class="section-index">[ 05 ]</span>
@@ -368,13 +530,13 @@
         <div class="card-header">
           <span class="card-icon">⚙️</span>
           <div class="card-title-group">
-            <span class="card-title">INTEGRAZIONE GITHUB COPILOT CHAT (VS CODE)</span>
-            <small class="card-subtitle">Endpoint pubblico attivo su Cloudflare TLS</small>
+            <span class="card-title">GITHUB COPILOT CHAT INTEGRATION (VS CODE)</span>
+            <small class="card-subtitle">Public endpoint routed through Cloudflare TLS</small>
           </div>
         </div>
         <div class="config-grid">
           <div class="config-col">
-            <label class="config-label">BASE URL OPENAI CHAT COMPLETIONS</label>
+            <label class="config-label">OPENAI CHAT COMPLETIONS BASE URL</label>
             <div class="code-copy-box">
               <code>https://inference.yed1z.ai/v1/chat/completions</code>
               <button class="btn-copy" onclick="copyToClipboard('https://inference.yed1z.ai/v1/chat/completions')">[ COPY ]</button>

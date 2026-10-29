@@ -550,118 +550,235 @@ body {
   font-weight: 600;
 }
 
-/* Hardware Topology */
-.hardware-topology-card {
+/* Section 02: Full Dual-Node Hardware Telemetry HUD */
+.hardware-full-card {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   padding: 24px;
 }
 
-.topology-grid {
+.cluster-hw-grid {
   display: grid;
-  grid-template-columns: 1fr 200px 1fr;
+  grid-template-columns: 1fr 220px 1fr;
   gap: 20px;
-  align-items: center;
+  align-items: stretch;
 }
 
-.node-box {
+.hw-node-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border-dim);
-  padding: 18px 20px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: border-color 0.2s ease;
 }
 
-.node-box:hover {
+.hw-node-card:hover {
   border-color: var(--border-focus);
 }
 
-.node-header {
+.hw-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border-dim);
+  padding-bottom: 12px;
+}
+
+.hw-title-group {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--border-dim);
-  padding-bottom: 10px;
+  gap: 10px;
 }
 
-.node-square {
-  width: 9px;
-  height: 9px;
-}
-.node-square.online {
-  background: var(--accent-emerald);
-  box-shadow: 0 0 6px var(--accent-emerald);
-}
-
-.node-title-group h3 {
+.node-name {
   font-size: 0.95rem;
   font-weight: 700;
   letter-spacing: 0.05em;
+  color: var(--text-primary);
 }
 
-.node-role {
+.node-meta {
   font-size: 0.72rem;
   color: var(--text-muted);
 }
 
-.node-specs {
+.hw-alert-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent-emerald);
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--accent-emerald);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.alert-dot {
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+}
+
+.hw-alert-pill.warn {
+  border-color: var(--accent-amber);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--accent-amber);
+}
+
+.hw-alert-pill.crit {
+  border-color: var(--accent-rose);
+  background: rgba(244, 63, 94, 0.15);
+  color: var(--accent-rose);
+  animation: squarePulse 1s infinite;
+}
+
+/* Sensor Tiles Grid */
+.sensor-row-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.sensor-tile {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-dim);
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 4px;
 }
 
-.spec-row {
+.sensor-title {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.sensor-val-wrap {
   display: flex;
-  justify-content: space-between;
-  font-size: 0.76rem;
+  align-items: baseline;
+  gap: 3px;
 }
 
-.spec-row span {
+.sensor-val {
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.sensor-val-wrap small {
+  font-size: 0.72rem;
   color: var(--text-muted);
 }
 
-.progress-bar {
-  height: 6px;
-  background: var(--bg-primary);
+.mini-meter {
+  height: 4px;
+  background: var(--bg-secondary);
   border: 1px solid var(--border-dim);
   margin-top: 4px;
 }
 
-.progress-fill {
+.mini-fill {
   height: 100%;
-  background: var(--accent-cyan);
+  background: var(--accent-amber);
   transition: width 0.3s ease;
 }
 
-.link-box {
+.fill-cyan { background: var(--accent-cyan); }
+.fill-emerald { background: var(--accent-emerald); }
+
+/* Subblocks */
+.hw-subblock {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-dim);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subblock-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  border-bottom: 1px dashed var(--border-dim);
+  padding-bottom: 6px;
+}
+
+.subblock-badge {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+}
+
+.live-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+}
+
+.subblock-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+}
+
+.metric-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.74rem;
+}
+
+.m-label {
+  color: var(--text-muted);
+}
+
+.m-val {
+  color: var(--text-primary);
+}
+
+/* Interconnect Center Column */
+.hw-interconnect-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mesh-box {
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 14px;
+  gap: 12px;
+  padding: 18px 14px;
   background: var(--bg-secondary);
   border: 1px dashed var(--border-color);
   text-align: center;
 }
 
-.link-label {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-.link-icon {
-  font-size: 1.2rem;
+.mesh-icon {
+  font-size: 1.4rem;
   color: var(--accent-cyan);
 }
 
-.link-label strong {
-  font-size: 0.76rem;
-  letter-spacing: 0.06em;
+.mesh-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
 }
 
-.link-label small {
+.mesh-sub {
   font-size: 0.7rem;
   color: var(--text-muted);
 }
@@ -673,12 +790,13 @@ body {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--border-dim);
+  margin: 4px 0;
 }
 
 .pulse-packet {
   position: absolute;
   height: 100%;
-  width: 30px;
+  width: 32px;
   background: var(--accent-cyan);
 }
 .pulse-packet.forward {
@@ -690,24 +808,41 @@ body {
 }
 
 @keyframes streamFlow {
-  0% { left: -30px; }
+  0% { left: -32px; }
   100% { left: 100%; }
 }
 @keyframes streamFlowBack {
-  0% { right: -30px; }
+  0% { right: -32px; }
   100% { right: 100%; }
 }
 
-.link-latency {
-  font-size: 0.72rem;
+.rtt-box {
+  font-size: 0.76rem;
   display: flex;
-  gap: 6px;
+  gap: 8px;
+  align-items: center;
 }
-.link-latency span {
+
+.rtt-label {
   color: var(--text-muted);
 }
-.link-latency strong {
+
+.rtt-val {
   color: var(--accent-emerald);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.rtt-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border-dim);
+  padding-top: 8px;
+  width: 100%;
+  justify-content: center;
 }
 
 /* Charts & Stats Columns */

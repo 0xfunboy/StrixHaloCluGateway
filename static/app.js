@@ -1,7 +1,7 @@
 /**
- * yed1z Local Inference Cluster - Retro Technical Dashboard
- * Telemetry Polling, Anonymized Sessions (No IPs), Retro Canvas Charts,
- * Read-Only Autonomous Multi-User Arbitration State.
+ * yed1z Local Inference Cluster - Retro Technical Dashboard (US English)
+ * Real-time Hardware Telemetry, Dual-Node Livestreaming, Anonymized Sessions,
+ * Autonomous Arbitration HUD, and Retro Canvas Performance Charts.
  */
 
 // Global State
@@ -36,10 +36,10 @@ if (themeToggleBtn) {
   });
 }
 
-// Helper: Format Numbers with separators
+// Helper: Format Numbers with US Comma Separators
 function formatNumber(num) {
   if (num === null || num === undefined) return '0';
-  return Number(num).toLocaleString('it-IT');
+  return Number(num).toLocaleString('en-US');
 }
 
 // Helper: Copy to Clipboard
@@ -91,7 +91,7 @@ function showToast(msg) {
   }, 2200);
 }
 
-// Update Telemetry Elements
+// Update UI Telemetry
 function updateUI(data) {
   const active = data.active_model; // "deepseek" | "qwen" | null
   const inFlight = data.in_flight || 0;
@@ -127,12 +127,12 @@ function updateUI(data) {
       hudState.textContent = `ONLINE // ${active.toUpperCase()} READY FOR COPILOT`;
       hudState.style.color = 'var(--accent-emerald)';
     } else {
-      hudState.textContent = 'STANDBY // WAITING FOR INFERENCE REQUEST';
+      hudState.textContent = 'STANDBY // LISTENING FOR INFERENCE REQUESTS';
       hudState.style.color = 'var(--accent-cyan)';
     }
   }
 
-  // 3. Card 1: Resident Model
+  // 3. Section 01: Core Inference Cards
   const cardModName = document.getElementById('card-model-name');
   const cardModMeter = document.getElementById('card-model-meter');
   const cardModRam = document.getElementById('card-model-ram');
@@ -145,18 +145,18 @@ function updateUI(data) {
         cardModMeter.style.width = '72%';
         cardModMeter.style.background = 'var(--accent-cyan)';
       }
-      if (cardModRam) cardModRam.textContent = '88.0 GiB occupati / 122.2 GiB (Dual TP2)';
+      if (cardModRam) cardModRam.textContent = '88.0 GiB allocated / 122.2 GiB (Dual TP2)';
     } else if (active === 'qwen') {
       cardModName.innerHTML = `<span style="color:var(--accent-purple)">Qwen 3.8 Flash Next</span>`;
       if (cardModMeter) {
         cardModMeter.style.width = '78%';
         cardModMeter.style.background = 'var(--accent-purple)';
       }
-      if (cardModRam) cardModRam.textContent = '95.4 GiB occupati / 122.2 GiB (Gufo Engine)';
+      if (cardModRam) cardModRam.textContent = '95.4 GiB allocated / 122.2 GiB (Gufo Engine)';
     } else {
-      cardModName.textContent = 'Standby (Pronto)';
+      cardModName.textContent = 'Standby (Ready)';
       if (cardModMeter) cardModMeter.style.width = '0%';
-      if (cardModRam) cardModRam.textContent = '0 GiB occupati';
+      if (cardModRam) cardModRam.textContent = '0 GiB allocated';
     }
     if (cardModStatus) {
       cardModStatus.textContent = active ? 'RESIDENT' : 'STANDBY';
@@ -164,7 +164,7 @@ function updateUI(data) {
     }
   }
 
-  // 4. Card 2: Generation Speed
+  // Generation Speed
   const speedDecode = document.getElementById('speed-decode');
   const speedPrefill = document.getElementById('speed-prefill');
   const speedTtft = document.getElementById('speed-ttft');
@@ -183,7 +183,7 @@ function updateUI(data) {
     speedDspark.textContent = `${speeds.dspark_acc}%`;
   }
 
-  // 5. Card 4: Concurrency & Arbitration
+  // Concurrency & Arbitration
   const cardInFlight = document.getElementById('card-in-flight');
   const cardQueueStatus = document.getElementById('card-queue-status');
 
@@ -192,7 +192,7 @@ function updateUI(data) {
   }
   if (cardQueueStatus) {
     if (inFlight > 0) {
-      cardQueueStatus.textContent = `In generazione (${busyModel || 'client'})`;
+      cardQueueStatus.textContent = `Stream Active (${busyModel || 'client'})`;
       cardQueueStatus.style.color = 'var(--accent-amber)';
     } else {
       cardQueueStatus.textContent = 'Idle (FIFO Drain Guard)';
@@ -200,45 +200,30 @@ function updateUI(data) {
     }
   }
 
-  // 6. Hardware Topology
+  // 4. Section 02: Dual-Node Hardware Telemetry & Livestreaming
   const n1 = telem.node01 || {};
   const n2 = telem.node02 || {};
   const tblink = telem.tb_link || {};
 
-  const node01Ram = document.getElementById('node01-ram');
-  const node01RamFill = document.getElementById('node01-ram-fill');
-  const node02Ram = document.getElementById('node02-ram');
-  const node02RamFill = document.getElementById('node02-ram-fill');
+  // Node 01 Updates
+  updateNodeTelemetry('n1', n1);
+
+  // Node 02 Updates
+  updateNodeTelemetry('n2', n2);
+
+  // Thunderbolt Interconnect Ring
   const linkRtt = document.getElementById('link-rtt');
   const linkSpeed = document.getElementById('link-speed');
 
-  if (node01Ram && n1.ram_used_gb) {
-    const tot1 = n1.ram_total_gb || 122.2;
-    node01Ram.textContent = `${n1.ram_used_gb} / ${tot1} GiB`;
-    if (node01RamFill) {
-      const pct = Math.min(100, Math.round((n1.ram_used_gb / tot1) * 100));
-      node01RamFill.style.width = `${pct}%`;
-    }
-  }
-
-  if (node02Ram && n2.ram_used_gb) {
-    const tot2 = n2.ram_total_gb || 122.2;
-    node02Ram.textContent = `${n2.ram_used_gb} / ${tot2} GiB`;
-    if (node02RamFill) {
-      const pct2 = Math.min(100, Math.round((n2.ram_used_gb / tot2) * 100));
-      node02RamFill.style.width = `${pct2}%`;
-    }
-  }
-
   if (linkRtt && tblink.rtt_ms !== undefined) {
-    linkRtt.textContent = `${tblink.rtt_ms} ms`;
+    linkRtt.textContent = `${tblink.rtt_ms.toFixed(2)} ms`;
     linkRtt.style.color = tblink.rtt_ms < 1.0 ? 'var(--accent-emerald)' : 'var(--accent-amber)';
   }
   if (linkSpeed && tblink.status) {
-    linkSpeed.textContent = tblink.status === 'active' ? '40 Gbps Mesh · 10.55.0.0/30' : 'Degradato / Fallback IP';
+    linkSpeed.textContent = tblink.status === 'active' ? '40 Gbps Mesh · 10.55.0.0/30' : 'Degraded / Fallback IP';
   }
 
-  // 7. Cumulative Totals
+  // 5. Section 03: Cumulative Totals
   const totals = stats.totals || {};
   const sumTokens = document.getElementById('sum-total-tokens');
   const sumRequests = document.getElementById('sum-total-requests');
@@ -250,17 +235,105 @@ function updateUI(data) {
   if (sumDs) sumDs.textContent = formatNumber(totals.deepseek_tokens || 0);
   if (sumQwen) sumQwen.textContent = formatNumber(totals.qwen_tokens || 0);
 
-  // 8. Sessions Table (Anonymized - NO client IPs or locations)
+  // 6. Section 04: Sessions Table (Anonymized - Zero IPs)
   renderSessionsTable(stats.recent_sessions || []);
 
-  // 9. Chart Rendering (Retro flat bars)
+  // 7. Historical Token Chart (Retro Flat Bars)
   chartDataCache = stats.daily_tokens || {};
   renderTokensChart(chartDataCache);
 
-  // 10. Server Time
+  // 8. Footer Server Time
   const serverTimeEl = document.getElementById('footer-server-time');
   if (serverTimeEl && data.server_time) {
-    serverTimeEl.textContent = `[ GATEWAY TIME: ${data.server_time} CET · TLS CLOUDFLARE ]`;
+    serverTimeEl.textContent = `[ GATEWAY TIME: ${data.server_time} CET · CLOUDFLARE TLS ]`;
+  }
+}
+
+// Update Per-Node Telemetry Elements
+function updateNodeTelemetry(prefix, node) {
+  if (!node) return;
+
+  const temps = node.temps || {};
+  const gpu = node.gpu || {};
+  const cooling = node.cooling || {};
+  const ram = node.ram || {};
+  const disk = node.disk || {};
+  const alertLevel = node.alert_level || 'healthy';
+
+  // Alert Badge
+  const alertBadge = document.getElementById(`${prefix}-alert-badge`);
+  const alertText = document.getElementById(`${prefix}-alert-text`);
+  if (alertBadge && alertText) {
+    if (alertLevel === 'crit') {
+      alertBadge.className = 'hw-alert-pill crit';
+      alertText.textContent = 'CRITICAL';
+    } else if (alertLevel === 'warn') {
+      alertBadge.className = 'hw-alert-pill warn';
+      alertText.textContent = 'WARNING';
+    } else {
+      alertBadge.className = 'hw-alert-pill';
+      alertText.textContent = 'OPTIMAL';
+    }
+  }
+
+  // Temperatures
+  const cpuVal = temps.cpu_c !== undefined ? temps.cpu_c.toFixed(1) : '—';
+  const gpuVal = temps.gpu_c !== undefined ? temps.gpu_c.toFixed(1) : '—';
+  const nvmeVal = temps.nvme_c !== undefined ? temps.nvme_c.toFixed(1) : '—';
+
+  setText(`${prefix}-temp-cpu`, cpuVal);
+  setText(`${prefix}-temp-gpu`, gpuVal);
+  setText(`${prefix}-temp-nvme`, nvmeVal);
+
+  setMeter(`${prefix}-fill-cpu`, temps.cpu_c || 0, 100);
+  setMeter(`${prefix}-fill-gpu`, temps.gpu_c || 0, 100);
+  setMeter(`${prefix}-fill-nvme`, temps.nvme_c || 0, 100);
+
+  // GPU Livestream
+  setText(`${prefix}-gpu-load`, `${gpu.load_pct !== undefined ? gpu.load_pct : 0}%`);
+  setText(`${prefix}-gpu-clock`, `${gpu.sclk_mhz !== undefined ? gpu.sclk_mhz : 600} MHz`);
+  setText(`${prefix}-gpu-power`, `${gpu.power_w !== undefined ? gpu.power_w.toFixed(1) : 12.0} W`);
+
+  // Fans & Cooling
+  const rpm = cooling.fan_rpm !== undefined ? formatNumber(cooling.fan_rpm) : '1,900';
+  const pwm = cooling.fan_pwm_pct !== undefined ? cooling.fan_pwm_pct : 40;
+  setText(`${prefix}-fan-rpm`, `${rpm} RPM`);
+  setText(`${prefix}-fan-pwm`, `${pwm}%`);
+  setMeter(`${prefix}-fill-fan`, pwm, 100);
+
+  // Profile text
+  const profEl = document.getElementById(`${prefix}-fan-profile`);
+  if (profEl) {
+    if (pwm > 70) profEl.textContent = 'Performance Curve';
+    else if (pwm > 45) profEl.textContent = 'Active Curve';
+    else profEl.textContent = 'Quiet Curve';
+  }
+
+  // Unified RAM
+  if (ram.used_gb !== undefined && ram.total_gb !== undefined) {
+    const ramPct = ram.pct !== undefined ? ram.pct : Math.round((ram.used_gb / ram.total_gb) * 100);
+    setText(`${prefix}-ram-text`, `${ram.used_gb.toFixed(1)} / ${ram.total_gb.toFixed(1)} GiB (${ramPct}%)`);
+    setMeter(`${prefix}-fill-ram`, ramPct, 100);
+  }
+
+  // NVMe Storage
+  if (disk.used_gb !== undefined && disk.total_gb !== undefined) {
+    const diskPct = disk.pct !== undefined ? disk.pct : Math.round((disk.used_gb / disk.total_gb) * 100);
+    setText(`${prefix}-disk-text`, `${disk.used_gb.toFixed(1)} / ${disk.total_gb.toFixed(1)} GiB (${diskPct}%)`);
+    setMeter(`${prefix}-fill-disk`, diskPct, 100);
+  }
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function setMeter(id, val, max) {
+  const el = document.getElementById(id);
+  if (el) {
+    const pct = Math.min(100, Math.max(0, Math.round((val / max) * 100)));
+    el.style.width = `${pct}%`;
   }
 }
 
@@ -270,7 +343,7 @@ function renderSessionsTable(sessions) {
   if (!tbody) return;
 
   if (!sessions || sessions.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4" style="color:var(--text-muted)">Nessuna sessione registrata. Invia una query da GitHub Copilot!</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4" style="color:var(--text-muted)">No active sessions logged. Send a request from GitHub Copilot!</td></tr>`;
     return;
   }
 
@@ -303,7 +376,7 @@ function renderSessionsTable(sessions) {
   tbody.innerHTML = html;
 }
 
-// Render Retro Canvas Daily Chart
+// Render Retro Flat Canvas Daily Chart
 function renderTokensChart(daily) {
   const canvas = document.getElementById('tokens-chart');
   if (!canvas) return;
@@ -325,7 +398,7 @@ function renderTokensChart(daily) {
     ctx.fillStyle = currentTheme === 'dark' ? '#64748b' : '#94a3b8';
     ctx.font = '12px JetBrains Mono, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('Nessun dato storico giornaliero', width / 2, height / 2);
+    ctx.fillText('No historical token data recorded', width / 2, height / 2);
     return;
   }
 
@@ -365,7 +438,7 @@ function renderTokensChart(daily) {
     ctx.fillText(formatNumber(val), paddingLeft - 8, y + 4);
   }
 
-  // Draw Retro Flat Sharp Bars (No Rounded Corners)
+  // Draw Retro Flat Sharp Bars (Strictly Zero Rounded Corners)
   const numDays = dates.length;
   const slotW = chartW / numDays;
   const barW = Math.min(38, Math.max(14, slotW * 0.55));
@@ -386,7 +459,7 @@ function renderTokensChart(daily) {
     if (dsH > 0) {
       ctx.fillStyle = isDark ? '#00f2fe' : '#0284c7';
       ctx.fillRect(x, yBase - dsH, barW, dsH);
-      // Subtle top highlight line
+      // Top Highlight Line
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(x, yBase - dsH, barW, 1);
     }
@@ -395,7 +468,7 @@ function renderTokensChart(daily) {
     if (qwenH > 0) {
       ctx.fillStyle = isDark ? '#c084fc' : '#9333ea';
       ctx.fillRect(x, yBase - dsH - qwenH, barW, qwenH);
-      // Subtle top highlight line
+      // Top Highlight Line
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(x, yBase - dsH - qwenH, barW, 1);
     }
@@ -435,5 +508,5 @@ async function fetchTelemetry() {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   fetchTelemetry();
-  setInterval(fetchTelemetry, 2500);
+  setInterval(fetchTelemetry, 2000);
 });
