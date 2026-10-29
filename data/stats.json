@@ -1,8 +1,8 @@
 {
   "totals": {
-    "total_tokens": 48314,
-    "total_requests": 146,
-    "deepseek_tokens": 36164,
+    "total_tokens": 48324,
+    "total_requests": 147,
+    "deepseek_tokens": 36174,
     "qwen_tokens": 12150
   },
   "daily_tokens": {
@@ -23,11 +23,24 @@
       "qwen": 3100
     },
     "2026-10-29": {
-      "deepseek": 2464,
+      "deepseek": 2474,
       "qwen": 1410
     }
   },
   "recent_sessions": [
+    {
+      "id": "req-17d78",
+      "time": "01:13:49",
+      "date": "2026-10-29",
+      "user": "funboy",
+      "client_app": "Inference Client",
+      "model": "ds41-abliterated-q2-imatrix",
+      "prompt_tokens": 6,
+      "completion_tokens": 10,
+      "duration_s": 0.52,
+      "tok_per_sec": 19.3,
+      "status": "completed"
+    },
     {
       "id": "req-0d0b2",
       "time": "00:55:37",
