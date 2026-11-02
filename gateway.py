@@ -423,7 +423,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
         # 3. Health & Readiness
         if path == "/health":
             active = get_currently_active_model()
-            self.send_json(200, {"status": "healthy" if active else "standby", "active_model": active})
+            self.send_json(200, {
+                "status": "healthy" if active else "standby",
+                "ok": bool(active),
+                "active_model": active
+            })
             return
 
         # 4. OpenAI Models endpoint
@@ -556,19 +560,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     conn.request("POST", "/v1/chat/completions", body=forward_body, headers=headers)
                     resp = conn.getresponse()
 
-                    try:
-                        self.send_response(resp.status)
-                        for h, v in resp.getheaders():
-                            if h.lower() not in {"connection", "transfer-encoding", "content-length"}:
-                                self.send_header(h, v)
-
-                        if is_stream:
-                            self.send_header("Transfer-Encoding", "chunked")
-                        self.end_headers()
-                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
-                        raise DownstreamClientDisconnected from error
-
                     if is_stream:
+                        try:
+                            self.send_response(resp.status)
+                            for h, v in resp.getheaders():
+                                if h.lower() not in {"connection", "transfer-encoding", "content-length"}:
+                                    self.send_header(h, v)
+                            self.send_header("Transfer-Encoding", "chunked")
+                            self.end_headers()
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
+                            raise DownstreamClientDisconnected from error
+
                         in_thinking = False
                         last_event_id = None
 
@@ -719,6 +721,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                             print(f"[GATEWAY] Error processing non-stream JSON: {e}", file=sys.stderr, flush=True)
 
                         try:
+                            self.send_response(resp.status)
+                            for h, v in resp.getheaders():
+                                if h.lower() not in {"connection", "transfer-encoding", "content-length"}:
+                                    self.send_header(h, v)
                             self.send_header("Content-Length", str(len(resp_data)))
                             self.end_headers()
                         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
