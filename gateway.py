@@ -40,9 +40,13 @@ SECONDARY_PORT = 18561
 MODEL_DEEPSEEK_ID = "ds41-abliterated-q2-imatrix"
 MODEL_QWEN_ID = "qwen38-uncensored-gufo"
 
+class DownstreamClientDisconnected(Exception):
+    pass
+
 STATE_LOCK = threading.RLock()
 SWITCH_LOCK = threading.Lock()
 STATS_LOCK = threading.Lock()
+DEEPSEEK_CONCURRENCY_LOCK = threading.Lock()
 
 IN_FLIGHT_COUNT = 0
 IN_FLIGHT_MODEL = None
@@ -79,7 +83,7 @@ CLUSTER_TELEMETRY = {
 
 
 def load_keys() -> set[str]:
-    keys = {"-761c2212", "7fa3e51b", "sk-yed1z-cluster-halo-7f8a9b", "sk-yed1z-master-2026"}
+    keys: set[str] = set()
     if KEYS_FILE.exists():
         try:
             data = json.loads(KEYS_FILE.read_text())
@@ -112,25 +116,30 @@ def save_stats(stats: dict):
             print(f"[GATEWAY] Error saving stats: {e}", file=sys.stderr)
 
 
-def record_request_metric(model_id: str, prompt_toks: int, comp_toks: int, duration_s: float, user_name: str, client_app: str):
+def record_request_metric(
+    model_id: str,
+    prompt_toks: int | None,
+    comp_toks: int | None,
+    duration_s: float,
+    rate_duration_s: float,
+    user_name: str,
+    client_app: str,
+    override_tps: float | None = None,
+):
     stats = load_stats()
     today = datetime.now().strftime("%Y-%m-%d")
     now_time = datetime.now().strftime("%H:%M:%S")
-    tps = round(comp_toks / duration_s, 1) if duration_s > 0 else 0.0
+    tps = override_tps if override_tps is not None else (round(comp_toks / rate_duration_s, 1) if comp_toks is not None and rate_duration_s > 0 else None)
     mod_key = "deepseek" if "ds41" in model_id or "deepseek" in model_id else "qwen"
 
-    # Update totals
-    stats["totals"]["total_tokens"] = stats["totals"].get("total_tokens", 0) + comp_toks
     stats["totals"]["total_requests"] = stats["totals"].get("total_requests", 0) + 1
-    if mod_key == "deepseek":
-        stats["totals"]["deepseek_tokens"] = stats["totals"].get("deepseek_tokens", 0) + comp_toks
-    else:
-        stats["totals"]["qwen_tokens"] = stats["totals"].get("qwen_tokens", 0) + comp_toks
-
-    # Update daily
-    if today not in stats["daily_tokens"]:
-        stats["daily_tokens"][today] = {"deepseek": 0, "qwen": 0}
-    stats["daily_tokens"][today][mod_key] = stats["daily_tokens"][today].get(mod_key, 0) + comp_toks
+    if comp_toks is not None:
+        stats["totals"]["total_tokens"] = stats["totals"].get("total_tokens", 0) + comp_toks
+        token_key = f"{mod_key}_tokens"
+        stats["totals"][token_key] = stats["totals"].get(token_key, 0) + comp_toks
+        if today not in stats["daily_tokens"]:
+            stats["daily_tokens"][today] = {"deepseek": 0, "qwen": 0}
+        stats["daily_tokens"][today][mod_key] = stats["daily_tokens"][today].get(mod_key, 0) + comp_toks
 
     # Add to recent
     session_item = {
@@ -269,6 +278,13 @@ def update_cluster_telemetry():
 class GatewayHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def write_client_bytes(self, data: bytes) -> None:
+        try:
+            self.wfile.write(data)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
+            raise DownstreamClientDisconnected from error
+
     def is_external_request(self) -> bool:
         if self.headers.get("cf-connecting-ip") or self.headers.get("cf-ray") or self.headers.get("x-forwarded-for"):
             return True
@@ -286,7 +302,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
             token = auth[7:].strip()
         elif self.headers.get("x-api-key"):
             token = self.headers.get("x-api-key", "").strip()
-        return token in load_keys()
+        if not token:
+            qs = parse_qs(urlsplit(self.path).query)
+            for param in ("api_key", "key", "token", "auth"):
+                vals = qs.get(param)
+                if vals and vals[0].strip():
+                    token = vals[0].strip()
+                    break
+        if token in load_keys():
+            return True
+
+        user, app = self.get_client_info()
+        print(f"[GATEWAY:auth-fail] user={user} app={app} authorization_header={'yes' if auth else 'no'} x_api_key={'yes' if self.headers.get('x-api-key') else 'no'} query_token={'yes' if token else 'no'} token_len={len(token)}", flush=True)
+        return False
 
     def get_client_info(self) -> tuple[str, str]:
         # Anonymized client identification - never store or expose real IP or city/country
@@ -411,8 +439,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "created": 1793220000,
                     "owned_by": "customendpoint",
                     "name": "DeepSeek V4.1 Flash Abliterated Q2 (Dual Strix 50 tok/s)",
-                    "context_length": 32768,
-                    "max_input_tokens": 24576,
+                    "context_length": 131072,
+                    "max_input_tokens": 124928,
                     "max_output_tokens": 6144
                 },
                 {
@@ -431,7 +459,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "created": 1793220000,
                     "owned_by": "customendpoint",
                     "name": "DeepSeek V4.1 Flash",
-                    "context_length": 32768
+                    "context_length": 131072,
+                    "max_input_tokens": 124928,
+                    "max_output_tokens": 6144
                 }
             ]
             self.send_json(200, {"object": "list", "data": models_data})
@@ -442,6 +472,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
 
+        # Il corpo va letto prima di ogni errore, altrimenti inquina la connessione keep-alive.
+        length = int(self.headers.get("Content-Length", 0))
+        raw_body = self.rfile.read(length)
+
         # OpenAI Chat Completions endpoint (only authorized endpoint)
         if path != "/v1/chat/completions":
             self.send_json_error(404, f"Endpoint {path} not supported")
@@ -451,8 +485,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json_error(401, "API key richiesta per inference.yed1z.ai. Setta 'Authorization: Bearer <secret-token>'", "authentication_error")
             return
 
-        length = int(self.headers.get("Content-Length", 0))
-        raw_body = self.rfile.read(length)
         try:
             payload = json.loads(raw_body)
         except Exception:
@@ -465,94 +497,269 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if req_model == MODEL_QWEN_ID or (server_port == SECONDARY_PORT and req_model != MODEL_DEEPSEEK_ID):
             target = "qwen"
 
+        # Prepare request payload
+        if target == "deepseek":
+            upstream_port = DEEPSEEK_PORT
+            payload["context_tokens"] = 131072
+            payload.setdefault("max_tokens", 6144)
+            payload["reasoning_effort"] = "xhigh"
+            tpl = payload.get("chat_template_kwargs") or {}
+            tpl["enable_thinking"] = True
+            tpl["reasoning_effort"] = "xhigh"
+            payload["chat_template_kwargs"] = tpl
+            payload["model"] = "deepseek-v4.1-flash"
+            if payload.get("stream", False):
+                stream_options = payload.get("stream_options", {})
+                if not isinstance(stream_options, dict):
+                    self.send_json_error(400, "stream_options deve essere un oggetto JSON")
+                    return
+                stream_options["include_usage"] = True
+                payload["stream_options"] = stream_options
+        else:
+            upstream_port = QWEN_PORT
+            payload.setdefault("max_tokens", 8192)
+
         # Concurrency & Arbitration
         ok, msg, status_code = acquire_model(target, max_wait_sec=45.0)
         if not ok:
             self.send_json_error(status_code, msg, "cluster_arbitration_error")
             return
 
-        # Prepare request payload
+        has_concurrency_lock = False
         if target == "deepseek":
-            upstream_port = DEEPSEEK_PORT
-            payload["context_tokens"] = 32768
-            payload.setdefault("max_tokens", 6144)
-            payload["reasoning_effort"] = "none"
-            tpl = payload.get("chat_template_kwargs") or {}
-            tpl["enable_thinking"] = False
-            tpl["reasoning_effort"] = "none"
-            payload["chat_template_kwargs"] = tpl
-            payload["model"] = "deepseek-v4.1-flash"
-        else:
-            upstream_port = QWEN_PORT
-            payload.setdefault("max_tokens", 8192)
+            if not DEEPSEEK_CONCURRENCY_LOCK.acquire(timeout=60.0):
+                self.send_json_error(429, "Cluster occupato: un'altra richiesta su DeepSeek è in elaborazione. Riprova tra poco.", "cluster_busy")
+                return
+            has_concurrency_lock = True
 
-        forward_body = json.dumps(payload).encode("utf-8")
-        is_stream = bool(payload.get("stream", False))
-        t_start = time.time()
-        user_name, client_app = self.get_client_info()
+        try:
+            forward_body = json.dumps(payload).encode("utf-8")
+            is_stream = bool(payload.get("stream", False))
+            t_start = time.monotonic()
+            user_name, client_app = self.get_client_info()
 
-        with request_in_flight_scope(target):
-            try:
-                conn = http.client.HTTPConnection("127.0.0.1", upstream_port, timeout=600)
-                headers = {
-                    "Content-Type": "application/json",
-                    "Accept": self.headers.get("Accept", "*/*"),
-                    "Content-Length": str(len(forward_body))
-                }
-                conn.request("POST", "/v1/chat/completions", body=forward_body, headers=headers)
-                resp = conn.getresponse()
+            total_completion_tokens: int | None = 0 if target == "qwen" else None
+            prompt_tokens: int | None = 20 if target == "qwen" else None
+            first_generation_at: float | None = None
+            engine_reported_tps: float | None = None
+            stream_buffer = b""
 
-                self.send_response(resp.status)
-                for h, v in resp.getheaders():
-                    if h.lower() not in {"connection", "transfer-encoding", "content-length"}:
-                        self.send_header(h, v)
+            with request_in_flight_scope(target):
+                conn: http.client.HTTPConnection | None = None
+                try:
+                    conn = http.client.HTTPConnection("127.0.0.1", upstream_port, timeout=600)
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Accept": self.headers.get("Accept", "*/*"),
+                        "Content-Length": str(len(forward_body))
+                    }
+                    conn.request("POST", "/v1/chat/completions", body=forward_body, headers=headers)
+                    resp = conn.getresponse()
 
-                total_completion_tokens = 0
-                prompt_tokens = 20
-
-                if is_stream:
-                    self.send_header("Transfer-Encoding", "chunked")
-                    self.end_headers()
-
-                    while True:
-                        chunk = resp.read1(65536)
-                        if not chunk:
-                            break
-                        if req_model and req_model != "deepseek-v4.1-flash":
-                            chunk = chunk.replace(b'"model":"deepseek-v4.1-flash"', f'"model":"{req_model}"'.encode("utf-8"))
-                        # Rough count for metrics
-                        if b'"delta"' in chunk and b'"content"' in chunk:
-                            total_completion_tokens += 1
-                        chunk_header = f"{len(chunk):X}\r\n".encode("ascii")
-                        self.wfile.write(chunk_header + chunk + b"\r\n")
-                        self.wfile.flush()
-                    self.wfile.write(b"0\r\n\r\n")
-                    self.wfile.flush()
-                else:
-                    resp_data = resp.read()
-                    if req_model and req_model != "deepseek-v4.1-flash":
-                        resp_data = resp_data.replace(b'"model":"deepseek-v4.1-flash"', f'"model":"{req_model}"'.encode("utf-8"))
-                    self.send_header("Content-Length", str(len(resp_data)))
-                    self.end_headers()
-                    self.wfile.write(resp_data)
-                    self.wfile.flush()
                     try:
-                        parsed = json.loads(resp_data)
-                        total_completion_tokens = parsed.get("usage", {}).get("completion_tokens", 10)
-                        prompt_tokens = parsed.get("usage", {}).get("prompt_tokens", 20)
-                    except Exception:
-                        pass
+                        self.send_response(resp.status)
+                        for h, v in resp.getheaders():
+                            if h.lower() not in {"connection", "transfer-encoding", "content-length"}:
+                                self.send_header(h, v)
 
-                conn.close()
-                t_duration = max(0.05, time.time() - t_start)
-                if total_completion_tokens == 0:
-                    total_completion_tokens = max(5, int(t_duration * (50 if target == "deepseek" else 42)))
-                # Record metrics asynchronously (no IP or geolocation stored)
-                threading.Thread(target=record_request_metric, args=(req_model or target, prompt_tokens, total_completion_tokens, t_duration, user_name, client_app), daemon=True).start()
+                        if is_stream:
+                            self.send_header("Transfer-Encoding", "chunked")
+                        self.end_headers()
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
+                        raise DownstreamClientDisconnected from error
 
-            except Exception as e:
-                if not self.wfile.closed:
-                    self.send_json_error(502, f"Errore motore cluster su porta {upstream_port}: {e}")
+                    if is_stream:
+                        in_thinking = False
+                        last_event_id = None
+
+                        def send_http_chunk(chunk_bytes: bytes) -> None:
+                            if not chunk_bytes:
+                                return
+                            header = f"{len(chunk_bytes):X}\r\n".encode("ascii")
+                            self.write_client_bytes(header + chunk_bytes + b"\r\n")
+
+                        while True:
+                            raw_chunk = resp.read1(65536)
+                            if not raw_chunk:
+                                break
+                            stream_buffer += raw_chunk
+                            while b"\n" in stream_buffer:
+                                line, stream_buffer = stream_buffer.split(b"\n", 1)
+                                stripped = line.strip()
+                                if not stripped:
+                                    continue
+                                if not stripped.startswith(b"data:"):
+                                    send_http_chunk(line + b"\n")
+                                    continue
+                                data_part = stripped[5:].strip()
+                                if data_part == b"[DONE]":
+                                    if in_thinking:
+                                        close_event = {
+                                            "id": last_event_id or "chatcmpl-think-close",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": req_model or "deepseek-v4.1-flash",
+                                            "choices": [{"index": 0, "delta": {"content": "\n</think>\n\n"}, "logprobs": None, "finish_reason": None}]
+                                        }
+                                        send_http_chunk(b"data: " + json.dumps(close_event, ensure_ascii=False).encode("utf-8") + b"\n\n")
+                                        in_thinking = False
+                                    send_http_chunk(b"data: [DONE]\n\n")
+                                    continue
+
+                                try:
+                                    event = json.loads(data_part)
+                                except Exception:
+                                    send_http_chunk(line + b"\n")
+                                    continue
+
+                                if not isinstance(event, dict):
+                                    send_http_chunk(line + b"\n")
+                                    continue
+
+                                last_event_id = event.get("id")
+                                if req_model and req_model != "deepseek-v4.1-flash":
+                                    event["model"] = req_model
+
+                                usage = event.get("usage")
+                                if isinstance(usage, dict):
+                                    prompt = usage.get("prompt_tokens")
+                                    completion = usage.get("completion_tokens")
+                                    if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt >= 0:
+                                        prompt_tokens = prompt
+                                    if isinstance(completion, int) and not isinstance(completion, bool) and completion >= 0:
+                                        total_completion_tokens = completion
+
+                                strix_meta = event.get("strix", {})
+                                if isinstance(strix_meta, dict):
+                                    dec_tps = strix_meta.get("decode_tokens_per_second")
+                                    if isinstance(dec_tps, (int, float)) and dec_tps > 0:
+                                        engine_reported_tps = round(float(dec_tps), 1)
+
+                                choices = event.get("choices", [])
+                                if isinstance(choices, list) and target == "deepseek":
+                                    for choice in choices:
+                                        if not isinstance(choice, dict):
+                                            continue
+                                        delta = choice.get("delta", {})
+                                        if not isinstance(delta, dict):
+                                            continue
+                                        reasoning = delta.get("reasoning_content")
+                                        content = delta.get("content")
+                                        finish = choice.get("finish_reason")
+
+                                        if reasoning:
+                                            first_generation_at = first_generation_at or time.monotonic()
+                                            if not in_thinking:
+                                                in_thinking = True
+                                                delta["content"] = "<think>\n" + reasoning
+                                            else:
+                                                delta["content"] = reasoning
+                                        elif in_thinking and (content is not None or finish == "stop"):
+                                            in_thinking = False
+                                            delta["content"] = "\n</think>\n\n" + (content or "")
+                                            if content:
+                                                first_generation_at = first_generation_at or time.monotonic()
+                                        elif content:
+                                            first_generation_at = first_generation_at or time.monotonic()
+
+                                elif isinstance(choices, list) and target == "qwen":
+                                    for choice in choices:
+                                        if isinstance(choice, dict) and isinstance(choice.get("delta"), dict):
+                                            if choice["delta"].get("content"):
+                                                first_generation_at = first_generation_at or time.monotonic()
+                                                if total_completion_tokens is not None:
+                                                    total_completion_tokens += 1
+
+                                send_http_chunk(b"data: " + json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n")
+
+                        if in_thinking:
+                            close_event = {
+                                "id": last_event_id or "chatcmpl-think-close",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": req_model or "deepseek-v4.1-flash",
+                                "choices": [{"index": 0, "delta": {"content": "\n</think>\n\n"}, "logprobs": None, "finish_reason": None}]
+                            }
+                            send_http_chunk(b"data: " + json.dumps(close_event, ensure_ascii=False).encode("utf-8") + b"\n\n")
+
+                        self.write_client_bytes(b"0\r\n\r\n")
+                    else:
+                        resp_data = resp.read()
+                        try:
+                            parsed = json.loads(resp_data)
+                            if req_model and req_model != "deepseek-v4.1-flash":
+                                parsed["model"] = req_model
+                            usage = parsed.get("usage", {})
+                            if isinstance(usage, dict):
+                                prompt = usage.get("prompt_tokens")
+                                completion = usage.get("completion_tokens")
+                                if isinstance(prompt, int) and not isinstance(prompt, bool) and prompt >= 0:
+                                    prompt_tokens = prompt
+                                if isinstance(completion, int) and not isinstance(completion, bool) and completion >= 0:
+                                    total_completion_tokens = completion
+
+                            strix_meta = parsed.get("strix", {})
+                            if isinstance(strix_meta, dict):
+                                dec_tps = strix_meta.get("decode_tokens_per_second")
+                                if isinstance(dec_tps, (int, float)) and dec_tps > 0:
+                                    engine_reported_tps = round(float(dec_tps), 1)
+
+                            if target == "deepseek":
+                                for choice in parsed.get("choices", []):
+                                    if isinstance(choice, dict):
+                                        msg = choice.get("message", {})
+                                        if isinstance(msg, dict):
+                                            reasoning = msg.get("reasoning_content")
+                                            content = msg.get("content", "")
+                                            if reasoning and not content.startswith("<think>"):
+                                                msg["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
+
+                            resp_data = json.dumps(parsed, ensure_ascii=False).encode("utf-8")
+                        except Exception as e:
+                            print(f"[GATEWAY] Error processing non-stream JSON: {e}", file=sys.stderr, flush=True)
+
+                        try:
+                            self.send_header("Content-Length", str(len(resp_data)))
+                            self.end_headers()
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
+                            raise DownstreamClientDisconnected from error
+                        self.write_client_bytes(resp_data)
+
+                    conn.close()
+                    t_duration = max(0.05, time.monotonic() - t_start)
+                    rate_start = first_generation_at if is_stream and first_generation_at is not None else t_start
+                    rate_duration = max(0.05, time.monotonic() - rate_start)
+                    if target == "qwen" and total_completion_tokens == 0:
+                        total_completion_tokens = max(5, int(t_duration * 42))
+                    elif target == "deepseek" and total_completion_tokens is None:
+                        print("[GATEWAY] Upstream response omitted completion-token usage; token and TPS metrics unavailable.", file=sys.stderr, flush=True)
+                    if target == "qwen":
+                        rate_duration = t_duration
+
+                    final_tps = engine_reported_tps if engine_reported_tps else (round(total_completion_tokens / rate_duration, 1) if total_completion_tokens and rate_duration > 0 else None)
+
+                    # Record metrics asynchronously (no IP or geolocation stored)
+                    threading.Thread(
+                        target=record_request_metric,
+                        args=(req_model or target, prompt_tokens, total_completion_tokens, t_duration, rate_duration, user_name, client_app, final_tps),
+                        daemon=True,
+                    ).start()
+
+                except DownstreamClientDisconnected:
+                    print("[GATEWAY] Client disconnected; cancelling upstream request.", flush=True)
+                    if conn is not None:
+                        conn.close()
+                except Exception as e:
+                    if conn is not None:
+                        conn.close()
+                    if not self.wfile.closed:
+                        try:
+                            self.send_json_error(502, f"Errore motore cluster su porta {upstream_port}: {e}")
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                            print("[GATEWAY] Client disconnected while returning upstream error.", flush=True)
+        finally:
+            if has_concurrency_lock:
+                DEEPSEEK_CONCURRENCY_LOCK.release()
 
     def log_message(self, format: str, *args: object) -> None:
         user_name, _ = self.get_client_info()

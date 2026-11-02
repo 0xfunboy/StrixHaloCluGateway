@@ -1,6 +1,11 @@
-# Runtime data
+# Runtime data and secrets
+data/api_keys.json
 data/stats.json
 data/*.tmp
+data/*.bak*
+*.bak*
+*.log
 __pycache__/
 *.pyc
+.DS_Store
 
