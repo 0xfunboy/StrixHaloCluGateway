@@ -1,0 +1,16 @@
+[Unit]
+Description=Aireward-LLM Hardware Telemetry & Strata Node Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/funboy
+ExecStart=/usr/bin/python3 /home/funboy/.local/bin/aireward-node-agent.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

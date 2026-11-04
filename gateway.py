@@ -37,8 +37,33 @@ QWEN_PORT = 18562
 PRIMARY_PORT = 8081
 SECONDARY_PORT = 18561
 
+AIREWARD_HOST = "192.168.178.47"
+AIREWARD_AGENT_PORT = 8090
+AIREWARD_STRATA_PORT = 8080
+
 MODEL_DEEPSEEK_ID = "ds41-abliterated-q2-imatrix"
 MODEL_QWEN_ID = "qwen38-uncensored-gufo"
+MODEL_STRATA_QWEN_ID = "qwen38-strata-100tps"
+MODEL_STRATA_DEEPSEEK_ID = "ds41-strata-cuda"
+
+STRATA_QWEN_ALIASES = {
+    MODEL_STRATA_QWEN_ID,
+    "qwen-strata",
+    "strata-qwen",
+    "qwen38-strata",
+    "qwen3.8-flash-next-iq3_s",
+    "qwen-100tps",
+    "qwen-rtx3090",
+}
+
+STRATA_DEEPSEEK_ALIASES = {
+    MODEL_STRATA_DEEPSEEK_ID,
+    "ds41-strata",
+    "strata-ds41",
+    "deepseek-strata",
+    "deepseek-v4.1-flash-ist-das-2.00bpw",
+    "deepseek-rtx3090",
+}
 
 class DownstreamClientDisconnected(Exception):
     pass
@@ -76,7 +101,23 @@ CLUSTER_TELEMETRY = {
         "ram": {"used_gb": 102.5, "total_gb": 122.2, "free_gb": 19.7, "pct": 84},
         "disk": {"used_gb": 1443.9, "total_gb": 1831.7, "free_gb": 294.7, "pct": 79}
     },
+    "aireward": {
+        "hostname": "aireward-llm",
+        "role": "CUDA MoE Accelerator (RTX 3090)",
+        "ip": "192.168.178.47",
+        "status": "online",
+        "alert_level": "healthy",
+        "temps": {"cpu_c": 45.0, "gpu_c": 52.0, "nvme_c": 42.0},
+        "gpu": {"name": "NVIDIA GeForce RTX 3090", "load_pct": 0, "sclk_mhz": 1800, "power_w": 35.0, "vram_used_gb": 22.4, "vram_total_gb": 24.0, "fan_pct": 50, "arch": "GA102 / Ampere 24GB"},
+        "cooling": {"gpu_fan_pct": 50, "profile": "Dual Axial Dynamic"},
+        "cpu": {"model": "Intel Core i5-13500 (14C/20T)", "temp_c": 45.0},
+        "ram": {"used_gb": 57.4, "total_gb": 61.6, "free_gb": 4.2, "pct": 93},
+        "disk": {"used_gb": 604.7, "total_gb": 1829.7, "free_gb": 1125.0, "pct": 33},
+        "engine": {"name": "strata", "status": "running", "active_model": "qwen3.8-flash-next-iq3_s", "port": 8080, "models": []},
+        "ping_ms": 0.5
+    },
     "tb_link": {"rtt_ms": 0.42, "status": "active", "bandwidth": "40 Gbps USB4 Mesh", "ip_mesh": "10.55.0.0/30"},
+    "lan_link": {"rtt_ms": 0.52, "status": "active", "bandwidth": "1 Gbps Ethernet LAN", "target": "192.168.178.47"},
     "live_speed": {"decode_tps": 50.8, "prefill_tps": 442.0, "ttft_ms": 185, "dspark_acc": 48.9},
     "last_updated": 0.0
 }
@@ -160,9 +201,9 @@ def record_request_metric(
     save_stats(stats)
 
 
-def is_port_ready(port: int, model_sub: str) -> bool:
+def is_port_ready(port: int, model_sub: str, host: str = "127.0.0.1") -> bool:
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn = http.client.HTTPConnection(host, port, timeout=2)
         conn.request("GET", "/v1/models")
         resp = conn.getresponse()
         data = resp.read().decode("utf-8", errors="ignore")
@@ -178,6 +219,40 @@ def get_currently_active_model() -> str | None:
     if is_port_ready(QWEN_PORT, "qwen"):
         return "qwen"
     return None
+
+
+def get_aireward_active_model() -> str | None:
+    try:
+        eng = CLUSTER_TELEMETRY.get("aireward", {}).get("engine", {})
+        if eng.get("status") == "running":
+            mod = eng.get("active_model", "")
+            if "qwen" in mod.lower():
+                return "qwen38-strata"
+            if "deepseek" in mod.lower():
+                return "ds41-strata"
+    except Exception:
+        pass
+    return None
+
+
+def switch_aireward_model(target: str, max_wait_sec: float = 60.0) -> tuple[bool, str, int]:
+    try:
+        conn = http.client.HTTPConnection(AIREWARD_HOST, AIREWARD_AGENT_PORT, timeout=max_wait_sec)
+        endpoint = "/stop" if target == "stop" else "/switch"
+        body = json.dumps({"model": target}).encode("utf-8")
+        conn.request("POST", endpoint, body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp_body = resp.read().decode("utf-8")
+        conn.close()
+        try:
+            parsed = json.loads(resp_body)
+            msg = parsed.get("message", resp_body)
+            ok = parsed.get("ok", resp.status == 200)
+            return ok, msg, resp.status
+        except Exception:
+            return resp.status == 200, resp_body, resp.status
+    except Exception as e:
+        return False, f"Errore connessione ad aireward-llm ({AIREWARD_HOST}:{AIREWARD_AGENT_PORT}): {e}", 503
 
 
 @contextlib.contextmanager
@@ -258,6 +333,32 @@ def update_cluster_telemetry():
                 CLUSTER_TELEMETRY["node02"]["status"] = "online"
             else:
                 CLUSTER_TELEMETRY["node02"]["status"] = "offline"
+
+            # Probe Aireward-LLM node agent over LAN
+            try:
+                conn_air = http.client.HTTPConnection(AIREWARD_HOST, AIREWARD_AGENT_PORT, timeout=1.5)
+                conn_air.request("GET", "/telemetry")
+                resp_air = conn_air.getresponse()
+                if resp_air.status == 200:
+                    air_data = json.loads(resp_air.read().decode("utf-8"))
+                    CLUSTER_TELEMETRY["aireward"].update(air_data)
+                    CLUSTER_TELEMETRY["aireward"]["status"] = "online"
+                    CLUSTER_TELEMETRY["lan_link"]["status"] = "active"
+                else:
+                    CLUSTER_TELEMETRY["aireward"]["status"] = "degraded"
+                conn_air.close()
+            except Exception:
+                CLUSTER_TELEMETRY["aireward"]["status"] = "offline"
+                CLUSTER_TELEMETRY["lan_link"]["status"] = "offline"
+
+            # LAN ping to Aireward
+            res_air = subprocess.run(["ping", "-c", "1", "-W", "1", AIREWARD_HOST], capture_output=True, text=True)
+            if res_air.returncode == 0:
+                for line in res_air.stdout.splitlines():
+                    if "rtt min/avg" in line or "round-trip" in line:
+                        air_ping = float(line.split("/")[4])
+                        CLUSTER_TELEMETRY["lan_link"]["rtt_ms"] = air_ping
+                        CLUSTER_TELEMETRY["aireward"]["ping_ms"] = air_ping
 
             # Thunderbolt link ping
             res = subprocess.run(["ping", "-c", "1", "-W", "1", "10.55.0.2"], capture_output=True, text=True)
@@ -399,17 +500,32 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
         # 2. Telemetry API for the Dashboard
         if path == "/api/telemetry":
-            active = get_currently_active_model()
+            active_strix = get_currently_active_model()
+            active_air = get_aireward_active_model()
             with STATE_LOCK:
                 busy = IN_FLIGHT_COUNT
                 busy_mod = IN_FLIGHT_MODEL
             stats = load_stats()
 
             # Dynamic live speeds
-            speed = {"decode_tps": 51.4 if active == "deepseek" else 42.4, "prefill_tps": 442.0 if active == "deepseek" else 177.0, "ttft_ms": 185 if active == "deepseek" else 280, "dspark_acc": 49.2}
+            dec_tps = 51.4 if active_strix == "deepseek" else 42.4
+            pre_tps = 442.0 if active_strix == "deepseek" else 177.0
+            ttft = 185 if active_strix == "deepseek" else 280
+            if active_air == "qwen38-strata":
+                dec_tps = 100.0
+                pre_tps = 97.0
+                ttft = 120
+            elif active_air == "ds41-strata":
+                dec_tps = 65.0
+                pre_tps = 110.0
+                ttft = 150
+
+            speed = {"decode_tps": dec_tps, "prefill_tps": pre_tps, "ttft_ms": ttft, "dspark_acc": 49.2}
 
             data = {
-                "active_model": active,
+                "active_model": active_strix or active_air,
+                "active_strix": active_strix,
+                "active_aireward": active_air,
                 "in_flight": busy,
                 "busy_model": busy_mod,
                 "telemetry": CLUSTER_TELEMETRY,
@@ -422,11 +538,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
         # 3. Health & Readiness
         if path == "/health":
-            active = get_currently_active_model()
+            active_strix = get_currently_active_model()
+            active_air = get_aireward_active_model()
+            has_engine = bool(active_strix or active_air)
             self.send_json(200, {
-                "status": "healthy" if active else "standby",
-                "ok": bool(active),
-                "active_model": active
+                "status": "healthy" if has_engine else "standby",
+                "ok": has_engine,
+                "active_model": active_strix or active_air,
+                "active_strix": active_strix,
+                "active_aireward": active_air
             })
             return
 
@@ -452,7 +572,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "object": "model",
                     "created": 1793220000,
                     "owned_by": "customendpoint",
-                    "name": "Qwen 3.8 Flash Next Uncensored Gufo",
+                    "name": "Qwen 3.8 Flash Next Uncensored Gufo (Dual Strix)",
                     "context_length": 187392,
                     "max_input_tokens": 187392,
                     "max_output_tokens": 8192
@@ -463,6 +583,26 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "created": 1793220000,
                     "owned_by": "customendpoint",
                     "name": "DeepSeek V4.1 Flash",
+                    "context_length": 131072,
+                    "max_input_tokens": 124928,
+                    "max_output_tokens": 6144
+                },
+                {
+                    "id": MODEL_STRATA_QWEN_ID,
+                    "object": "model",
+                    "created": 1793760000,
+                    "owned_by": "aireward-llm",
+                    "name": "Qwen 3.8 Flash Next Strata IQ3_S (RTX 3090 @ 100 tok/s)",
+                    "context_length": 131072,
+                    "max_input_tokens": 124928,
+                    "max_output_tokens": 8192
+                },
+                {
+                    "id": MODEL_STRATA_DEEPSEEK_ID,
+                    "object": "model",
+                    "created": 1793760000,
+                    "owned_by": "aireward-llm",
+                    "name": "DeepSeek V4.1 Flash IST-DAS 2.00bpw Strata CUDA (RTX 3090)",
                     "context_length": 131072,
                     "max_input_tokens": 124928,
                     "max_output_tokens": 6144
@@ -480,7 +620,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw_body = self.rfile.read(length)
 
-        # OpenAI Chat Completions endpoint (only authorized endpoint)
+        # 1. API Switch endpoint
+        if path == "/api/switch":
+            try:
+                payload = json.loads(raw_body)
+            except Exception:
+                self.send_json_error(400, "Payload JSON non valido")
+                return
+
+            target = payload.get("target") or payload.get("model") or ""
+            target = str(target).strip().lower()
+
+            # Aireward switch
+            if target in ("aireward-qwen", "strata-qwen", "qwen-strata", "qwen38-strata") or (payload.get("target") == "aireward" and "qwen" in str(payload.get("model", "")).lower()):
+                ok, msg, status_code = switch_aireward_model("qwen")
+                self.send_json(status_code, {"ok": ok, "message": msg, "target": "aireward", "model": "qwen"})
+                return
+            elif target in ("aireward-deepseek", "strata-deepseek", "ds41-strata", "deepseek-strata") or (payload.get("target") == "aireward" and "deepseek" in str(payload.get("model", "")).lower()):
+                ok, msg, status_code = switch_aireward_model("deepseek")
+                self.send_json(status_code, {"ok": ok, "message": msg, "target": "aireward", "model": "deepseek"})
+                return
+            elif target in ("aireward-stop", "stop-aireward") or (payload.get("target") == "aireward" and str(payload.get("model", "")).lower() == "stop"):
+                ok, msg, status_code = switch_aireward_model("stop")
+                self.send_json(status_code, {"ok": ok, "message": msg, "target": "aireward", "model": "stop"})
+                return
+
+            # Strix Halo Cluster switch
+            strix_target = "deepseek" if "deepseek" in target or "ds41" in target else "qwen"
+            ok, msg, status_code = acquire_model(strix_target)
+            self.send_json(status_code, {"ok": ok, "message": msg, "target": "strix", "model": strix_target})
+            return
+
+        # 2. OpenAI Chat Completions endpoint (only authorized endpoint)
         if path != "/v1/chat/completions":
             self.send_json_error(404, f"Endpoint {path} not supported")
             return
@@ -495,46 +666,103 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json_error(400, "Payload JSON non valido")
             return
 
-        req_model = payload.get("model", "")
+        req_model_raw = payload.get("model", "")
+        req_model = str(req_model_raw).strip().lower()
         server_port = self.server.server_port
+
+        # Target routing
+        is_strata = False
         target = "deepseek"
-        if req_model == MODEL_QWEN_ID or (server_port == SECONDARY_PORT and req_model != MODEL_DEEPSEEK_ID):
-            target = "qwen"
+        upstream_host = "127.0.0.1"
+        upstream_port = DEEPSEEK_PORT
 
-        # Prepare request payload
-        if target == "deepseek":
-            upstream_port = DEEPSEEK_PORT
-            payload["context_tokens"] = 131072
-            payload.setdefault("max_tokens", 6144)
-            payload["reasoning_effort"] = "xhigh"
-            tpl = payload.get("chat_template_kwargs") or {}
-            tpl["enable_thinking"] = True
-            tpl["reasoning_effort"] = "xhigh"
-            payload["chat_template_kwargs"] = tpl
+        if req_model in STRATA_QWEN_ALIASES:
+            is_strata = True
+            target = "aireward-qwen"
+            upstream_host = AIREWARD_HOST
+            upstream_port = AIREWARD_STRATA_PORT
+            payload["model"] = "qwen3.8-flash-next-iq3_s"
+
+        elif req_model in STRATA_DEEPSEEK_ALIASES:
+            is_strata = True
+            target = "aireward-deepseek"
+            upstream_host = AIREWARD_HOST
+            upstream_port = AIREWARD_STRATA_PORT
             payload["model"] = "deepseek-v4.1-flash"
-            if payload.get("stream", False):
-                stream_options = payload.get("stream_options", {})
-                if not isinstance(stream_options, dict):
-                    self.send_json_error(400, "stream_options deve essere un oggetto JSON")
-                    return
-                stream_options["include_usage"] = True
-                payload["stream_options"] = stream_options
-        else:
-            upstream_port = QWEN_PORT
-            payload.setdefault("max_tokens", 8192)
 
-        # Concurrency & Arbitration
-        ok, msg, status_code = acquire_model(target, max_wait_sec=45.0)
-        if not ok:
-            self.send_json_error(status_code, msg, "cluster_arbitration_error")
-            return
+        elif req_model == MODEL_QWEN_ID or (server_port == SECONDARY_PORT and req_model != MODEL_DEEPSEEK_ID):
+            target = "qwen"
+            upstream_host = "127.0.0.1"
+            upstream_port = QWEN_PORT
+        else:
+            # Default to Strix DeepSeek
+            target = "deepseek"
+            upstream_host = "127.0.0.1"
+            upstream_port = DEEPSEEK_PORT
 
         has_concurrency_lock = False
-        if target == "deepseek":
-            if not DEEPSEEK_CONCURRENCY_LOCK.acquire(timeout=60.0):
-                self.send_json_error(429, "Cluster occupato: un'altra richiesta su DeepSeek è in elaborazione. Riprova tra poco.", "cluster_busy")
+
+        if is_strata:
+            eng_status = CLUSTER_TELEMETRY.get("aireward", {}).get("engine", {})
+            air_status = eng_status.get("status")
+            air_active = eng_status.get("active_model") or ""
+            expected_mod = "qwen" if target == "aireward-qwen" else "deepseek"
+            upstream_port = eng_status.get("port") or (8085 if expected_mod == "deepseek" else AIREWARD_STRATA_PORT)
+
+            if air_status != "running" or expected_mod not in str(air_active).lower():
+                # Attempt to switch/start Strata engine on Aireward
+                ok_sw, msg_sw, code_sw = switch_aireward_model(expected_mod)
+                if not ok_sw:
+                    self.send_json_error(code_sw, f"Strata engine non pronto su aireward-llm: {msg_sw}", "engine_startup_error")
+                    return
+                # Wait briefly for startup
+                t_wait_start = time.time()
+                while time.time() - t_wait_start < 25.0:
+                    current_port = CLUSTER_TELEMETRY.get("aireward", {}).get("engine", {}).get("port") or upstream_port
+                    if is_port_ready(current_port, expected_mod, host=AIREWARD_HOST):
+                        upstream_port = current_port
+                        break
+                    time.sleep(1.0)
+                if not is_port_ready(upstream_port, expected_mod, host=AIREWARD_HOST):
+                    self.send_json_error(503, f"Strata engine in fase di caricamento su aireward-llm per {expected_mod}. Riprova tra 10-15 secondi.", "engine_loading")
+                    return
+
+            # Keep parameters safe for Strata
+            payload.setdefault("max_tokens", 4096)
+        else:
+            # Prepare request payload for Strix DeepSeek
+            if target == "deepseek":
+                upstream_port = DEEPSEEK_PORT
+                payload["context_tokens"] = 131072
+                payload.setdefault("max_tokens", 6144)
+                payload["reasoning_effort"] = "xhigh"
+                tpl = payload.get("chat_template_kwargs") or {}
+                tpl["enable_thinking"] = True
+                tpl["reasoning_effort"] = "xhigh"
+                payload["chat_template_kwargs"] = tpl
+                payload["model"] = "deepseek-v4.1-flash"
+                if payload.get("stream", False):
+                    stream_options = payload.get("stream_options", {})
+                    if not isinstance(stream_options, dict):
+                        self.send_json_error(400, "stream_options deve essere un oggetto JSON")
+                        return
+                    stream_options["include_usage"] = True
+                    payload["stream_options"] = stream_options
+            else:
+                upstream_port = QWEN_PORT
+                payload.setdefault("max_tokens", 8192)
+
+            # Concurrency & Arbitration for Strix
+            ok, msg, status_code = acquire_model(target, max_wait_sec=45.0)
+            if not ok:
+                self.send_json_error(status_code, msg, "cluster_arbitration_error")
                 return
-            has_concurrency_lock = True
+
+            if target == "deepseek":
+                if not DEEPSEEK_CONCURRENCY_LOCK.acquire(timeout=60.0):
+                    self.send_json_error(429, "Cluster occupato: un'altra richiesta su DeepSeek è in elaborazione. Riprova tra poco.", "cluster_busy")
+                    return
+                has_concurrency_lock = True
 
         try:
             forward_body = json.dumps(payload).encode("utf-8")
@@ -542,8 +770,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             t_start = time.monotonic()
             user_name, client_app = self.get_client_info()
 
-            total_completion_tokens: int | None = 0 if target == "qwen" else None
-            prompt_tokens: int | None = 20 if target == "qwen" else None
+            total_completion_tokens: int | None = 0 if (target == "qwen" or is_strata) else None
+            prompt_tokens: int | None = 20 if (target == "qwen" or is_strata) else None
             first_generation_at: float | None = None
             engine_reported_tps: float | None = None
             stream_buffer = b""
@@ -551,7 +779,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             with request_in_flight_scope(target):
                 conn: http.client.HTTPConnection | None = None
                 try:
-                    conn = http.client.HTTPConnection("127.0.0.1", upstream_port, timeout=600)
+                    conn = http.client.HTTPConnection(upstream_host, upstream_port, timeout=600)
                     headers = {
                         "Content-Type": "application/json",
                         "Accept": self.headers.get("Accept", "*/*"),
@@ -600,7 +828,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                             "id": last_event_id or "chatcmpl-think-close",
                                             "object": "chat.completion.chunk",
                                             "created": int(time.time()),
-                                            "model": req_model or "deepseek-v4.1-flash",
+                                            "model": req_model_raw or "deepseek-v4.1-flash",
                                             "choices": [{"index": 0, "delta": {"content": "\n</think>\n\n"}, "logprobs": None, "finish_reason": None}]
                                         }
                                         send_http_chunk(b"data: " + json.dumps(close_event, ensure_ascii=False).encode("utf-8") + b"\n\n")
@@ -619,9 +847,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                     continue
 
                                 last_event_id = event.get("id")
-                                if req_model and req_model != "deepseek-v4.1-flash":
-                                    event["model"] = req_model
+                                if req_model_raw:
+                                    event["model"] = req_model_raw
 
+                                # Usage from upstream (Strix or Strata)
                                 usage = event.get("usage")
                                 if isinstance(usage, dict):
                                     prompt = usage.get("prompt_tokens")
@@ -631,6 +860,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                     if isinstance(completion, int) and not isinstance(completion, bool) and completion >= 0:
                                         total_completion_tokens = completion
 
+                                # Strata timing meta
+                                timings_meta = event.get("timings", {})
+                                if isinstance(timings_meta, dict):
+                                    pred_tps = timings_meta.get("predicted_per_second")
+                                    if isinstance(pred_tps, (int, float)) and pred_tps > 0:
+                                        engine_reported_tps = round(float(pred_tps), 1)
+
+                                # Strix timing meta
                                 strix_meta = event.get("strix", {})
                                 if isinstance(strix_meta, dict):
                                     dec_tps = strix_meta.get("decode_tokens_per_second")
@@ -638,7 +875,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                         engine_reported_tps = round(float(dec_tps), 1)
 
                                 choices = event.get("choices", [])
-                                if isinstance(choices, list) and target == "deepseek":
+                                if isinstance(choices, list):
                                     for choice in choices:
                                         if not isinstance(choice, dict):
                                             continue
@@ -656,21 +893,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                                 delta["content"] = "<think>\n" + reasoning
                                             else:
                                                 delta["content"] = reasoning
-                                        elif in_thinking and (content is not None or finish == "stop"):
+                                        elif in_thinking and (content is not None or finish in ("stop", "length")):
                                             in_thinking = False
                                             delta["content"] = "\n</think>\n\n" + (content or "")
                                             if content:
                                                 first_generation_at = first_generation_at or time.monotonic()
                                         elif content:
                                             first_generation_at = first_generation_at or time.monotonic()
-
-                                elif isinstance(choices, list) and target == "qwen":
-                                    for choice in choices:
-                                        if isinstance(choice, dict) and isinstance(choice.get("delta"), dict):
-                                            if choice["delta"].get("content"):
-                                                first_generation_at = first_generation_at or time.monotonic()
-                                                if total_completion_tokens is not None:
-                                                    total_completion_tokens += 1
+                                            if (target == "qwen" or is_strata) and total_completion_tokens is not None:
+                                                total_completion_tokens += 1
 
                                 send_http_chunk(b"data: " + json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n")
 
@@ -679,7 +910,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                 "id": last_event_id or "chatcmpl-think-close",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
-                                "model": req_model or "deepseek-v4.1-flash",
+                                "model": req_model_raw or "deepseek-v4.1-flash",
                                 "choices": [{"index": 0, "delta": {"content": "\n</think>\n\n"}, "logprobs": None, "finish_reason": None}]
                             }
                             send_http_chunk(b"data: " + json.dumps(close_event, ensure_ascii=False).encode("utf-8") + b"\n\n")
@@ -689,8 +920,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         resp_data = resp.read()
                         try:
                             parsed = json.loads(resp_data)
-                            if req_model and req_model != "deepseek-v4.1-flash":
-                                parsed["model"] = req_model
+                            if req_model_raw:
+                                parsed["model"] = req_model_raw
                             usage = parsed.get("usage", {})
                             if isinstance(usage, dict):
                                 prompt = usage.get("prompt_tokens")
@@ -700,21 +931,28 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                 if isinstance(completion, int) and not isinstance(completion, bool) and completion >= 0:
                                     total_completion_tokens = completion
 
+                            # Strata timing meta
+                            timings_meta = parsed.get("timings", {})
+                            if isinstance(timings_meta, dict):
+                                pred_tps = timings_meta.get("predicted_per_second")
+                                if isinstance(pred_tps, (int, float)) and pred_tps > 0:
+                                    engine_reported_tps = round(float(pred_tps), 1)
+
                             strix_meta = parsed.get("strix", {})
                             if isinstance(strix_meta, dict):
                                 dec_tps = strix_meta.get("decode_tokens_per_second")
                                 if isinstance(dec_tps, (int, float)) and dec_tps > 0:
                                     engine_reported_tps = round(float(dec_tps), 1)
 
-                            if target == "deepseek":
-                                for choice in parsed.get("choices", []):
-                                    if isinstance(choice, dict):
-                                        msg = choice.get("message", {})
-                                        if isinstance(msg, dict):
-                                            reasoning = msg.get("reasoning_content")
-                                            content = msg.get("content", "")
-                                            if reasoning and not content.startswith("<think>"):
-                                                msg["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
+                            # Handle reasoning_content for any model
+                            for choice in parsed.get("choices", []):
+                                if isinstance(choice, dict):
+                                    msg = choice.get("message", {})
+                                    if isinstance(msg, dict):
+                                        reasoning = msg.get("reasoning_content")
+                                        content = msg.get("content") or ""
+                                        if reasoning and not content.startswith("<think>"):
+                                            msg["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
 
                             resp_data = json.dumps(parsed, ensure_ascii=False).encode("utf-8")
                         except Exception as e:
@@ -735,11 +973,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     t_duration = max(0.05, time.monotonic() - t_start)
                     rate_start = first_generation_at if is_stream and first_generation_at is not None else t_start
                     rate_duration = max(0.05, time.monotonic() - rate_start)
-                    if target == "qwen" and total_completion_tokens == 0:
-                        total_completion_tokens = max(5, int(t_duration * 42))
+                    if (target == "qwen" or is_strata) and total_completion_tokens == 0:
+                        total_completion_tokens = max(5, int(t_duration * (100 if is_strata else 42)))
                     elif target == "deepseek" and total_completion_tokens is None:
                         print("[GATEWAY] Upstream response omitted completion-token usage; token and TPS metrics unavailable.", file=sys.stderr, flush=True)
-                    if target == "qwen":
+                    if target == "qwen" or is_strata:
                         rate_duration = t_duration
 
                     final_tps = engine_reported_tps if engine_reported_tps else (round(total_completion_tokens / rate_duration, 1) if total_completion_tokens and rate_duration > 0 else None)
@@ -747,7 +985,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     # Record metrics asynchronously (no IP or geolocation stored)
                     threading.Thread(
                         target=record_request_metric,
-                        args=(req_model or target, prompt_tokens, total_completion_tokens, t_duration, rate_duration, user_name, client_app, final_tps),
+                        args=(req_model_raw or target, prompt_tokens, total_completion_tokens, t_duration, rate_duration, user_name, client_app, final_tps),
                         daemon=True,
                     ).start()
 
@@ -760,7 +998,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         conn.close()
                     if not self.wfile.closed:
                         try:
-                            self.send_json_error(502, f"Errore motore cluster su porta {upstream_port}: {e}")
+                            self.send_json_error(502, f"Errore motore ({upstream_host}:{upstream_port}): {e}")
                         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                             print("[GATEWAY] Client disconnected while returning upstream error.", flush=True)
         finally:

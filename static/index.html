@@ -28,9 +28,9 @@
       </div>
       <div class="hud-chassis-tag">
         <span class="tag-bracket">[</span>
-        <span class="tag-text">CLUSTER_ID: DUAL_STRIX_GFX1151</span>
+        <span class="tag-text">CLUSTER_ID: HYBRID_TRINITY_GFX1151_GA102</span>
         <span class="tag-sep">|</span>
-        <span class="tag-text">BACKPLANE: 40Gbps USB4 MESH</span>
+        <span class="tag-text">BACKPLANE: 40Gbps USB4 + 1Gbps LAN MESH</span>
         <span class="tag-bracket">]</span>
       </div>
     </div>
@@ -148,24 +148,28 @@
               <span class="wf-flow-pill">40Gbps USB4</span>
             </div>
 
-            <!-- Stage 3: Dual Node Cluster -->
+            <!-- Stage 3: Tri-Node Hybrid Cluster -->
             <div class="wf-node" id="wf-cluster">
               <div class="wf-node-header">
                 <span class="wf-dot"></span>
-                <span class="wf-name">03. DUAL STRIX HALO</span>
+                <span class="wf-name">03. TRI-NODE CLUSTER</span>
               </div>
               <div class="wf-node-body">
                 <div class="wf-cluster-nodes">
                   <div class="mini-cluster-chip">
                     <span class="chip-dot"></span>
-                    <span>NODE 01 [RANK 0]</span>
+                    <span>NODE 01 [STRIX RANK 0]</span>
                   </div>
                   <div class="mini-cluster-chip">
                     <span class="chip-dot"></span>
-                    <span>NODE 02 [RANK 1]</span>
+                    <span>NODE 02 [STRIX RANK 1]</span>
+                  </div>
+                  <div class="mini-cluster-chip chip-nvidia">
+                    <span class="chip-dot dot-green"></span>
+                    <span>NODE 03 [AIREWARD RTX 3090]</span>
                   </div>
                 </div>
-                <div class="wf-meta">256 GB LPDDR5X · RTT 0.16ms</div>
+                <div class="wf-meta">256 GB LPDDR5X + 24 GB GDDR6X · RTT 0.16ms / 0.45ms</div>
               </div>
             </div>
 
@@ -221,22 +225,23 @@
     </section>
 
     <!-- ================================================================= -->
-    <!-- SECTION 2: DUAL-NODE HARDWARE TELEMETRY COCKPIT WITH ANALOG DIALS -->
+    <!-- SECTION 2: TRI-NODE CLUSTER HARDWARE TELEMETRY & CHASSIS INSPECTOR -->
     <!-- ================================================================= -->
     <section class="hud-panel hud-hardware-cockpit">
       <div class="panel-header-bracket">
         <div class="bracket-title">
           <span class="sec-num">SEC.02</span>
-          <span class="sec-name">DUAL STRIX HALO HARDWARE TELEMETRY & CHASSIS INSPECTOR</span>
+          <span class="sec-name">TRI-NODE CLUSTER HARDWARE TELEMETRY & CHASSIS INSPECTOR</span>
         </div>
         <div class="bracket-status">
           <span class="status-pip live"></span>
-          <span class="status-msg">ALL SENSORS NOMINAL // CONTINUOUS PROBE POLLING</span>
+          <span class="status-msg">3 NODES SYNCHRONIZED // DUAL STRIX HALO APU + AIREWARD CUDA ACCELERATOR</span>
         </div>
       </div>
 
+      <!-- Top Row: 3 Hardware Telemetry Pods -->
       <div class="cockpit-tri-layout">
-        <!-- ================= LEFT: NODE 01 TELEMETRY ================= -->
+        <!-- ================= POD 01: NODE 01 TELEMETRY ================= -->
         <div class="node-telemetry-pod" id="pod-node01">
           <div class="pod-header">
             <div class="pod-title-group">
@@ -329,65 +334,7 @@
           </div>
         </div>
 
-        <!-- ================= CENTER: VISUAL CLUSTER INSPECTION BAY ================= -->
-        <div class="cluster-inspector-pod">
-          <div class="inspector-controls">
-            <span class="inspector-title">CHASSIS & SILICON INSPECTION PORT</span>
-            <div class="inspector-switch-group">
-              <button class="insp-btn active" id="btn-view-cluster">DUAL CHASSIS VIEW</button>
-              <button class="insp-btn" id="btn-view-die">SILICON DIE BLUEPRINT</button>
-            </div>
-          </div>
-
-          <div class="inspector-display-window">
-            <img src="/static/assets/strix_halo_dual_cluster.jpg" alt="Dual Strix Halo Cluster" id="inspector-img" class="inspector-viewport-img">
-            
-            <!-- Technical Reticle Overlay -->
-            <div class="inspector-reticle">
-              <div class="hud-corner hud-c-tl"></div>
-              <div class="hud-corner hud-c-tr"></div>
-              <div class="hud-corner hud-c-bl"></div>
-              <div class="hud-corner hud-c-br"></div>
-              <div class="scan-line-sweep"></div>
-              
-              <!-- Hotspot Labels -->
-              <div class="hud-hotspot hs-node01" id="hs-node01">
-                <span class="hs-marker"></span>
-                <span class="hs-label">NODE 01 (PRIMARY)</span>
-              </div>
-              <div class="hud-hotspot hs-usb4" id="hs-usb4">
-                <span class="hs-marker"></span>
-                <span class="hs-label">40Gbps USB4 INTERCONNECT</span>
-              </div>
-              <div class="hud-hotspot hs-node02" id="hs-node02">
-                <span class="hs-marker"></span>
-                <span class="hs-label">NODE 02 (WORKER)</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- USB4 Interconnect Mesh Diagnostic Strip -->
-          <div class="interconnect-hud-banner">
-            <div class="ic-item">
-              <span class="ic-key">LINK TOPOLOGY:</span>
-              <span class="ic-val text-cyan">40 Gbps USB4 MESH</span>
-            </div>
-            <div class="ic-item">
-              <span class="ic-key">PACKET RTT:</span>
-              <span class="ic-val text-emerald" id="link-rtt-val">0.163 ms</span>
-            </div>
-            <div class="ic-item">
-              <span class="ic-key">MESH SUBNET:</span>
-              <span class="ic-val">10.55.0.0/30</span>
-            </div>
-            <div class="ic-item">
-              <span class="ic-key">STATUS:</span>
-              <span class="ic-val text-emerald">LINK NOMINAL</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- ================= RIGHT: NODE 02 TELEMETRY ================= -->
+        <!-- ================= POD 02: NODE 02 TELEMETRY ================= -->
         <div class="node-telemetry-pod" id="pod-node02">
           <div class="pod-header">
             <div class="pod-title-group">
@@ -477,6 +424,226 @@
                 <!-- Dynamically populated 20 LED pips -->
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- ================= POD 03: AIREWARD-LLM TELEMETRY ================= -->
+        <div class="node-telemetry-pod" id="pod-aireward">
+          <div class="pod-header">
+            <div class="pod-title-group">
+              <span class="pod-badge badge-nvidia">NODE 03</span>
+              <span class="pod-hostname">aireward-llm</span>
+            </div>
+            <div class="pod-role-tag">[ CUDA ACCEL · RTX 3090 24GB ]</div>
+            <span class="alert-pill-retro alert-healthy" id="aireward-alert-pill">HEALTHY</span>
+          </div>
+
+          <!-- Analog Dials Row -->
+          <div class="dials-row">
+            <!-- Dial 1: GPU Temp -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-aireward-gpu-temp" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">GPU TEMP</span>
+                <span class="dial-val" id="aireward-gpu-temp-val">56.0°C</span>
+              </div>
+            </div>
+
+            <!-- Dial 2: Core Temp -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-aireward-cpu-temp" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">CPU TCTL</span>
+                <span class="dial-val" id="aireward-cpu-temp-val">45.0°C</span>
+              </div>
+            </div>
+
+            <!-- Dial 3: GPU Power -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-aireward-power" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">GPU POWER</span>
+                <span class="dial-val" id="aireward-power-val">158.0 W</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Secondary Sensors Grid -->
+          <div class="sensor-readout-strip">
+            <div class="strip-item">
+              <span class="strip-k">NVIDIA CORE SCLK:</span>
+              <span class="strip-v text-cyan" id="aireward-sclk">1950 MHz</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">CUDA BUSY LOAD:</span>
+              <span class="strip-v text-emerald" id="aireward-gpu-load">62%</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">AXIAL FAN SPEED:</span>
+              <span class="strip-v" id="aireward-fan-val">65%</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">NVME PRO SSD:</span>
+              <span class="strip-v" id="aireward-nvme-temp">57.9°C</span>
+            </div>
+          </div>
+
+          <!-- Segmented LED VU-Meters for VRAM & RAM -->
+          <div class="vu-meters-block">
+            <!-- VRAM Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">RTX 3090 VRAM (24GB GDDR6X)</span>
+                <span class="vu-stats" id="aireward-vram-text">22.4 / 24.0 GiB (93%)</span>
+              </div>
+              <div class="vu-led-bar" id="aireward-vram-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+
+            <!-- RAM Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">DDR5 SYSTEM MEMORY</span>
+                <span class="vu-stats" id="aireward-ram-text">57.4 / 61.6 GiB (93%)</span>
+              </div>
+              <div class="vu-led-bar" id="aireward-ram-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lower Grid: Visual Inspection Port + Interactive Engine Arbitration Matrix -->
+      <div class="cockpit-lower-grid">
+        <!-- ================= VISUAL CLUSTER INSPECTION BAY ================= -->
+        <div class="cluster-inspector-pod">
+          <div class="inspector-controls">
+            <span class="inspector-title">CHASSIS & SILICON INSPECTION PORT</span>
+            <div class="inspector-switch-group">
+              <button class="insp-btn active" id="btn-view-cluster">DUAL CHASSIS VIEW</button>
+              <button class="insp-btn" id="btn-view-die">SILICON DIE BLUEPRINT</button>
+            </div>
+          </div>
+
+          <div class="inspector-display-window">
+            <img src="/static/assets/strix_halo_dual_cluster.jpg" alt="Dual Strix Halo Cluster" id="inspector-img" class="inspector-viewport-img">
+            
+            <!-- Technical Reticle Overlay -->
+            <div class="inspector-reticle">
+              <div class="hud-corner hud-c-tl"></div>
+              <div class="hud-corner hud-c-tr"></div>
+              <div class="hud-corner hud-c-bl"></div>
+              <div class="hud-corner hud-c-br"></div>
+              <div class="scan-line-sweep"></div>
+              
+              <!-- Hotspot Labels -->
+              <div class="hud-hotspot hs-node01" id="hs-node01">
+                <span class="hs-marker"></span>
+                <span class="hs-label">NODE 01 (PRIMARY)</span>
+              </div>
+              <div class="hud-hotspot hs-usb4" id="hs-usb4">
+                <span class="hs-marker"></span>
+                <span class="hs-label">40Gbps USB4 INTERCONNECT</span>
+              </div>
+              <div class="hud-hotspot hs-node02" id="hs-node02">
+                <span class="hs-marker"></span>
+                <span class="hs-label">NODE 02 (WORKER)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dual Interconnect Diagnostic Strip (USB4 Mesh + 1Gbps LAN Link) -->
+          <div class="interconnect-hud-banner">
+            <div class="ic-item">
+              <span class="ic-key">USB4 MESH:</span>
+              <span class="ic-val text-cyan">40 Gbps [10.55.0.0/30]</span>
+            </div>
+            <div class="ic-item">
+              <span class="ic-key">USB4 RTT:</span>
+              <span class="ic-val text-emerald" id="link-rtt-val">0.163 ms</span>
+            </div>
+            <div class="ic-item">
+              <span class="ic-key">LAN ACCEL:</span>
+              <span class="ic-val text-purple">192.168.178.47</span>
+            </div>
+            <div class="ic-item">
+              <span class="ic-key">LAN RTT:</span>
+              <span class="ic-val text-emerald" id="lan-rtt-val">0.450 ms</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= INTERACTIVE ENGINE ARBITRATION MATRIX ================= -->
+        <div class="cluster-control-pod">
+          <div class="pod-header">
+            <div class="pod-title-group">
+              <span class="pod-badge">CONTROL PLANE</span>
+              <span class="pod-hostname">ENGINE ARBITRATION MATRIX</span>
+            </div>
+            <span class="alert-pill-retro alert-healthy" id="control-status-pill">ONLINE</span>
+          </div>
+
+          <div class="control-matrix-grid">
+            <!-- Strix Halo Engine Controls -->
+            <div class="matrix-group">
+              <div class="matrix-group-title">
+                <span class="mg-icon">AMD</span>
+                <span>DUAL STRIX HALO CLUSTER (256GB LPDDR5X)</span>
+              </div>
+              <div class="matrix-btn-row">
+                <button class="switch-btn" id="btn-switch-strix-ds41" onclick="switchModel('strix', 'deepseek')">
+                  <span class="btn-pip" id="pip-strix-ds41"></span>
+                  <div class="btn-info">
+                    <span class="btn-title">DeepSeek V4.1 Dual TP2</span>
+                    <span class="btn-desc">Dual gfx1151 · 51.4 tok/s · Q2-iMat</span>
+                  </div>
+                </button>
+                <button class="switch-btn" id="btn-switch-strix-qwen" onclick="switchModel('strix', 'qwen')">
+                  <span class="btn-pip" id="pip-strix-qwen"></span>
+                  <div class="btn-info">
+                    <span class="btn-title">Qwen 3.8 Flash Gufo</span>
+                    <span class="btn-desc">Uncensored · 42 tok/s · 187K Ctx</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <!-- Aireward CUDA Engine Controls -->
+            <div class="matrix-group">
+              <div class="matrix-group-title">
+                <span class="mg-icon text-emerald">NV</span>
+                <span>AIREWARD-LLM ACCELERATOR (RTX 3090 + 64GB DDR5)</span>
+              </div>
+              <div class="matrix-btn-row">
+                <button class="switch-btn" id="btn-switch-air-qwen" onclick="switchModel('aireward', 'qwen')">
+                  <span class="btn-pip" id="pip-air-qwen"></span>
+                  <div class="btn-info">
+                    <span class="btn-title">Qwen 3.8 Strata IQ3_S</span>
+                    <span class="btn-desc">⚡ 100 tok/s MTP · Native CUDA + P-cores</span>
+                  </div>
+                </button>
+                <button class="switch-btn" id="btn-switch-air-ds41" onclick="switchModel('aireward', 'deepseek')">
+                  <span class="btn-pip" id="pip-air-ds41"></span>
+                  <div class="btn-info">
+                    <span class="btn-title">DeepSeek V4.1 Strata CUDA</span>
+                    <span class="btn-desc">IST-DAS 2.00bpw · Ampere 24GB</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="control-footer-status">
+            <span class="cfs-label">ACTIVE ENGINES:</span>
+            <span class="cfs-val" id="cfs-active-summary">STRIX: STANDBY | AIREWARD: STANDBY</span>
           </div>
         </div>
       </div>

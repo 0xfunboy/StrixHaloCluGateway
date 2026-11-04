@@ -584,12 +584,23 @@ function updateHUD(data) {
   // Master Active Model Banner
   const modelTitle = document.getElementById('active-model-title');
   if (modelTitle) {
-    if (data.active_model === 'deepseek') {
+    const strixMod = data.active_strix;
+    const airMod = data.active_aireward;
+    if (strixMod && airMod) {
+      modelTitle.textContent = `${strixMod.toUpperCase()} [STRIX] + ${airMod.toUpperCase()} [AIR]`;
+      modelTitle.className = 'pill-value text-cyan';
+    } else if (data.active_model === 'deepseek') {
       modelTitle.textContent = 'DEEPSEEK V4.1 DUAL TP2';
       modelTitle.className = 'pill-value text-cyan';
     } else if (data.active_model === 'qwen') {
       modelTitle.textContent = 'QWEN 3.8 FLASH NEXT';
       modelTitle.className = 'pill-value text-purple';
+    } else if (airMod === 'qwen38-strata') {
+      modelTitle.textContent = 'STRATA QWEN @ 100 TPS';
+      modelTitle.className = 'pill-value text-emerald';
+    } else if (airMod === 'ds41-strata') {
+      modelTitle.textContent = 'STRATA DEEPSEEK CUDA';
+      modelTitle.className = 'pill-value text-cyan';
     } else {
       modelTitle.textContent = 'STANDBY // READY';
       modelTitle.className = 'pill-value text-amber';
@@ -614,14 +625,23 @@ function updateHUD(data) {
   if (data.telemetry) {
     const n1 = data.telemetry.node01;
     const n2 = data.telemetry.node02;
+    const air = data.telemetry.aireward;
     const tb = data.telemetry.tb_link;
+    const lan = data.telemetry.lan_link;
 
     if (n1) updateNodePod('node01', n1);
     if (n2) updateNodePod('node02', n2);
+    if (air) updateAirewardPod(air);
     if (tb) {
       setText('link-rtt-val', `${(tb.rtt_ms || 0.16).toFixed(3)} ms`);
     }
+    if (lan) {
+      setText('lan-rtt-val', `${(lan.rtt_ms || 0.45).toFixed(3)} ms`);
+    }
   }
+
+  // Update control matrix buttons active state
+  updateMatrixButtons(data);
 
   // Stats & Sessions
   if (data.stats) {
@@ -630,6 +650,115 @@ function updateHUD(data) {
     }
     renderTokensChart(data.stats.daily_tokens || {});
     renderSessionsTable(data.stats.recent_sessions || []);
+  }
+}
+
+function updateMatrixButtons(data) {
+  const strixDs = document.getElementById('btn-switch-strix-ds41');
+  const strixQw = document.getElementById('btn-switch-strix-qwen');
+  const airQw = document.getElementById('btn-switch-air-qwen');
+  const airDs = document.getElementById('btn-switch-air-ds41');
+
+  if (strixDs) strixDs.classList.toggle('active', data.active_strix === 'deepseek');
+  if (strixQw) strixQw.classList.toggle('active', data.active_strix === 'qwen');
+  if (airQw) airQw.classList.toggle('active', data.active_aireward === 'qwen38-strata');
+  if (airDs) airDs.classList.toggle('active', data.active_aireward === 'ds41-strata');
+
+  const summary = document.getElementById('cfs-active-summary');
+  if (summary) {
+    const s1 = data.active_strix ? data.active_strix.toUpperCase() : 'STANDBY';
+    const s2 = data.active_aireward ? data.active_aireward.toUpperCase() : 'STANDBY';
+    summary.textContent = `STRIX: ${s1} | AIREWARD: ${s2}`;
+  }
+}
+
+async function switchModel(target, model) {
+  const pill = document.getElementById('control-status-pill');
+  const summary = document.getElementById('cfs-active-summary');
+  if (pill) {
+    pill.className = 'alert-pill-retro alert-warn';
+    pill.textContent = 'SWITCHING...';
+  }
+  if (summary) {
+    summary.textContent = `SWITCHING ${target.toUpperCase()} -> ${model.toUpperCase()}...`;
+  }
+
+  const btnId = target === 'strix' 
+    ? (model === 'deepseek' ? 'btn-switch-strix-ds41' : 'btn-switch-strix-qwen')
+    : (model === 'deepseek' ? 'btn-switch-air-ds41' : 'btn-switch-air-qwen');
+  const btn = document.getElementById(btnId);
+  if (btn) btn.classList.add('loading');
+
+  try {
+    const res = await fetch('/api/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, model })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (pill) {
+        pill.className = 'alert-pill-retro alert-healthy';
+        pill.textContent = 'SWITCH OK';
+      }
+    } else {
+      if (pill) {
+        pill.className = 'alert-pill-retro alert-crit';
+        pill.textContent = 'SWITCH ERR';
+      }
+    }
+  } catch (err) {
+    console.error('Switch error:', err);
+    if (pill) {
+      pill.className = 'alert-pill-retro alert-crit';
+      pill.textContent = 'COMM ERR';
+    }
+  } finally {
+    if (btn) btn.classList.remove('loading');
+    setTimeout(fetchTelemetry, 1500);
+  }
+}
+
+function updateAirewardPod(nodeData) {
+  const temps = nodeData.temps || {};
+  const gpu = nodeData.gpu || {};
+  const ram = nodeData.ram || {};
+  const cpu = nodeData.cpu || {};
+
+  // 1. Digital Values
+  setText('aireward-gpu-temp-val', `${temps.gpu_c ? temps.gpu_c.toFixed(1) : 56.0}°C`);
+  setText('aireward-cpu-temp-val', `${cpu.temp_c || temps.cpu_c ? (cpu.temp_c || temps.cpu_c).toFixed(1) : 45.0}°C`);
+  setText('aireward-power-val', `${gpu.power_w ? gpu.power_w.toFixed(1) : 158.0} W`);
+
+  setText('aireward-sclk', `${gpu.sclk_mhz || 1950} MHz`);
+  setText('aireward-gpu-load', `${gpu.load_pct || 0}%`);
+  setText('aireward-fan-val', `${gpu.fan_pct || 65}%`);
+  setText('aireward-nvme-temp', `${temps.nvme_c ? temps.nvme_c.toFixed(1) : 57.9}°C`);
+
+  // 2. Analog Dials
+  drawAnalogDial('dial-aireward-gpu-temp', gpu.temp_c || temps.gpu_c || 56, 20, 100, '°C', 78, 88);
+  drawAnalogDial('dial-aireward-cpu-temp', cpu.temp_c || temps.cpu_c || 45, 20, 105, '°C', 85, 95);
+  drawAnalogDial('dial-aireward-power', gpu.power_w || 158, 0, 350, 'W', 280, 330);
+
+  // 3. Segmented LED VU-Meters
+  const vramTot = gpu.vram_total_gb || 24.0;
+  const vramUsed = gpu.vram_used_gb || 0.0;
+  const vramPct = Math.min(100, Math.round((vramUsed / vramTot) * 100));
+  setText('aireward-vram-text', `${vramUsed.toFixed(1)} / ${vramTot.toFixed(1)} GiB (${vramPct}%)`);
+  renderLedBar('aireward-vram-leds', vramPct);
+
+  const ramTot = ram.total_gb || 61.6;
+  const ramUsed = ram.used_gb || 0.0;
+  const ramPct = ram.pct || Math.round((ramUsed / ramTot) * 100);
+  setText('aireward-ram-text', `${ramUsed.toFixed(1)} / ${ramTot.toFixed(1)} GiB (${ramPct}%)`);
+  renderLedBar('aireward-ram-leds', ramPct);
+
+  // 4. Alert Badge
+  const alertEl = document.getElementById('aireward-alert-pill');
+  if (alertEl) {
+    const lvl = nodeData.alert_level || 'healthy';
+    alertEl.className = `alert-pill-retro alert-${lvl}`;
+    alertEl.textContent = lvl.toUpperCase();
   }
 }
 
@@ -684,9 +813,15 @@ function renderSessionsTable(sessions) {
 
   tbody.innerHTML = sessions.slice(0, 15).map(s => {
     const isDs = (s.model || '').includes('ds41') || (s.model || '').includes('deepseek');
-    const badge = isDs 
-      ? `<span class="badge-ds">DeepSeek V4.1</span>` 
-      : `<span class="badge-qwen">Qwen 3.8</span>`;
+    const isStrata = (s.model || '').includes('strata');
+    let badge = `<span class="badge-qwen">Qwen 3.8</span>`;
+    if (isDs && isStrata) {
+      badge = `<span class="badge-ds" style="border-color:#76b900;color:#76b900">Strata DS41</span>`;
+    } else if (isDs) {
+      badge = `<span class="badge-ds">DeepSeek V4.1</span>`;
+    } else if (isStrata) {
+      badge = `<span class="badge-qwen" style="border-color:#00ff88;color:#00ff88">Strata 100tps</span>`;
+    }
 
     const userLabel = s.user || (s.client === '127.0.0.1' ? 'funboy (local)' : 'cooper');
     const appLabel = s.client_app || 'Copilot Chat';

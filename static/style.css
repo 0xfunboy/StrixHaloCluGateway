@@ -670,7 +670,7 @@ body:not(.crt-active) .crt-overlay {
    ========================================================================== */
 .cockpit-tri-layout {
   display: grid;
-  grid-template-columns: 1fr 1.35fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 1px;
   background: var(--border-line);
 }
@@ -1045,6 +1045,165 @@ body:not(.crt-active) .crt-overlay {
   font-weight: 700;
 }
 
+/* ================= LOWER GRID: CHASSIS INSPECTOR + ENGINE CONTROL PLANE ================= */
+.cockpit-lower-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 1px;
+  background: var(--border-line);
+  border-top: 1px solid var(--border-line);
+}
+
+.cluster-control-pod {
+  background: var(--bg-panel);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.control-matrix-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.matrix-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.matrix-group-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mg-icon {
+  background: var(--bg-subpod);
+  border: 1px solid var(--border-line);
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--neon-cyan);
+}
+
+.matrix-btn-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.switch-btn {
+  background: var(--bg-subpod);
+  border: 1px solid var(--border-line);
+  color: var(--text-main);
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  outline: none;
+}
+
+.switch-btn:hover {
+  background: rgba(0, 242, 254, 0.08);
+  border-color: var(--neon-cyan);
+}
+
+.switch-btn.active {
+  background: rgba(0, 255, 136, 0.12);
+  border-color: var(--neon-green);
+  box-shadow: inset 0 0 10px rgba(0, 255, 136, 0.15);
+}
+
+.btn-pip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.switch-btn.active .btn-pip {
+  background: var(--neon-green);
+  box-shadow: 0 0 8px var(--neon-green);
+}
+
+.switch-btn.loading .btn-pip {
+  background: var(--neon-amber);
+  box-shadow: 0 0 8px var(--neon-amber);
+  animation: pulse 0.7s infinite;
+}
+
+.btn-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.btn-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-desc {
+  font-size: 9px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.control-footer-status {
+  margin-top: auto;
+  border-top: 1px solid var(--border-line);
+  padding-top: 8px;
+  font-size: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cfs-label {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.cfs-val {
+  color: var(--neon-cyan);
+  font-weight: 800;
+}
+
+.badge-nvidia {
+  background: #76b900 !important;
+  color: #000 !important;
+  font-weight: 800;
+}
+
+.chip-nvidia {
+  border-color: #76b900 !important;
+}
+
+.dot-green {
+  background: #76b900 !important;
+  box-shadow: 0 0 6px #76b900 !important;
+}
+
 /* ==========================================================================
    SECTION 3: HISTORICAL PRODUCTION & LIVE INFERENCE SESSIONS
    ========================================================================== */
@@ -1257,6 +1416,9 @@ body:not(.crt-active) .crt-overlay {
     grid-template-columns: 260px 1fr 280px;
   }
   .cockpit-tri-layout {
+    grid-template-columns: 1fr;
+  }
+  .cockpit-lower-grid {
     grid-template-columns: 1fr;
   }
   .activity-complex-grid {
