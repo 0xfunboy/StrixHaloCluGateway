@@ -63,6 +63,8 @@ STRATA_DEEPSEEK_ALIASES = {
     "deepseek-strata",
     "deepseek-v4.1-flash-ist-das-2.00bpw",
     "deepseek-rtx3090",
+    "kirei-strata-cuda3090",
+    "kirei-strata",
 }
 
 class DownstreamClientDisconnected(Exception):
@@ -542,16 +544,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
             dec_tps = 51.4 if active_strix == "deepseek" else 42.4
             pre_tps = 442.0 if active_strix == "deepseek" else 177.0
             ttft = 185 if active_strix == "deepseek" else 280
+            dspark_acc = 49.2
             if active_air == "qwen38-strata":
                 dec_tps = 100.0
                 pre_tps = 97.0
                 ttft = 120
             elif active_air == "ds41-strata":
-                dec_tps = 65.0
-                pre_tps = 110.0
-                ttft = 150
+                dec_tps = 15.2
+                pre_tps = 24.5
+                ttft = 2450
+                dspark_acc = 100.0
 
-            speed = {"decode_tps": dec_tps, "prefill_tps": pre_tps, "ttft_ms": ttft, "dspark_acc": 49.2}
+            speed = {"decode_tps": dec_tps, "prefill_tps": pre_tps, "ttft_ms": ttft, "dspark_acc": dspark_acc}
 
             data = {
                 "active_model": active_strix or active_air,
@@ -633,7 +637,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "object": "model",
                     "created": 1793760000,
                     "owned_by": "aireward-llm",
-                    "name": "DeepSeek V4.1 Flash IST-DAS 2.00bpw Strata CUDA (RTX 3090)",
+                    "name": "DeepSeek V4.1 Flash Kirei-Strata CUDA (RTX 3090 @ 15 tok/s)",
                     "context_length": 131072,
                     "max_input_tokens": 124928,
                     "max_output_tokens": 6144
