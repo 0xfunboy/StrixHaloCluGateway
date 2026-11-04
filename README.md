@@ -139,7 +139,24 @@ curl -N http://127.0.0.1:8081/v1/chat/completions \
   }'
 ```
 
-### 4. Python OpenAI Client
+### 4. Admin Operator Authentication & Dynamic Model Switch
+The web HUD and all telemetry readouts are publicly viewable in **Read-Only Guest Mode**. Dynamic model switching requires **Admin Operator Authorization**:
+
+```bash
+# Verify Admin Operator Key
+curl -s -X POST http://127.0.0.1:8081/api/auth/verify \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-yed1z-cluster-..." \
+  -d '{"admin_key": "sk-yed1z-cluster-..."}'
+
+# Dynamic Model Switch (Protected - Returns HTTP 401 if unauthenticated)
+curl -s -X POST http://127.0.0.1:8081/api/switch \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-yed1z-cluster-..." \
+  -d '{"target": "strix", "model": "deepseek"}'
+```
+
+### 5. Python OpenAI Client
 ```python
 from openai import OpenAI
 
@@ -164,9 +181,11 @@ print()
 
 ## 📟 Cyber-Industrial HUD & Telemetry
 
-The gateway serves a zero-framework, retro-futuristic HUD on `http://127.0.0.1:8081/`:
+The gateway serves a zero-framework, retro-futuristic HUD on `http://127.0.0.1:8081/` (and via Cloudflare at `https://yed1z.ai`):
+- **Read-Only Public Dashboard**: Live gauges, 4D tesseract projection, and analog telemetry dials accessible to any guest without interrupting active cluster workloads.
+- **Operator Security Override**: Cyberpunk authentication modal for administrators to safely unlock live engine arbitration and model switching.
 - **Real-Time Oscilloscope & CRT Grid**: Live tokens/sec output wave render.
-- **Dual-Node Hardware Monitor**: Live temperatures, clock rates, unified RAM utilization and USB4 link bandwidth.
+- **Tri-Node Hardware Monitor**: Live temperatures, clock rates, unified RAM/VRAM utilization, NVMe thermals, and USB4/LAN mesh link status.
 - **Analog Dials**: Real-time decode gauges with warning thresholds.
 - **Session History Ledger**: Recent request telemetry, client aliases, token counts, and execution latencies.
 

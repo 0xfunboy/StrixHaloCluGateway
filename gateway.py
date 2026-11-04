@@ -417,6 +417,37 @@ class GatewayHandler(BaseHTTPRequestHandler):
         print(f"[GATEWAY:auth-fail] user={user} app={app} authorization_header={'yes' if auth else 'no'} x_api_key={'yes' if self.headers.get('x-api-key') else 'no'} query_token={'yes' if token else 'no'} token_len={len(token)}", flush=True)
         return False
 
+    def is_admin_authorized(self, payload: dict | None = None) -> bool:
+        token = ""
+        auth = self.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+        elif self.headers.get("x-api-key"):
+            token = self.headers.get("x-api-key", "").strip()
+        if not token:
+            qs = parse_qs(urlsplit(self.path).query)
+            for param in ("api_key", "key", "token", "auth", "admin_key"):
+                vals = qs.get(param)
+                if vals and vals[0].strip():
+                    token = vals[0].strip()
+                    break
+        if not token and isinstance(payload, dict):
+            token = str(payload.get("admin_key") or payload.get("key") or payload.get("token") or "").strip()
+
+        valid_keys = load_keys()
+        if token and token in valid_keys:
+            return True
+
+        if not self.is_external_request():
+            client_ip = self.client_address[0] if hasattr(self, 'client_address') else ""
+            ua = self.headers.get("User-Agent", "").lower()
+            if client_ip in ("127.0.0.1", "::1") and not ("mozilla" in ua or "chrome" in ua or "safari" in ua):
+                return True
+
+        user, app = self.get_client_info()
+        print(f"[GATEWAY:admin-auth-fail] user={user} app={app} token_provided={'yes' if token else 'no'}", flush=True)
+        return False
+
     def get_client_info(self) -> tuple[str, str]:
         # Anonymized client identification - never store or expose real IP or city/country
         ip = self.headers.get("cf-connecting-ip") or self.headers.get("x-forwarded-for") or self.address_string()
@@ -611,6 +642,27 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"object": "list", "data": models_data})
             return
 
+        # 5. Auth verification for admin session
+        if path == "/api/auth/verify":
+            token = ""
+            auth = self.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+            elif self.headers.get("x-api-key"):
+                token = self.headers.get("x-api-key", "").strip()
+            if not token:
+                qs = parse_qs(urlsplit(self.path).query)
+                for param in ("api_key", "key", "token", "auth", "admin_key"):
+                    vals = qs.get(param)
+                    if vals and vals[0].strip():
+                        token = vals[0].strip()
+                        break
+            if token and token in load_keys():
+                self.send_json(200, {"ok": True, "authenticated": True, "message": "Admin session authenticated"})
+                return
+            self.send_json_error(401, "Token o chiave amministratore non valida.", "authentication_error")
+            return
+
         self.send_json_error(404, f"Endpoint {path} not found")
 
     def do_POST(self) -> None:
@@ -620,12 +672,43 @@ class GatewayHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw_body = self.rfile.read(length)
 
+        # 0. Auth verification endpoint
+        if path == "/api/auth/verify":
+            token = ""
+            auth = self.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+            elif self.headers.get("x-api-key"):
+                token = self.headers.get("x-api-key", "").strip()
+            try:
+                payload = json.loads(raw_body) if raw_body else {}
+            except Exception:
+                payload = {}
+            if not token and isinstance(payload, dict):
+                token = str(payload.get("admin_key") or payload.get("key") or payload.get("token") or "").strip()
+            if not token:
+                qs = parse_qs(urlsplit(self.path).query)
+                for param in ("api_key", "key", "token", "auth", "admin_key"):
+                    vals = qs.get(param)
+                    if vals and vals[0].strip():
+                        token = vals[0].strip()
+                        break
+            if token and token in load_keys():
+                self.send_json(200, {"ok": True, "authenticated": True, "message": "Admin session authenticated"})
+                return
+            self.send_json_error(401, "Token o chiave amministratore non valida.", "authentication_error")
+            return
+
         # 1. API Switch endpoint
         if path == "/api/switch":
             try:
                 payload = json.loads(raw_body)
             except Exception:
                 self.send_json_error(400, "Payload JSON non valido")
+                return
+
+            if not self.is_admin_authorized(payload):
+                self.send_json_error(401, "Accesso negato: Autenticazione amministratore richiesta per il cambio modello.", "authentication_error")
                 return
 
             target = payload.get("target") or payload.get("model") or ""

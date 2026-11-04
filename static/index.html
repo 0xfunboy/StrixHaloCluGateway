@@ -588,7 +588,18 @@
               <span class="pod-badge">CONTROL PLANE</span>
               <span class="pod-hostname">ENGINE ARBITRATION MATRIX</span>
             </div>
-            <span class="alert-pill-retro alert-healthy" id="control-status-pill">ONLINE</span>
+            <div class="pod-header-right-group">
+              <div class="admin-auth-status-bar" id="admin-auth-status-bar">
+                <span class="admin-badge-pill guest" id="admin-badge-pill" title="Current session authorization level">
+                  <span class="badge-lock-icon" id="badge-lock-icon">🔒</span>
+                  <span id="badge-auth-text">READ-ONLY GUEST</span>
+                </span>
+                <button class="admin-auth-toggle-btn" id="btn-admin-auth-toggle" onclick="handleAuthToggleClick()" title="Toggle Admin Authentication">
+                  <span class="btn-bracket">[</span> <span id="btn-auth-label">🔓 UNLOCK</span> <span class="btn-bracket">]</span>
+                </button>
+              </div>
+              <span class="alert-pill-retro alert-healthy" id="control-status-pill">ONLINE</span>
+            </div>
           </div>
 
           <div class="control-matrix-grid">
@@ -599,17 +610,17 @@
                 <span>DUAL STRIX HALO CLUSTER (256GB LPDDR5X)</span>
               </div>
               <div class="matrix-btn-row">
-                <button class="switch-btn" id="btn-switch-strix-ds41" onclick="switchModel('strix', 'deepseek')">
+                <button class="switch-btn is-locked" id="btn-switch-strix-ds41" onclick="switchModel('strix', 'deepseek')">
                   <span class="btn-pip" id="pip-strix-ds41"></span>
                   <div class="btn-info">
-                    <span class="btn-title">DeepSeek V4.1 Dual TP2</span>
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-strix-ds41">🔒</span> DeepSeek V4.1 Dual TP2</span>
                     <span class="btn-desc">Dual gfx1151 · 51.4 tok/s · Q2-iMat</span>
                   </div>
                 </button>
-                <button class="switch-btn" id="btn-switch-strix-qwen" onclick="switchModel('strix', 'qwen')">
+                <button class="switch-btn is-locked" id="btn-switch-strix-qwen" onclick="switchModel('strix', 'qwen')">
                   <span class="btn-pip" id="pip-strix-qwen"></span>
                   <div class="btn-info">
-                    <span class="btn-title">Qwen 3.8 Flash Gufo</span>
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-strix-qwen">🔒</span> Qwen 3.8 Flash Gufo</span>
                     <span class="btn-desc">Uncensored · 42 tok/s · 187K Ctx</span>
                   </div>
                 </button>
@@ -623,17 +634,17 @@
                 <span>AIREWARD-LLM ACCELERATOR (RTX 3090 + 64GB DDR5)</span>
               </div>
               <div class="matrix-btn-row">
-                <button class="switch-btn" id="btn-switch-air-qwen" onclick="switchModel('aireward', 'qwen')">
+                <button class="switch-btn is-locked" id="btn-switch-air-qwen" onclick="switchModel('aireward', 'qwen')">
                   <span class="btn-pip" id="pip-air-qwen"></span>
                   <div class="btn-info">
-                    <span class="btn-title">Qwen 3.8 Strata IQ3_S</span>
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-air-qwen">🔒</span> Qwen 3.8 Strata IQ3_S</span>
                     <span class="btn-desc">⚡ 100 tok/s MTP · Native CUDA + P-cores</span>
                   </div>
                 </button>
-                <button class="switch-btn" id="btn-switch-air-ds41" onclick="switchModel('aireward', 'deepseek')">
+                <button class="switch-btn is-locked" id="btn-switch-air-ds41" onclick="switchModel('aireward', 'deepseek')">
                   <span class="btn-pip" id="pip-air-ds41"></span>
                   <div class="btn-info">
-                    <span class="btn-title">DeepSeek V4.1 Strata CUDA</span>
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-air-ds41">🔒</span> DeepSeek V4.1 Strata CUDA</span>
                     <span class="btn-desc">IST-DAS 2.00bpw · Ampere 24GB</span>
                   </div>
                 </button>
@@ -730,6 +741,58 @@
     </div>
   </footer>
 
-  <script src="/static/app.js?v=4.0"></script>
+  <!-- ================= CYBERPUNK ADMIN AUTHENTICATION MODAL ================= -->
+  <div class="admin-modal-overlay" id="admin-modal-overlay" style="display: none;">
+    <div class="admin-modal-backdrop" onclick="closeAdminModal()"></div>
+    <div class="admin-modal-box">
+      <!-- Aerospace corner reticles -->
+      <span class="modal-corner c-tl">+</span>
+      <span class="modal-corner c-tr">+</span>
+      <span class="modal-corner c-bl">+</span>
+      <span class="modal-corner c-br">+</span>
+
+      <div class="modal-header-bar">
+        <div class="modal-title-group">
+          <span class="modal-status-pip blink"></span>
+          <span class="modal-title-text">SYSTEM OVERRIDE // ADMIN AUTHENTICATION</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeAdminModal()" title="Close (Esc)">&times;</button>
+      </div>
+
+      <div class="modal-body-content">
+        <div class="modal-notice">
+          <span class="notice-icon">🔒</span>
+          <div class="notice-text">
+            <strong>RESTRICTED ARBITRATION CONTROL PLANE</strong><br>
+            Live model switching and cluster control require cryptographic operator authorization. Enter your Bearer key (<code class="mono-code">sk-yed...</code>) to unlock execution privileges.
+          </div>
+        </div>
+
+        <form id="admin-auth-form" onsubmit="event.preventDefault(); submitAdminAuth();">
+          <div class="modal-field">
+            <label for="admin-key-input" class="modal-field-label">CRYPTOGRAPHIC OPERATOR KEY:</label>
+            <div class="modal-input-container">
+              <span class="modal-input-prefix">&gt;</span>
+              <input type="password" id="admin-key-input" class="modal-input-field" placeholder="sk-yed..." autocomplete="off" spellcheck="false" required>
+              <button type="button" class="modal-visibility-btn" id="btn-toggle-key-eye" onclick="toggleKeyVisibility()" title="Show/Hide Key">👁️</button>
+            </div>
+          </div>
+
+          <div class="modal-status-msg" id="admin-modal-msg" style="display: none;"></div>
+
+          <div class="modal-actions-bar">
+            <button type="button" class="modal-btn modal-btn-cancel" onclick="closeAdminModal()">
+              <span class="btn-bracket">[</span> DISMISS <span class="btn-bracket">]</span>
+            </button>
+            <button type="submit" class="modal-btn modal-btn-confirm" id="btn-submit-auth">
+              <span class="btn-bracket">[</span> 🔓 AUTHORIZE OPERATOR <span class="btn-bracket">]</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=4.1"></script>
 </body>
 </html>

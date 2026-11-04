@@ -672,7 +672,237 @@ function updateMatrixButtons(data) {
   }
 }
 
+// ============================================================================
+// ADMIN AUTHENTICATION & ACCESS CONTROL
+// ============================================================================
+const ADMIN_STORAGE_KEY = 'yed1z_admin_token';
+let currentAdminToken = sessionStorage.getItem(ADMIN_STORAGE_KEY) || null;
+let pendingSwitchAction = null;
+
+function isAdminUnlocked() {
+  return Boolean(currentAdminToken && currentAdminToken.trim().length > 0);
+}
+
+function setAdminUnlocked(unlocked, token = null) {
+  currentAdminToken = unlocked && token ? token.trim() : null;
+  if (unlocked && currentAdminToken) {
+    sessionStorage.setItem(ADMIN_STORAGE_KEY, currentAdminToken);
+  } else {
+    sessionStorage.removeItem(ADMIN_STORAGE_KEY);
+  }
+
+  // Update Auth Badge Pill
+  const badgePill = document.getElementById('admin-badge-pill');
+  const badgeIcon = document.getElementById('badge-lock-icon');
+  const badgeText = document.getElementById('badge-auth-text');
+  const btnAuthLabel = document.getElementById('btn-auth-label');
+
+  if (badgePill) {
+    badgePill.className = `admin-badge-pill ${unlocked ? 'admin' : 'guest'}`;
+  }
+  if (badgeIcon) {
+    badgeIcon.textContent = unlocked ? '🔓' : '🔒';
+  }
+  if (badgeText) {
+    badgeText.textContent = unlocked ? 'ADMIN OPERATOR' : 'READ-ONLY GUEST';
+  }
+  if (btnAuthLabel) {
+    btnAuthLabel.textContent = unlocked ? 'LOCK' : 'UNLOCK';
+  }
+
+  // Update Switch buttons lock state and tags
+  const btnIds = [
+    { id: 'btn-switch-strix-ds41', tag: 'lock-tag-strix-ds41' },
+    { id: 'btn-switch-strix-qwen', tag: 'lock-tag-strix-qwen' },
+    { id: 'btn-switch-air-qwen', tag: 'lock-tag-air-qwen' },
+    { id: 'btn-switch-air-ds41', tag: 'lock-tag-air-ds41' }
+  ];
+
+  btnIds.forEach(({ id, tag }) => {
+    const btn = document.getElementById(id);
+    const tagEl = document.getElementById(tag);
+    if (btn) {
+      if (unlocked) {
+        btn.classList.remove('is-locked');
+      } else {
+        btn.classList.add('is-locked');
+      }
+    }
+    if (tagEl) {
+      tagEl.textContent = unlocked ? '⚡' : '🔒';
+    }
+  });
+}
+
+async function verifySavedAdminToken() {
+  const token = sessionStorage.getItem(ADMIN_STORAGE_KEY);
+  if (!token) {
+    setAdminUnlocked(false);
+    return;
+  }
+  try {
+    const res = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ admin_key: token })
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      setAdminUnlocked(true, token);
+    } else {
+      setAdminUnlocked(false);
+    }
+  } catch (e) {
+    setAdminUnlocked(false);
+  }
+}
+
+function handleAuthToggleClick() {
+  if (isAdminUnlocked()) {
+    lockAdminSession();
+  } else {
+    openAdminModal();
+  }
+}
+
+function lockAdminSession() {
+  setAdminUnlocked(false);
+  const pill = document.getElementById('control-status-pill');
+  if (pill) {
+    pill.className = 'alert-pill-retro alert-healthy';
+    pill.textContent = 'GUEST (LOCKED)';
+  }
+  const summary = document.getElementById('cfs-active-summary');
+  if (summary) {
+    summary.textContent = 'OPERATOR LOCK ENGAGED · READ-ONLY MODE ACTIVE';
+  }
+}
+
+function openAdminModal(pendingAction = null) {
+  pendingSwitchAction = pendingAction;
+  const overlay = document.getElementById('admin-modal-overlay');
+  const input = document.getElementById('admin-key-input');
+  const msg = document.getElementById('admin-modal-msg');
+
+  if (msg) {
+    msg.style.display = 'none';
+    msg.textContent = '';
+    msg.className = 'modal-status-msg';
+  }
+  if (input) {
+    input.value = '';
+  }
+  if (overlay) {
+    overlay.style.display = 'flex';
+  }
+  if (input) {
+    setTimeout(() => input.focus(), 60);
+  }
+}
+
+function closeAdminModal() {
+  const overlay = document.getElementById('admin-modal-overlay');
+  if (overlay) {
+    overlay.style.display = 'none';
+  }
+  pendingSwitchAction = null;
+}
+
+function toggleKeyVisibility() {
+  const input = document.getElementById('admin-key-input');
+  const eyeBtn = document.getElementById('btn-toggle-key-eye');
+  if (input) {
+    if (input.type === 'password') {
+      input.type = 'text';
+      if (eyeBtn) eyeBtn.textContent = '🔒';
+    } else {
+      input.type = 'password';
+      if (eyeBtn) eyeBtn.textContent = '👁️';
+    }
+  }
+}
+
+async function submitAdminAuth() {
+  const input = document.getElementById('admin-key-input');
+  const msg = document.getElementById('admin-modal-msg');
+  const submitBtn = document.getElementById('btn-submit-auth');
+  if (!input) return;
+
+  const keyVal = input.value.trim();
+  if (!keyVal) {
+    if (msg) {
+      msg.style.display = 'block';
+      msg.className = 'modal-status-msg error';
+      msg.textContent = '⚠️ Inserisci la chiave amministratore.';
+    }
+    input.focus();
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="btn-bracket">[</span> VERIFYING... <span class="btn-bracket">]</span>';
+  }
+
+  try {
+    const res = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keyVal}`
+      },
+      body: JSON.stringify({ admin_key: keyVal })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      if (msg) {
+        msg.style.display = 'block';
+        msg.className = 'modal-status-msg success';
+        msg.textContent = '✅ ACCESSO AUTORIZZATO. PRIVILEGI AMMINISTRATORE ATTIVATI.';
+      }
+      setAdminUnlocked(true, keyVal);
+      const actionToExecute = pendingSwitchAction;
+      pendingSwitchAction = null;
+
+      setTimeout(() => {
+        closeAdminModal();
+        if (actionToExecute) {
+          switchModel(actionToExecute.target, actionToExecute.model);
+        }
+      }, 500);
+    } else {
+      if (msg) {
+        msg.style.display = 'block';
+        msg.className = 'modal-status-msg error';
+        msg.textContent = '❌ CHIAVE AMMINISTRATORE NON VALIDA.';
+      }
+      input.focus();
+      input.select();
+    }
+  } catch (err) {
+    if (msg) {
+      msg.style.display = 'block';
+      msg.className = 'modal-status-msg error';
+      msg.textContent = '❌ ERRORE DI COMUNICAZIONE COL GATEWAY.';
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<span class="btn-bracket">[</span> 🔓 AUTHORIZE OPERATOR <span class="btn-bracket">]</span>';
+    }
+  }
+}
+
 async function switchModel(target, model) {
+  if (!isAdminUnlocked()) {
+    openAdminModal({ target, model });
+    return;
+  }
+
   const pill = document.getElementById('control-status-pill');
   const summary = document.getElementById('cfs-active-summary');
   if (pill) {
@@ -692,9 +922,23 @@ async function switchModel(target, model) {
   try {
     const res = await fetch('/api/switch', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target, model })
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentAdminToken}`
+      },
+      body: JSON.stringify({ target, model, admin_key: currentAdminToken })
     });
+
+    if (res.status === 401) {
+      setAdminUnlocked(false);
+      openAdminModal({ target, model });
+      if (pill) {
+        pill.className = 'alert-pill-retro alert-crit';
+        pill.textContent = 'AUTH REQ';
+      }
+      return;
+    }
+
     const data = await res.json();
     if (data.ok) {
       if (pill) {
@@ -871,6 +1115,14 @@ document.addEventListener('DOMContentLoaded', () => {
   initInspectorSwitcher();
   init4DTesseract();
   initOscilloscope();
+  verifySavedAdminToken();
+
+  // Escape key closes admin modal
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeAdminModal();
+    }
+  });
 
   // Initial fetch and 2-second telemetry loop
   fetchTelemetry();
