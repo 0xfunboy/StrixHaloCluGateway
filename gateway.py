@@ -67,6 +67,25 @@ STRATA_DEEPSEEK_ALIASES = {
     "kirei-strata",
 }
 
+QWEN_ALIASES = {
+    MODEL_QWEN_ID,
+    "qwen",
+    "qwen38",
+    "qwen3.8",
+    "qwen-38b",
+    "qwen38-uncensored",
+    "qwen38-uncensored-gufo",
+}
+
+DEEPSEEK_ALIASES = {
+    MODEL_DEEPSEEK_ID,
+    "deepseek",
+    "deepseek-v4.1",
+    "deepseek-v4.1-flash",
+    "ds41",
+    "ds4.1",
+}
+
 class DownstreamClientDisconnected(Exception):
     pass
 
@@ -125,16 +144,45 @@ CLUSTER_TELEMETRY = {
 }
 
 
-def load_keys() -> set[str]:
-    keys: set[str] = set()
+def load_key_data() -> dict:
+    default_data = {
+        "keys": [],
+        "users": {},
+        "ip_map": {
+            "127.0.0.1": "funboy (local)",
+            "::1": "funboy (local)"
+        }
+    }
     if KEYS_FILE.exists():
         try:
-            data = json.loads(KEYS_FILE.read_text())
-            for k in data.get("keys", []):
-                if isinstance(k, str) and k.strip():
-                    keys.add(k.strip())
+            raw = json.loads(KEYS_FILE.read_text())
+            if isinstance(raw, dict):
+                users = raw.get("users", {})
+                keys = raw.get("keys", [])
+                if isinstance(keys, list):
+                    for k in keys:
+                        if isinstance(k, str) and k.strip() and k not in users:
+                            if "cooper" in k.lower():
+                                users[k] = "cooper"
+                            elif "funboy" in k.lower():
+                                users[k] = "funboy"
+                raw["users"] = users
+                raw.setdefault("ip_map", default_data["ip_map"])
+                return raw
         except Exception:
             pass
+    return default_data
+
+
+def load_keys() -> set[str]:
+    data = load_key_data()
+    keys: set[str] = set()
+    for k in data.get("keys", []):
+        if isinstance(k, str) and k.strip():
+            keys.add(k.strip())
+    for k in data.get("users", {}).keys():
+        if isinstance(k, str) and k.strip():
+            keys.add(k.strip())
     return keys
 
 
@@ -396,46 +444,37 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def extract_token(self, payload: dict | None = None) -> str:
+        auth = self.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        if self.headers.get("x-api-key"):
+            return self.headers.get("x-api-key", "").strip()
+        qs = parse_qs(urlsplit(self.path).query)
+        for param in ("api_key", "key", "token", "auth", "admin_key"):
+            vals = qs.get(param)
+            if vals and vals[0].strip():
+                return vals[0].strip()
+        if payload and isinstance(payload, dict):
+            for k in ("admin_key", "api_key", "key", "token"):
+                val = payload.get(k)
+                if val and isinstance(val, str) and val.strip():
+                    return val.strip()
+        return ""
+
     def is_authorized(self) -> bool:
         if not self.is_external_request():
             return True
-        auth = self.headers.get("Authorization", "")
-        token = ""
-        if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
-        elif self.headers.get("x-api-key"):
-            token = self.headers.get("x-api-key", "").strip()
-        if not token:
-            qs = parse_qs(urlsplit(self.path).query)
-            for param in ("api_key", "key", "token", "auth"):
-                vals = qs.get(param)
-                if vals and vals[0].strip():
-                    token = vals[0].strip()
-                    break
+        token = self.extract_token()
         if token in load_keys():
             return True
 
-        user, app = self.get_client_info()
-        print(f"[GATEWAY:auth-fail] user={user} app={app} authorization_header={'yes' if auth else 'no'} x_api_key={'yes' if self.headers.get('x-api-key') else 'no'} query_token={'yes' if token else 'no'} token_len={len(token)}", flush=True)
+        user, app = self.get_client_info(token=token)
+        print(f"[GATEWAY:auth-fail] user={user} app={app} token_provided={'yes' if token else 'no'} token_len={len(token)}", flush=True)
         return False
 
     def is_admin_authorized(self, payload: dict | None = None) -> bool:
-        token = ""
-        auth = self.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
-        elif self.headers.get("x-api-key"):
-            token = self.headers.get("x-api-key", "").strip()
-        if not token:
-            qs = parse_qs(urlsplit(self.path).query)
-            for param in ("api_key", "key", "token", "auth", "admin_key"):
-                vals = qs.get(param)
-                if vals and vals[0].strip():
-                    token = vals[0].strip()
-                    break
-        if not token and isinstance(payload, dict):
-            token = str(payload.get("admin_key") or payload.get("key") or payload.get("token") or "").strip()
-
+        token = self.extract_token(payload)
         valid_keys = load_keys()
         if token and token in valid_keys:
             return True
@@ -446,26 +485,64 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if client_ip in ("127.0.0.1", "::1") and not ("mozilla" in ua or "chrome" in ua or "safari" in ua):
                 return True
 
-        user, app = self.get_client_info()
+        user, app = self.get_client_info(payload=payload, token=token)
         print(f"[GATEWAY:admin-auth-fail] user={user} app={app} token_provided={'yes' if token else 'no'}", flush=True)
         return False
 
-    def get_client_info(self) -> tuple[str, str]:
-        # Anonymized client identification - never store or expose real IP or city/country
+    def get_client_info(self, payload: dict | None = None, token: str = "") -> tuple[str, str]:
+        key_data = load_key_data()
+        users_map = key_data.get("users", {})
+        ip_map = key_data.get("ip_map", {})
+
+        # IP extraction
         ip = self.headers.get("cf-connecting-ip") or self.headers.get("x-forwarded-for") or self.address_string()
         if "," in ip:
             ip = ip.split(",")[0].strip()
-        ua = self.headers.get("user-agent", "").lower()
-        app = "Copilot Chat" if ("copilot" in ua or "vscode" in ua) else "Inference Client"
 
-        if ip in ("127.0.0.1", "::1"):
-            user = "funboy (local)"
+        # Application identification
+        ua = self.headers.get("user-agent", "").lower()
+        if "copilot" in ua or "vscode" in ua:
+            app = "Copilot Chat"
+        elif "cursor" in ua:
+            app = "Cursor AI"
+        elif "curl" in ua:
+            app = "cURL Client"
+        elif "python" in ua:
+            app = "Python SDK"
         else:
-            # Deterministic, friendly pseudonyms (funboy / cooper)
-            import hashlib
-            h = int(hashlib.md5(ip.encode("utf-8")).hexdigest()[:4], 16)
-            user = "cooper" if (h % 2 == 0) else "funboy"
-        return user, app
+            app = "Inference Client"
+
+        # 1. Explicit Header or Payload override
+        explicit_user = self.headers.get("x-user") or self.headers.get("x-client-user")
+        if not explicit_user and payload and isinstance(payload, dict):
+            explicit_user = payload.get("user") or payload.get("client_user")
+        if explicit_user and isinstance(explicit_user, str) and explicit_user.strip():
+            return explicit_user.strip().lower(), app
+
+        # 2. Token-based user discrimination
+        if not token:
+            token = self.extract_token(payload)
+
+        if token:
+            if token in users_map and users_map[token]:
+                return users_map[token], app
+            tok_low = token.lower()
+            if "cooper" in tok_low:
+                return "cooper", app
+            if "funboy" in tok_low:
+                return "funboy", app
+
+        # 3. IP-based user discrimination
+        if ip:
+            if ip in ip_map and ip_map[ip]:
+                return ip_map[ip], app
+            if ip in ("127.0.0.1", "::1") or ip.startswith("192.168.178."):
+                return "funboy (local)", app
+
+        # 4. Fallback for external connections: default to cooper if external, funboy if local
+        if self.is_external_request():
+            return "cooper", app
+        return "funboy (local)", app
 
     def send_json(self, code: int, data: dict):
         body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
@@ -777,7 +854,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             upstream_port = AIREWARD_STRATA_PORT
             payload["model"] = "deepseek-v4.1-flash"
 
-        elif req_model == MODEL_QWEN_ID or (server_port == SECONDARY_PORT and req_model != MODEL_DEEPSEEK_ID):
+        elif req_model in QWEN_ALIASES or (server_port == SECONDARY_PORT and req_model not in DEEPSEEK_ALIASES):
             target = "qwen"
             upstream_host = "127.0.0.1"
             upstream_port = QWEN_PORT
@@ -837,6 +914,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     payload["stream_options"] = stream_options
             else:
                 upstream_port = QWEN_PORT
+                payload["model"] = MODEL_QWEN_ID
                 payload.setdefault("max_tokens", 8192)
 
             # Concurrency & Arbitration for Strix
@@ -855,7 +933,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             forward_body = json.dumps(payload).encode("utf-8")
             is_stream = bool(payload.get("stream", False))
             t_start = time.monotonic()
-            user_name, client_app = self.get_client_info()
+            token = self.extract_token(payload)
+            user_name, client_app = self.get_client_info(payload=payload, token=token)
 
             total_completion_tokens: int | None = 0 if (target == "qwen" or is_strata) else None
             prompt_tokens: int | None = 20 if (target == "qwen" or is_strata) else None
@@ -1094,7 +1173,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         user_name, _ = self.get_client_info()
-        print(f"[GATEWAY:{self.server.server_port}] user={user_name} {format % args}", flush=True)
+        client_ip = self.headers.get("cf-connecting-ip") or self.headers.get("x-forwarded-for") or self.address_string()
+        if "," in client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        print(f"[GATEWAY:{self.server.server_port}] ip={client_ip} user={user_name} {format % args}", flush=True)
 
 
 def run_listener(port: int):

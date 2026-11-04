@@ -1068,6 +1068,7 @@ function renderSessionsTable(sessions) {
     }
 
     const userLabel = s.user || (s.client === '127.0.0.1' ? 'funboy (local)' : 'cooper');
+    const userClass = userLabel.toLowerCase().includes('cooper') ? 'user-cooper' : 'user-funboy';
     const appLabel = s.client_app || 'Copilot Chat';
     const tpsVal = s.tok_per_sec ? `${s.tok_per_sec} tok/s` : '—';
 
@@ -1075,7 +1076,7 @@ function renderSessionsTable(sessions) {
       <tr>
         <td><code>${escapeHtml(s.id || 'req')}</code></td>
         <td>${escapeHtml(s.time || '')}</td>
-        <td><span class="user-tag">${escapeHtml(userLabel)}</span></td>
+        <td><span class="user-tag ${userClass}">${escapeHtml(userLabel)}</span></td>
         <td><span class="app-tag">${escapeHtml(appLabel)}</span></td>
         <td>${badge}</td>
         <td>${s.prompt_tokens ?? '—'}</td>

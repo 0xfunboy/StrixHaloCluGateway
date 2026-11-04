@@ -1309,8 +1309,27 @@ body:not(.crt-active) .crt-overlay {
 }
 
 .user-tag {
-  color: var(--neon-cyan);
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
   font-weight: 700;
+  border-radius: 2px;
+}
+
+.user-tag.user-funboy {
+  color: var(--neon-cyan);
+  background: rgba(0, 242, 254, 0.1);
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  text-shadow: 0 0 6px rgba(0, 242, 254, 0.3);
+}
+
+.user-tag.user-cooper {
+  color: #ffb703;
+  background: rgba(255, 183, 3, 0.12);
+  border: 1px solid rgba(255, 183, 3, 0.45);
+  text-shadow: 0 0 8px rgba(255, 183, 3, 0.4);
 }
 
 .app-tag {
