@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -43,6 +44,11 @@ AIREWARD_STRATA_PORT = 8080
 
 MODEL_DEEPSEEK_ID = "ds41-abliterated-q2-imatrix"
 MODEL_QWEN_ID = "qwen38-uncensored-gufo"
+
+# By default reasoning_content is forwarded natively (OpenAI-compatible clients such as
+# Copilot Chat render it as thinking). Legacy clients can opt in to inline <think> folding
+# via the "X-Think-Format: inline" header or GATEWAY_INLINE_THINK=1.
+INLINE_THINK_DEFAULT = os.environ.get("GATEWAY_INLINE_THINK", "0") == "1"
 MODEL_STRATA_QWEN_ID = "qwen38-strata-100tps"
 MODEL_STRATA_DEEPSEEK_ID = "ds41-strata-cuda"
 
@@ -932,6 +938,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         try:
             forward_body = json.dumps(payload).encode("utf-8")
             is_stream = bool(payload.get("stream", False))
+            think_header = self.headers.get("x-think-format", "").strip().lower()
+            inline_think = think_header == "inline" or (INLINE_THINK_DEFAULT and think_header != "native")
             t_start = time.monotonic()
             token = self.extract_token(payload)
             user_name, client_app = self.get_client_info(payload=payload, token=token)
@@ -967,6 +975,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
                         in_thinking = False
                         last_event_id = None
+                        thinking_id = uuid.uuid4().hex
 
                         def send_http_chunk(chunk_bytes: bytes) -> None:
                             if not chunk_bytes:
@@ -1054,11 +1063,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
                                         if reasoning:
                                             first_generation_at = first_generation_at or time.monotonic()
-                                            if not in_thinking:
-                                                in_thinking = True
-                                                delta["content"] = "<think>\n" + reasoning
-                                            else:
-                                                delta["content"] = reasoning
+                                            if inline_think:
+                                                delta.pop("reasoning_content", None)
+                                                if not in_thinking:
+                                                    in_thinking = True
+                                                    delta["content"] = "<think>\n" + reasoning
+                                                else:
+                                                    delta["content"] = reasoning
+                                            elif not any(delta.get(key) for key in ("cot_id", "reasoning_opaque", "signature")):
+                                                delta["cot_id"] = f"{thinking_id}-{choice.get('index', 0)}"
                                         elif in_thinking and (content is not None or finish in ("stop", "length")):
                                             in_thinking = False
                                             delta["content"] = "\n</think>\n\n" + (content or "")
@@ -1117,8 +1130,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                     if isinstance(msg, dict):
                                         reasoning = msg.get("reasoning_content")
                                         content = msg.get("content") or ""
-                                        if reasoning and not content.startswith("<think>"):
+                                        if inline_think and reasoning and not content.startswith("<think>"):
                                             msg["content"] = f"<think>\n{reasoning}\n</think>\n\n{content}"
+                                            msg.pop("reasoning_content", None)
 
                             resp_data = json.dumps(parsed, ensure_ascii=False).encode("utf-8")
                         except Exception as e:
