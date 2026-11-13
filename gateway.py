@@ -16,6 +16,7 @@ import contextlib
 import http.client
 import json
 import mimetypes
+import fcntl
 import os
 from pathlib import Path
 import subprocess
@@ -34,6 +35,9 @@ STATS_FILE = DATA_DIR / "stats.json"
 KEYS_FILE = DATA_DIR / "api_keys.json"
 
 DEEPSEEK_PORT = 18231
+DEEPSEEK_CONTEXT_TOKENS = 262144
+DEEPSEEK_FALLBACK_CONTEXT_TOKENS = 131072
+DEEPSEEK_MAX_OUTPUT_TOKENS = 6144
 QWEN_PORT = 18562
 PRIMARY_PORT = 8081
 SECONDARY_PORT = 18561
@@ -97,6 +101,10 @@ class DownstreamClientDisconnected(Exception):
 
 STATE_LOCK = threading.RLock()
 SWITCH_LOCK = threading.Lock()
+SWITCH_FILE_LOCK_PATH = os.environ.get(
+    "CLUSTER_SWITCH_LOCK_FILE",
+    "/run/user/%d/strix-cluster-switch.lock" % os.getuid(),
+)
 STATS_LOCK = threading.Lock()
 DEEPSEEK_CONCURRENCY_LOCK = threading.Lock()
 
@@ -269,6 +277,26 @@ def is_port_ready(port: int, model_sub: str, host: str = "127.0.0.1") -> bool:
         return False
 
 
+def get_deepseek_context_tokens() -> int:
+    conn = http.client.HTTPConnection("127.0.0.1", DEEPSEEK_PORT, timeout=2)
+    try:
+        conn.request("GET", "/v1/models")
+        resp = conn.getresponse()
+        if resp.status == 200:
+            data = json.loads(resp.read())
+            for model in data.get("data", []):
+                if not isinstance(model, dict) or model.get("id") not in DEEPSEEK_ALIASES:
+                    continue
+                context = model.get("context_length")
+                if type(context) is int and context > DEEPSEEK_MAX_OUTPUT_TOKENS:
+                    return min(context, DEEPSEEK_CONTEXT_TOKENS)
+    except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
+        pass
+    finally:
+        conn.close()
+    return DEEPSEEK_FALLBACK_CONTEXT_TOKENS
+
+
 def get_currently_active_model() -> str | None:
     if is_port_ready(DEEPSEEK_PORT, "deepseek"):
         return "deepseek"
@@ -328,6 +356,34 @@ def request_in_flight_scope(model_name: str):
             LAST_ACTIVITY_TIME = time.time()
 
 
+def _acquire_switch_file_lock(max_wait_sec: float):
+    """Serializza gli switch tra gateway e CLI `cluster-model` tramite flock.
+
+    Il lock è sullo stesso file usato dallo script shell, quindi una
+    commutazione avviata manualmente non può più uccidere i processi DS4
+    che il gateway sta caricando in parallelo.
+    """
+    try:
+        fd = os.open(SWITCH_FILE_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        print(f"[GATEWAY] switch-lock non disponibile: {exc}", flush=True)
+        return None
+    try:
+        fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+    except OSError:
+        pass
+    deadline = time.time() + max(1.0, max_wait_sec)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.time() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.5)
+
+
 def acquire_model(target: str, max_wait_sec: float = 45.0) -> tuple[bool, str, int]:
     with STATE_LOCK:
         active = get_currently_active_model()
@@ -358,7 +414,20 @@ def acquire_model(target: str, max_wait_sec: float = 45.0) -> tuple[bool, str, i
                 time.sleep(0.3)
 
         print(f"[GATEWAY] Esecuzione switch sicuro: {active or 'nessuno'} -> {target}...", flush=True)
-        res = subprocess.run(["/home/funboy/.local/bin/cluster-model", target], capture_output=True, text=True)
+        file_fd = _acquire_switch_file_lock(max_wait_sec)
+        if file_fd is None:
+            return False, "Un altro switch (CLI o gateway) è in corso. Riprova tra poco.", 429
+        try:
+            switch_env = dict(os.environ, CLUSTER_SWITCH_LOCKED="1")
+            res = subprocess.run(
+                ["/home/funboy/.local/bin/cluster-model", target],
+                capture_output=True, text=True, env=switch_env,
+            )
+        finally:
+            try:
+                fcntl.flock(file_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(file_fd)
         target_port = DEEPSEEK_PORT if target == "deepseek" else QWEN_PORT
         target_sub = "deepseek" if target == "deepseek" else "qwen"
         if res.returncode == 0 and is_port_ready(target_port, target_sub):
@@ -674,6 +743,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.send_json_error(401, "API key richiesta per inference.yed1z.ai. Setta 'Authorization: Bearer <secret-token>'", "authentication_error")
                 return
 
+            deepseek_context = get_deepseek_context_tokens()
             models_data = [
                 {
                     "id": MODEL_DEEPSEEK_ID,
@@ -681,9 +751,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "created": 1793220000,
                     "owned_by": "customendpoint",
                     "name": "DeepSeek V4.1 Flash Abliterated Q2 (Dual Strix 50 tok/s)",
-                    "context_length": 131072,
-                    "max_input_tokens": 124928,
-                    "max_output_tokens": 6144
+                    "context_length": deepseek_context,
+                    "max_input_tokens": deepseek_context - DEEPSEEK_MAX_OUTPUT_TOKENS,
+                    "max_output_tokens": DEEPSEEK_MAX_OUTPUT_TOKENS
                 },
                 {
                     "id": MODEL_QWEN_ID,
@@ -701,9 +771,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "created": 1793220000,
                     "owned_by": "customendpoint",
                     "name": "DeepSeek V4.1 Flash",
-                    "context_length": 131072,
-                    "max_input_tokens": 124928,
-                    "max_output_tokens": 6144
+                    "context_length": deepseek_context,
+                    "max_input_tokens": deepseek_context - DEEPSEEK_MAX_OUTPUT_TOKENS,
+                    "max_output_tokens": DEEPSEEK_MAX_OUTPUT_TOKENS
                 },
                 {
                     "id": MODEL_STRATA_QWEN_ID,
@@ -903,12 +973,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             # Prepare request payload for Strix DeepSeek
             if target == "deepseek":
                 upstream_port = DEEPSEEK_PORT
-                payload["context_tokens"] = 131072
-                payload.setdefault("max_tokens", 6144)
-                payload["reasoning_effort"] = "xhigh"
-                tpl = payload.get("chat_template_kwargs") or {}
-                tpl["enable_thinking"] = True
-                tpl["reasoning_effort"] = "xhigh"
+                if payload.get("max_completion_tokens") is not None:
+                    payload.pop("max_tokens", None)
+                else:
+                    payload.setdefault("max_tokens", DEEPSEEK_MAX_OUTPUT_TOKENS)
+                tpl = payload.get("chat_template_kwargs")
+                if tpl is None:
+                    tpl = {}
+                elif not isinstance(tpl, dict):
+                    self.send_json_error(400, "chat_template_kwargs deve essere un oggetto JSON", "invalid_request_error")
+                    return
+                if tpl.get("enable_thinking") is None:
+                    thinking = payload.get("enable_thinking")
+                    tpl["enable_thinking"] = True if thinking is None else thinking
+                if tpl.get("reasoning_effort") is None:
+                    effort = payload.get("reasoning_effort")
+                    tpl["reasoning_effort"] = "xhigh" if effort is None else effort
                 payload["chat_template_kwargs"] = tpl
                 payload["model"] = "deepseek-v4.1-flash"
                 if payload.get("stream", False):
@@ -921,7 +1001,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             else:
                 upstream_port = QWEN_PORT
                 payload["model"] = MODEL_QWEN_ID
-                payload.setdefault("max_tokens", 8192)
+                if payload.get("max_completion_tokens") is not None:
+                    payload.pop("max_tokens", None)
+                else:
+                    payload.setdefault("max_tokens", 8192)
 
             # Concurrency & Arbitration for Strix
             ok, msg, status_code = acquire_model(target, max_wait_sec=45.0)
@@ -934,6 +1017,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.send_json_error(429, "Cluster occupato: un'altra richiesta su DeepSeek è in elaborazione. Riprova tra poco.", "cluster_busy")
                     return
                 has_concurrency_lock = True
+                payload["context_tokens"] = get_deepseek_context_tokens()
 
         try:
             forward_body = json.dumps(payload).encode("utf-8")

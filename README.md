@@ -101,10 +101,14 @@ Switching between hundreds of gigabytes of LLM weights across a tri-node hybrid 
 
 | Model ID | Display Name | Architecture / Quant | Target Speed | Native Context | Node / Backend |
 |---|---|---|---|---|---|
-| `deepseek-v4.1-flash` / `ds41-abliterated-q2-imatrix` | **DeepSeek V4.1 Flash Kirei HIP** | 552B MoE (8B/16B active) · Q2_K imatrix + DSpark MXFP4 | **50.0 – 70.6 tok/s** | 131,072 tokens (128K) | Dual Strix Halo (USB4 TP2) |
+| `deepseek-v4.1-flash` / `ds41-abliterated-q2-imatrix` | **DeepSeek V4.1 Flash Kirei HIP** | 552B MoE (8B/16B active) · Q2_K imatrix + DSpark MXFP4 | **50.0 – 70.6 tok/s** | 262,144 tokens (256K, configured) | Dual Strix Halo (USB4 TP2) |
 | `qwen38-uncensored-gufo` | **Qwen 3.8 Flash Next Gufo** | Dense + Speculative MTP · Gufo GGUF + shared-Q8 draft | **30.0 – 45.0 tok/s** | 196,608 tokens (192K) | 01-EVO-X3 (Resident) |
 | `qwen38-strata-100tps` / `qwen-strata` | **Qwen 3.8 Flash Next Strata** | GSQ-RCO-IQ3_S + MTP Draft 4 · 5 P-cores + 8 E-cores | **~100 tok/s** | 131,072 tokens (128K) | Aireward-LLM (RTX 3090) |
 | `ds41-strata-cuda` / `ds41-strata` | **DeepSeek V4.1 Strata CUDA** | IST-DAS 2.00bpw · Ampere 24GB VRAM + NVMe streaming | Experimental | 131,072 tokens (128K) | Aireward-LLM (RTX 3090) |
+
+Kirei passed a synthetic 247,051-token retrieval through the gateway with a cached prefix; this is not comprehensive long-context quality validation. Each rank is configured with a 512 MiB prefix cache; the 16 GiB available-memory reserve is checked on the coordinator and does not guarantee the worker's memory headroom. The gateway reads the active DeepSeek backend's context limit and falls back to 131,072 tokens if unavailable; the separate native vision launcher remains configured for 128K.
+
+The native vision backend maps DeepSeek reasoning efforts to `low=50`, `medium=62`, `high=75`, and `xhigh=max=100`; `minimal` aliases `low` and `none` disables thinking. Gufo Qwen has distinct `low`, `medium`, and `xhigh` modes; `minimal` aliases `low`, `high` and `max` alias `xhigh`, and `none` disables thinking. For both models, `max_completion_tokens` takes precedence over `max_tokens` when supplied.
 
 ---
 
