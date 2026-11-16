@@ -1,0 +1,1 @@
+These TypeScript modules are derived from HaloForge / yed1z Unified 0.2.0, copyright 2026 HaloForge contributors, MIT licensed. HTTP timing support and orchestration-facing wrappers are added in this repository. No third-party OAuth credentials are extracted.

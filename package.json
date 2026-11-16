@@ -1,0 +1,12 @@
+{
+  "name": "yed1z-command", "version": "0.3.0", "private": true, "type": "module",
+  "description": "Distributed agent control room: one coordinator, many inference and execution nodes",
+  "license": "SEE LICENSE.md", "engines": { "node": ">=24.15.0 <25" },
+  "scripts": {
+    "start": "node dist/server.mjs", "setup": "node dist/cli.mjs init",
+    "build": "node scripts/build.ts", "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts", "check": "npm run typecheck && npm test && npm run build",
+    "package:vsix": "node scripts/package-vsix.ts", "smoke": "node scripts/smoke.ts"
+  },
+  "devDependencies": { "@types/node": "22.20.5", "@types/vscode": "1.95.0", "typescript": "5.9.3", "esbuild": "0.28.2", "jsdom": "31.0.0", "@vscode/vsce": "4.1.0" }
+}

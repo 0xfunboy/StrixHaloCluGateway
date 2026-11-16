@@ -1,0 +1,25 @@
+[Unit]
+Description=yed1z Control Room - distributed agent coordinator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=funboy
+Group=funboy
+WorkingDirectory=/opt/yed1z
+Environment=NODE_ENV=production
+Environment=YED1Z_STATE_DIR=/home/funboy/.local/share/yed1z-command
+Environment=YED1Z_CONFIG=/home/funboy/.local/share/yed1z-command/config.json
+Environment=YED1Z_WEB_DIR=/opt/yed1z/dist/web
+ExecStart=/usr/bin/node /opt/yed1z/dist/server.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

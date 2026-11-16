@@ -1,0 +1,21 @@
+{
+  "name":"haloforge",
+  "displayName":"yed1z Control Room",
+  "description":"Il tuo orchestratore, le squadre di agenti, i progetti e l'infrastruttura distribuita nello stesso spazio di lavoro.",
+  "version":"0.3.0",
+  "publisher":"funboy",
+  "type":"module",
+  "license":"SEE LICENSE.md",
+  "engines":{"vscode":"^1.95.0"},
+  "categories":["AI","Other"],
+  "main":"./dist/extension.cjs",
+  "extensionKind":["workspace"],
+  "activationEvents":["onView:haloforge.chat"],
+  "capabilities":{"untrustedWorkspaces":{"supported":"limited","description":"Monitor e cronologia disponibili; nuove attività e trasferimenti richiedono un workspace attendibile."},"virtualWorkspaces":{"supported":true}},
+  "contributes":{
+    "commands":[{"command":"haloforge.open","title":"yed1z: Apri Control Room"},{"command":"yed1z.configure","title":"yed1z: Collega il gateway"},{"command":"haloforge.addSelection","title":"yed1z: Aggiungi selezione al contesto"},{"command":"yed1z.openPortal","title":"yed1z: Apri portale nel browser"}],
+    "viewsContainers":{"activitybar":[{"id":"haloforge","title":"yed1z","icon":"media/icon.svg"}]},
+    "views":{"haloforge":[{"type":"webview","id":"haloforge.chat","name":"Control Room"}]},
+    "menus":{"editor/context":[{"command":"haloforge.addSelection","group":"navigation@99","when":"editorHasSelection"}]}
+  }
+}

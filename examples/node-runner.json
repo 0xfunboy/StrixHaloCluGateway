@@ -1,0 +1,13 @@
+{
+  "targets": [
+    {
+      "id": "strix02",
+      "kind": "local",
+      "nodeId": "strix02",
+      "workspaceRoot": "/home/funboy/yed1z-workspaces",
+      "commands": [
+        {"id":"npm-test","label":"Test progetto","argv":["npm","test"],"verification":true,"timeoutMs":180000}
+      ]
+    }
+  ]
+}
