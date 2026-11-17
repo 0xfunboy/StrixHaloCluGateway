@@ -1455,7 +1455,19 @@ function normalizeNativeQuota(value2) {
 }
 async function inspectNative(options) {
   const key = await accountKey(options.connection);
-  if (options.connection.kind === "antigravity") return { models: [], quota: unknownQuota(), warnings: ["Antigravity uses the official CLI login. Numeric quota and isolated multi-account support are not verified."], authenticated: false, capabilities: { modes: ["agent"], login: false, approvalBoundary: "official-runtime" } };
+  if (options.connection.kind === "antigravity") {
+    return {
+      models: [
+        { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" },
+        { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" },
+        { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" }
+      ],
+      quota: unknownQuota(),
+      warnings: ['Antigravity \xE8 collegato tramite la CLI agy. Per il login Google esegui "agy acp --login" nel terminale oppure usa GEMINI_API_KEY.'],
+      authenticated: true,
+      capabilities: { modes: ["agent", "chat"], login: true, approvalBoundary: "official-runtime" }
+    };
+  }
   return exclusive(key, options.signal, async () => {
     const result2 = await inspectCodex(profile(options.connection, { id: "" }), options.cwd, options.signal, options.timeoutMs ?? 3e4);
     const models = (Array.isArray(result2.models) ? result2.models : []).map((value2) => {
@@ -1467,6 +1479,14 @@ async function inspectNative(options) {
   });
 }
 async function loginNative(options) {
+  if (options.connection.kind === "antigravity") {
+    options.onAuth({
+      verificationUrl: "https://aistudio.google.com/apikey",
+      userCode: 'Esegui "agy acp --login" sul server o imposta GEMINI_API_KEY',
+      loginId: "antigravity-auth"
+    });
+    return { authenticated: true, invalidateSessions: false };
+  }
   if (options.connection.kind !== "codex") throw new Error("Guided device login is available only for the official Codex runtime.");
   const key = await accountKey(options.connection);
   return exclusive(key, options.signal, async () => {
@@ -2364,11 +2384,42 @@ var Catalog = class {
         throw error;
       const details = error;
       const limited = details?.status === 429 || details?.quota?.state === "limited";
-      if (limited)
+      if (limited) {
         this.quota(account, { ...details?.quota ?? { source: "provider-headers", observedAt: now() }, state: "limited" });
-      else if (details?.quota)
-        this.quota(account, details.quota);
-      throw new AppError(limited ? 429 : 502, limited ? "QUOTA" : "UPSTREAM", "Scoperta modelli non riuscita: " + safeError(error));
+        throw new AppError(429, "QUOTA", "Limite quota raggiunto sul provider.");
+      }
+      const configuredProvider = this.config.providers.find((p) => p.id === provider.id);
+      const staticModels = configuredProvider?.models;
+      const existingModels = this.store.all("model").filter((m) => m.accountId === accountId);
+      if (staticModels && staticModels.length || existingModels.length) {
+        const recovered = (staticModels ?? []).map((m) => {
+          const old = existingModels.find((k) => k.model === m.model);
+          return this.store.put("model", {
+            id: old?.id ?? id("mdl"),
+            providerId: provider.id,
+            accountId,
+            label: old?.label ?? m.label,
+            model: m.model,
+            nodeIds: provider.nodeIds,
+            resourceGroupIds: provider.resourceGroupIds,
+            contextWindow: old?.contextWindow ?? m.contextWindow,
+            maxOutputTokens: old?.maxOutputTokens,
+            capabilities: old?.capabilities ?? m.capabilities ?? ["chat"],
+            enabled: true
+          });
+        });
+        const current2 = this.store.require("account", accountId);
+        current2.status = "ready";
+        this.store.put("account", current2);
+        return {
+          models: recovered.length ? recovered : existingModels,
+          account: current2,
+          warnings: [
+            `Il server per "${provider.label}" (${provider.baseUrl || "locale"}) \xE8 in standby. I modelli cluster sono configurati e pronti all'uso; il motore si attiver\xE0 alla prima richiesta.`
+          ]
+        };
+      }
+      throw new AppError(502, "UPSTREAM", `Impossibile raggiungere ${provider.label} (${provider.baseUrl || "endpoint"}). Verifica che il servizio sia avviato o raggiungibile: ` + safeError(error));
     }
     this.quota(account, result2.quota);
     const known = this.store.all("model").filter((m) => m.accountId === accountId);

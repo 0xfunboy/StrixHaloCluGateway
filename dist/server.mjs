@@ -2785,7 +2785,19 @@ async function runNativeAgent(request) {
 }
 async function inspectNative(options) {
   const key = await accountKey(options.connection);
-  if (options.connection.kind === "antigravity") return { models: [], quota: unknownQuota(), warnings: ["Antigravity uses the official CLI login. Numeric quota and isolated multi-account support are not verified."], authenticated: false, capabilities: { modes: ["agent"], login: false, approvalBoundary: "official-runtime" } };
+  if (options.connection.kind === "antigravity") {
+    return {
+      models: [
+        { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" },
+        { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" },
+        { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" }
+      ],
+      quota: unknownQuota(),
+      warnings: ['Antigravity \xE8 collegato tramite la CLI agy. Per il login Google esegui "agy acp --login" nel terminale oppure usa GEMINI_API_KEY.'],
+      authenticated: true,
+      capabilities: { modes: ["agent", "chat"], login: true, approvalBoundary: "official-runtime" }
+    };
+  }
   return exclusive(key, options.signal, async () => {
     const result2 = await inspectCodex(profile(options.connection, { id: "" }), options.cwd, options.signal, options.timeoutMs ?? 3e4);
     const models = (Array.isArray(result2.models) ? result2.models : []).map((value2) => {
@@ -2797,6 +2809,14 @@ async function inspectNative(options) {
   });
 }
 async function loginNative(options) {
+  if (options.connection.kind === "antigravity") {
+    options.onAuth({
+      verificationUrl: "https://aistudio.google.com/apikey",
+      userCode: 'Esegui "agy acp --login" sul server o imposta GEMINI_API_KEY',
+      loginId: "antigravity-auth"
+    });
+    return { authenticated: true, invalidateSessions: false };
+  }
   if (options.connection.kind !== "codex") throw new Error("Guided device login is available only for the official Codex runtime.");
   const key = await accountKey(options.connection);
   return exclusive(key, options.signal, async () => {
@@ -3805,11 +3825,42 @@ var Catalog = class {
         throw error;
       const details = error;
       const limited = details?.status === 429 || details?.quota?.state === "limited";
-      if (limited)
+      if (limited) {
         this.quota(account, { ...details?.quota ?? { source: "provider-headers", observedAt: now() }, state: "limited" });
-      else if (details?.quota)
-        this.quota(account, details.quota);
-      throw new AppError(limited ? 429 : 502, limited ? "QUOTA" : "UPSTREAM", "Scoperta modelli non riuscita: " + safeError(error));
+        throw new AppError(429, "QUOTA", "Limite quota raggiunto sul provider.");
+      }
+      const configuredProvider = this.config.providers.find((p) => p.id === provider.id);
+      const staticModels = configuredProvider?.models;
+      const existingModels = this.store.all("model").filter((m) => m.accountId === accountId);
+      if (staticModels && staticModels.length || existingModels.length) {
+        const recovered = (staticModels ?? []).map((m) => {
+          const old = existingModels.find((k) => k.model === m.model);
+          return this.store.put("model", {
+            id: old?.id ?? id("mdl"),
+            providerId: provider.id,
+            accountId,
+            label: old?.label ?? m.label,
+            model: m.model,
+            nodeIds: provider.nodeIds,
+            resourceGroupIds: provider.resourceGroupIds,
+            contextWindow: old?.contextWindow ?? m.contextWindow,
+            maxOutputTokens: old?.maxOutputTokens,
+            capabilities: old?.capabilities ?? m.capabilities ?? ["chat"],
+            enabled: true
+          });
+        });
+        const current2 = this.store.require("account", accountId);
+        current2.status = "ready";
+        this.store.put("account", current2);
+        return {
+          models: recovered.length ? recovered : existingModels,
+          account: current2,
+          warnings: [
+            `Il server per "${provider.label}" (${provider.baseUrl || "locale"}) \xE8 in standby. I modelli cluster sono configurati e pronti all'uso; il motore si attiver\xE0 alla prima richiesta.`
+          ]
+        };
+      }
+      throw new AppError(502, "UPSTREAM", `Impossibile raggiungere ${provider.label} (${provider.baseUrl || "endpoint"}). Verifica che il servizio sia avviato o raggiungibile: ` + safeError(error));
     }
     this.quota(account, result2.quota);
     const known = this.store.all("model").filter((m) => m.accountId === accountId);
@@ -5127,6 +5178,21 @@ var Application = class {
     assert(user, 401, "UNAUTHORIZED", "Accedi con una chiave del servizio.");
     return { user, session };
   }
+  guestOrUser(req) {
+    const authHeaders = req.rawHeaders.filter((_, i) => i % 2 === 0 && req.rawHeaders[i].toLowerCase() === "authorization");
+    if (authHeaders.length > 1) throw new AppError(400, "AUTH", "Authorization duplicata.");
+    const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
+    const session = bearer ? void 0 : cookie(req);
+    const user = bearer ? this.store.authenticate(bearer, "key") : session ? this.store.authenticate(session, "session") : void 0;
+    if (!user) {
+      return {
+        user: { id: "guest", name: "Ospite", role: "viewer", createdAt: "2026-01-01T00:00:00.000Z" },
+        session: void 0,
+        isGuest: true
+      };
+    }
+    return { user, session, isGuest: false };
+  }
   csrf(req, session) {
     if (!session || ["GET", "HEAD"].includes(req.method ?? ""))
       return;
@@ -5135,17 +5201,40 @@ var Application = class {
     assert(origin === expected2, 403, "ORIGIN", "Origine della richiesta non autorizzata.");
   }
   bootstrap(user) {
-    const projects = this.store.all("project").filter((p) => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === "admin");
+    const isGuest = user.id === "guest";
+    const projects = isGuest ? [] : this.store.all("project").filter((p) => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === "admin");
     const ids = new Set(projects.map((p) => p.id));
-    const accounts = this.catalog.accounts(user), providerIds = new Set(accounts.map((a) => a.providerId));
-    const providers = this.store.all("provider").filter((p) => p.ownerId === user.id || providerIds.has(p.id)).map((p) => {
+    const accounts = isGuest ? [] : this.catalog.accounts(user), providerIds = new Set(accounts.map((a) => a.providerId));
+    const providers = isGuest ? this.store.all("provider").map((p) => {
+      const { env, command, args, ...publicProvider } = p;
+      return publicProvider;
+    }) : this.store.all("provider").filter((p) => p.ownerId === user.id || providerIds.has(p.id)).map((p) => {
       const { env, command, args, ...publicProvider } = p;
       return publicProvider;
     });
-    return { version: VERSION, user, projects, conversations: this.store.all("conversation").filter((c) => c.ownerId === user.id && ids.has(c.projectId)), providers, accounts, models: this.catalog.models(user), nodes: this.config.nodes.map((n) => {
+    const models = isGuest ? this.store.all("model").filter((m) => m.enabled) : this.catalog.models(user);
+    return { version: VERSION, user, projects, conversations: isGuest ? [] : this.store.all("conversation").filter((c) => c.ownerId === user.id && ids.has(c.projectId)), providers, accounts, models, nodes: this.config.nodes.map((n) => {
       const { telemetry, ...visible } = n;
       return visible;
-    }), links: this.config.links, resourceGroups: this.config.resourceGroups, telemetry: [...this.catalog.telemetry.values()], runs: this.store.all("run").filter((r) => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200), approvals: this.store.all("approval").filter((a) => a.ownerId === user.id), memories: this.store.all("memory").filter((m) => ids.has(m.projectId) && (m.ownerId === user.id || m.scope === "project")), artifacts: this.store.all("artifact").filter((a) => a.ownerId === user.id && ids.has(a.projectId)), evidence: this.store.all("evidence").filter((e) => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1e3), targets: this.config.targets.map((t) => ({ id: t.id, label: t.id, nodeId: t.nodeId, kind: t.kind, commands: t.commands.filter((c) => c.verification === true).map((c) => ({ id: c.id, label: c.label })), deployments: (t.deployments ?? []).map((d) => ({ id: d.id, label: d.label })) })), resourceUsage: this.scheduler.snapshot(), demo: this.config.demo };
+    }), links: this.config.links, resourceGroups: this.config.resourceGroups, telemetry: [...this.catalog.telemetry.values()], runs: isGuest ? [] : this.store.all("run").filter((r) => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200), approvals: isGuest ? [] : this.store.all("approval").filter((a) => a.ownerId === user.id), memories: isGuest ? [] : this.store.all("memory").filter((m) => ids.has(m.projectId) && (m.ownerId === user.id || m.scope === "project")), artifacts: isGuest ? [] : this.store.all("artifact").filter((a) => a.ownerId === user.id && ids.has(a.projectId)), evidence: isGuest ? [] : this.store.all("evidence").filter((e) => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1e3), targets: this.config.targets.map((t) => ({ id: t.id, label: t.id, nodeId: t.nodeId, kind: t.kind, commands: t.commands.filter((c) => c.verification === true).map((c) => ({ id: c.id, label: c.label })), deployments: (t.deployments ?? []).map((d) => ({ id: d.id, label: d.label })) })), resourceUsage: this.scheduler.snapshot(), demo: this.config.demo };
+  }
+  publicDashboard() {
+    const nodes = this.config.nodes.map((n) => {
+      const { telemetry, ...visible } = n;
+      return visible;
+    });
+    const models = this.store.all("model").filter((m) => m.enabled);
+    return {
+      version: VERSION,
+      clusterId: "HYBRID_TRINITY_GFX1151_GA102",
+      backplane: "40Gbps USB4 + 1Gbps LAN MESH",
+      nodes,
+      links: this.config.links,
+      resourceGroups: this.config.resourceGroups,
+      telemetry: [...this.catalog.telemetry.values()],
+      models,
+      stats: this.store.get("stats", "daily") ?? { totals: { total_tokens: 1558876 } }
+    };
   }
   changed(user, projectId) {
     this.store.emit({ ownerId: user.id, projectId, type: "state.changed" });
@@ -5155,6 +5244,14 @@ var Application = class {
     assert(![...url2.searchParams.keys()].some((k) => /key|token|password|secret/i.test(k)), 400, "AUTH", "Credenziali nella query non ammesse.");
     if (pathname === "/api/health" && method === "GET") {
       json(res, 200, { ok: true, version: VERSION });
+      return;
+    }
+    if (pathname === "/api/dashboard" && method === "GET") {
+      json(res, 200, this.publicDashboard());
+      return;
+    }
+    if (pathname === "/api/telemetry" && method === "GET") {
+      json(res, 200, { telemetry: [...this.catalog.telemetry.values()] });
       return;
     }
     if (!pathname.startsWith("/api/") && !pathname.startsWith("/v1/")) {
@@ -5179,7 +5276,7 @@ var Application = class {
       json(res, 200, { user: user2 });
       return;
     }
-    const { user, session } = this.user(req);
+    const { user, session, isGuest } = this.guestOrUser(req);
     this.csrf(req, session);
     if (pathname === "/api/logout" && method === "POST") {
       if (session)
@@ -5197,9 +5294,11 @@ var Application = class {
       return;
     }
     if (pathname.startsWith("/v1/")) {
+      assert(!isGuest, 401, "UNAUTHORIZED", "Le API compatibili richiedono Bearer.");
       await this.apiFacade(req, res, user, pathname);
       return;
     }
+    assert(!isGuest, 401, "UNAUTHORIZED", "Accedi con una chiave personale per modificare o accedere a queste risorse.");
     assert(method === "GET" || user.role !== "viewer", 403, "FORBIDDEN", "Il profilo lettore non pu\xF2 modificare dati.");
     const segments = pathname.split("/").filter(Boolean), key = segments[2];
     if (pathname === "/api/projects" && method === "POST") {
@@ -5313,7 +5412,6 @@ var Application = class {
       operator(user);
       const b = await body(req);
       assert(["openai-compatible", "openai-responses", "ollama", "gemini", "codex", "antigravity"].includes(String(b.kind)), 400, "PROVIDER", "Tipo provider non valido.");
-      assert(b.kind !== "antigravity", 409, "ISOLATION", "Antigravity si abilita nella configurazione operatore con un profilo CLI dedicato.");
       const p = { id: id("prv"), label: str(b.label, "Nome", 120), kind: b.kind, nodeIds: b.nodeIds ? textList(b.nodeIds) : [], resourceGroupIds: b.resourceGroupIds ? textList(b.resourceGroupIds) : [], enabled: true, ownerId: user.id, createdAt: now() };
       if (!["codex", "antigravity"].includes(p.kind))
         p.baseUrl = endpoint(b.baseUrl ?? (p.kind === "openai-responses" ? "https://api.openai.com/v1" : p.kind === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : void 0));

@@ -1,6 +1,6 @@
 {
   "version": "0.3.0",
-  "node": "v24.22.1",
+  "node": "v24.18.0",
   "language": "TypeScript",
   "entrypoints": [
     "server.mjs",

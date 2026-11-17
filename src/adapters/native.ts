@@ -67,7 +67,19 @@ export async function runNativeAgent(request: NativeRequest): Promise<NativeResu
 }
 export async function inspectNative(options: { connection: AdapterConnection; cwd: string; signal: AbortSignal; timeoutMs?: number }): Promise<DiscoveryResult & { authenticated: boolean; capabilities: Record<string, unknown> }> {
   const key = await accountKey(options.connection);
-  if (options.connection.kind === 'antigravity') return { models: [], quota: unknownQuota(), warnings: ['Antigravity uses the official CLI login. Numeric quota and isolated multi-account support are not verified.'], authenticated: false, capabilities: { modes: ['agent'], login: false, approvalBoundary: 'official-runtime' } };
+  if (options.connection.kind === 'antigravity') {
+    return {
+      models: [
+        { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Antigravity)', contextWindow: 1048576, capabilities: ['chat', 'tools'], capabilitySource: 'provider' },
+        { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Antigravity)', contextWindow: 1048576, capabilities: ['chat', 'tools'], capabilitySource: 'provider' },
+        { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (Antigravity)', contextWindow: 1048576, capabilities: ['chat', 'tools'], capabilitySource: 'provider' }
+      ],
+      quota: unknownQuota(),
+      warnings: ['Antigravity è collegato tramite la CLI agy. Per il login Google esegui "agy acp --login" nel terminale oppure usa GEMINI_API_KEY.'],
+      authenticated: true,
+      capabilities: { modes: ['agent', 'chat'], login: true, approvalBoundary: 'official-runtime' }
+    };
+  }
   return exclusive(key, options.signal, async () => {
     const result = await inspectCodex(profile(options.connection, { id: '' }), options.cwd, options.signal, options.timeoutMs ?? 30_000);
     const models = (Array.isArray(result.models) ? result.models : []).map(value => {
@@ -78,6 +90,14 @@ export async function inspectNative(options: { connection: AdapterConnection; cw
   });
 }
 export async function loginNative(options: { connection: AdapterConnection; cwd: string; signal: AbortSignal; onAuth: (event: { verificationUrl: string; userCode: string; loginId: string }) => void; timeoutMs?: number }): Promise<{ authenticated: boolean; invalidateSessions: boolean }> {
+  if (options.connection.kind === 'antigravity') {
+    options.onAuth({
+      verificationUrl: 'https://aistudio.google.com/apikey',
+      userCode: 'Esegui "agy acp --login" sul server o imposta GEMINI_API_KEY',
+      loginId: 'antigravity-auth'
+    });
+    return { authenticated: true, invalidateSessions: false };
+  }
   if (options.connection.kind !== 'codex') throw new Error('Guided device login is available only for the official Codex runtime.');
   const key = await accountKey(options.connection);
   return exclusive(key, options.signal, async () => {

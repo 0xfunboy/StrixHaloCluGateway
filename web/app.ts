@@ -57,7 +57,7 @@ export class ControlRoom {
       <label class="sr-only" for="history-search">Cerca una conversazione</label><input id="history-search" class="history-search" type="search" placeholder="Cerca nelle tue conversazioni…" autocomplete="off"><div class="history" id="history"></div>
       <div class="sidebar-footer"><div class="avatar" id="user-avatar">y</div><div class="user-copy"><strong id="user-name">Il tuo spazio</strong><small id="user-role">Connessione…</small></div><button class="icon-button" id="user-action" aria-label="Esci" title="Esci"></button></div></aside>
       <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="Chiudi navigazione"></button>
-      <main class="workspace"><header class="topbar"><div class="row"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Apri navigazione"></button><div><div class="breadcrumb" id="breadcrumb">yed1z / il tuo workspace</div><h1 id="page-title">Control room</h1></div></div><div class="topbar-actions"><span class="connection-state" id="connection-state"><i class="status-dot"></i>COLLEGAMENTO</span><button class="button subtle" id="project-settings"><span>Progetto</span></button><button class="button subtle mobile-team-button" id="show-team"><span>Squadra</span></button></div></header>
+      <main class="workspace"><header class="topbar"><div class="row"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Apri navigazione"></button><div><div class="breadcrumb" id="breadcrumb">yed1z / il tuo workspace</div><h1 id="page-title">Control room</h1></div></div><div class="topbar-actions"><span class="connection-state" id="connection-state"><i class="status-dot"></i>COLLEGAMENTO</span><button class="button primary" id="guest-login-btn" hidden style="font-weight:700">Accedi</button><button class="button subtle" id="project-settings"><span>Progetto</span></button><button class="button subtle mobile-team-button" id="show-team"><span>Squadra</span></button></div></header>
       <section class="fleet-ribbon" id="fleet-ribbon" aria-label="Stato dell'infrastruttura"></section><div class="banner" id="banner" role="status" hidden><span></span><button class="icon-button" id="close-banner" aria-label="Chiudi avviso"></button></div>
       <div class="content" id="content"><section class="control-room" id="control-view" aria-label="Control room"><section class="conversation" aria-label="Orchestratore e conversazione"><header class="conversation-heading"><div><h2><i class="role-orb"></i>Il tuo orchestratore</h2><p id="conversation-subtitle">Un obiettivo. Una squadra. Tutto sotto controllo.</p></div><div class="conversation-actions"><button id="export-conversation" class="icon-button export-button" aria-label="Esporta conversazione" title="Esporta conversazione"></button><button id="context-info" class="icon-button" aria-label="Contesto dell'ultima attività" title="Contesto dell'ultima attività"></button></div></header>
       <div id="messages" class="messages" role="log" aria-label="Messaggi" aria-live="off"></div><div class="composer-wrap"><form id="composer" class="composer"><div id="attachments-preview" class="attachments-preview" hidden></div><label class="sr-only" for="message-input">Parla con il tuo orchestratore</label><textarea id="message-input" rows="3" maxlength="100000" placeholder="Descrivi il risultato che vuoi ottenere. Al resto lavoriamo insieme." required></textarea><div class="composer-tools"><button id="attach-file" class="icon-button" type="button" aria-label="Allega un documento" title="Allega un documento"></button><button id="model-picker" class="model-button" type="button" aria-haspopup="dialog"><span id="model-label">Scegli modello e account</span></button><label class="sr-only" for="mode-select">Modalità</label><select id="mode-select"><option value="mission">Squadra</option><option value="chat">Chat</option></select><button id="mission-settings" class="icon-button" type="button" aria-label="Autonomia e limiti" title="Autonomia e limiti"></button><button id="send" class="send" type="submit" aria-label="Invia all'orchestratore"></button><button id="stop" class="send stop" type="button" aria-label="Interrompi attività" hidden></button></div></form><div class="composer-caption"><span id="composer-status">Il contesto resta nel progetto.</span><span class="keyboard-hint">Invio ↵ · A capo ⇧↵</span></div></div></section>
@@ -78,7 +78,7 @@ export class ControlRoom {
   private select(options: Array<{ value: string; label: string }>, value = ''): HTMLSelectElement { const select = this.el('select'); for (const item of options) { const option = this.el('option', '', item.label); option.value = item.value; select.append(option); } select.value = value; return select; }
 
   private installIcons(): void {
-    const ids: Record<string, string> = { 'new-project': 'plus', 'new-conversation': 'plus', 'user-action': this.api.native ? 'settings' : 'logout', 'mobile-menu': 'menu', 'project-settings': 'settings', 'show-team': 'people', 'close-banner': 'close', 'export-conversation': 'download', 'context-info': 'layers', 'attach-file': 'paperclip', 'mission-settings': 'settings', send: 'up', stop: 'stop', 'close-team': 'close' };
+    const ids: Record<string, string> = { 'new-project': 'plus', 'new-conversation': 'plus', 'user-action': this.api.native ? 'settings' : 'logout', 'mobile-menu': 'menu', 'project-settings': 'settings', 'show-team': 'people', 'close-banner': 'close', 'export-conversation': 'download', 'context-info': 'layers', 'attach-file': 'paperclip', 'mission-settings': 'settings', send: 'up', stop: 'stop', 'close-team': 'close', 'guest-login-btn': 'shield' };
     for (const [id, icon] of Object.entries(ids)) this.q(`#${id}`).prepend(this.icon(icon));
     this.q('#team-title').prepend(this.icon('people'));
     const navigation: Record<View, string> = { control: 'grid', infrastructure: 'activity', knowledge: 'book', connections: 'plug', releases: 'rocket' };
@@ -100,6 +100,7 @@ export class ControlRoom {
     this.q('#composer').addEventListener('submit', event => { event.preventDefault(); void this.send(); });
     this.q<HTMLTextAreaElement>('#message-input').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.q<HTMLFormElement>('#composer').requestSubmit(); } });
     this.q('#message-input').addEventListener('input', () => this.updateComposer());
+    this.q('#message-input').addEventListener('click', () => { if (this.data?.user.id === 'guest') this.showLogin(); });
     this.q('#mode-select').addEventListener('change', () => this.updateComposer());
     this.q('#stop').addEventListener('click', () => { const run = this.currentRun; if (run) void this.runAction(run, 'cancel'); });
     this.q('#attach-file').addEventListener('click', () => this.attachmentDialog());
@@ -107,7 +108,8 @@ export class ControlRoom {
     this.q('#mission-settings').addEventListener('click', () => this.autonomyDialog());
     this.q('#context-info').addEventListener('click', () => { const task = this.currentRun?.tasks.findLast(item => item.context); if (task?.context) this.contextDialog(task.context); else this.toast('Il contesto sarà visibile dopo la prima chiamata a un agente.'); });
     this.q('#export-conversation').addEventListener('click', () => { if (this.conversation) void this.downloadJson(`${safeFilename(this.conversation.title)}.json`, this.conversation).catch(error => this.showBanner(errorMessage(error), true)); });
-    this.q('#user-action').addEventListener('click', () => { if (this.api.native) this.api.configure?.(); else void this.logout(); });
+    this.q('#user-action').addEventListener('click', () => { if (this.api.native) this.api.configure?.(); else if (this.data?.user.id === 'guest') this.showLogin(); else void this.logout(); });
+    this.q('#guest-login-btn').addEventListener('click', () => this.showLogin());
     this.q('#mobile-menu').addEventListener('click', () => this.q('#shell').classList.toggle('sidebar-open'));
     this.q('#sidebar-backdrop').addEventListener('click', () => this.q('#shell').classList.remove('sidebar-open'));
     this.q('#show-team').addEventListener('click', () => { this.setView('control'); this.q('#shell').classList.toggle('team-open'); });
@@ -138,6 +140,9 @@ export class ControlRoom {
         this.chooseConversation();
         if (!data.models.some(item => item.id === this.routeId && this.usableRoute(item))) { const suggested = this.conversation?.routeId ?? this.project?.routes.primary; this.routeId = data.models.find(item => item.id === suggested && this.usableRoute(item))?.id ?? data.models.find(item => this.usableRoute(item))?.id ?? ''; }
         this.loginDialog?.close(); this.loginDialog = undefined;
+        if (initial && data.user.id === 'guest') {
+          this.view = 'infrastructure';
+        }
         this.render();
         if (!this.subscription) this.subscription = this.api.subscribe(event => this.onEvent(event), connected => { this.connected = connected; this.renderConnection(); if (!connected) this.scheduleRefresh(); });
         if (initial && data.demo) this.showBanner('MODALITÀ DEMO · Dati di esempio dichiarati. Nessuna connessione ai nodi reali.');
@@ -192,13 +197,19 @@ export class ControlRoom {
 
   private render(): void {
     if (!this.data) return;
+    const isGuest = this.data.user.id === 'guest';
+    const guestBtn = this.q<HTMLButtonElement>('#guest-login-btn');
+    if (guestBtn) guestBtn.hidden = !isGuest;
     const projectSelect = this.q<HTMLSelectElement>('#project-select'); projectSelect.replaceChildren();
-    if (!this.data.projects.length) { const option = this.el('option', '', 'Crea un progetto'); option.value = ''; projectSelect.append(option); }
+    if (!this.data.projects.length) { const option = this.el('option', '', isGuest ? 'Modalità ospite' : 'Crea un progetto'); option.value = ''; projectSelect.append(option); }
     for (const project of this.data.projects) { const option = this.el('option', '', project.name); option.value = project.id; projectSelect.append(option); }
     projectSelect.value = this.projectId;
-    this.q('#user-name').textContent = this.data.user.name; this.q('#user-role').textContent = `${roleLabels[this.data.user.role]} · v${this.data.version}`;
-    this.q('#user-avatar').textContent = initials(this.data.user.name);
-    this.q('#breadcrumb').textContent = `yed1z / ${this.project?.name ?? 'il tuo workspace'}`;
+    this.q('#user-name').textContent = isGuest ? 'Ospite (Cluster)' : this.data.user.name;
+    this.q('#user-role').textContent = isGuest ? `Sola lettura · v${this.data.version}` : `${roleLabels[this.data.user.role]} · v${this.data.version}`;
+    this.q('#user-avatar').textContent = isGuest ? '⚡' : initials(this.data.user.name);
+    this.q('#user-action').setAttribute('aria-label', isGuest ? 'Accedi' : 'Esci');
+    this.q('#user-action').title = isGuest ? 'Accedi alla control room' : 'Esci';
+    this.q('#breadcrumb').textContent = `yed1z / ${this.project?.name ?? (isGuest ? 'infrastruttura cluster' : 'il tuo workspace')}`;
     this.q<HTMLButtonElement>('#new-project').disabled = !this.canWrite;
     this.q<HTMLButtonElement>('#project-settings').disabled = !this.project || !this.canWrite || (this.project.ownerId !== this.data.user.id && this.data.user.role !== 'admin');
     this.q<HTMLButtonElement>('#new-conversation').disabled = !this.project || !this.canWrite;
@@ -627,8 +638,8 @@ export class ControlRoom {
   private connectionDialog(existing?: Provider): void {
     if (!this.data || !this.canWrite) return;
     const { dialog, body } = this.modal('Collega un account', 'Scegli il servizio. Verifichiamo la connessione e troviamo i modelli disponibili.'); const form = this.el('form');
-    const presets = [ { value: 'ollama', label: 'Ollama · modelli locali' }, { value: 'lmstudio', label: 'LM Studio · modelli locali' }, { value: 'openai-compatible', label: 'Endpoint compatibile OpenAI' }, { value: 'gemrouter', label: 'GemRouter · provider di inferenza' }, { value: 'openai-responses', label: 'OpenAI · API' }, { value: 'gemini', label: 'Gemini · API' }, { value: 'codex', label: 'Codex · accesso ufficiale' } ];
-    const options = [ ...this.data.providers.filter(item => item.kind !== 'antigravity' && (this.operator || item.kind !== 'codex')).map(item => ({ value: `existing:${item.id}`, label: `${item.label} · nuovo account` })), ...(this.operator ? presets : []) ];
+    const presets = [ { value: 'ollama', label: 'Ollama · modelli locali' }, { value: 'lmstudio', label: 'LM Studio · modelli locali' }, { value: 'openai-compatible', label: 'Endpoint compatibile OpenAI' }, { value: 'gemrouter', label: 'GemRouter · provider di inferenza' }, { value: 'openai-responses', label: 'OpenAI · API' }, { value: 'gemini', label: 'Gemini · API' }, { value: 'codex', label: 'Codex · accesso ufficiale' }, { value: 'antigravity', label: 'Antigravity · CLI ufficiale (agy)' } ];
+    const options = [ ...this.data.providers.filter(item => (this.operator || !['codex', 'antigravity'].includes(item.kind))).map(item => ({ value: `existing:${item.id}`, label: `${item.label} · nuovo account` })), ...(this.operator ? presets : []) ];
     const service = this.select(options, existing ? `existing:${existing.id}` : this.operator ? 'ollama' : options[0]?.value ?? '');
     const providerName = this.input('text', '', 'Nome della connessione'); const url = this.input('url'); const label = this.input('text', '', 'Personale, Lavoro, Account 2…'); label.required = true; label.maxLength = 80;
     const secret = this.input('password'); secret.autocomplete = 'off'; const nativeSecret = this.input('checkbox'); const shared = this.input('checkbox');
@@ -644,7 +655,7 @@ export class ControlRoom {
     if (this.operator) { advanced.append(this.el('p', 'fine-print', 'Nodi che forniscono inferenza'), nodeChecks, this.el('p', 'fine-print', 'Risorse da riservare durante le richieste'), groupChecks); const row = this.el('label', 'row fine-print'); row.append(shared, this.document.createTextNode('Rendi questo account disponibile agli utenti autorizzati')); advanced.append(row); }
     form.append(advanced); const error = this.el('p', 'form-error'); error.hidden = true; const submit = this.el('button', 'button primary full', 'Verifica e trova modelli'); submit.type = 'submit'; form.append(error, submit); body.append(form);
     let createdProviderId: string | undefined; let createdAccountId: string | undefined;
-    const apply = () => { const chosen = this.data!.providers.find(item => service.value === `existing:${item.id}`); const kind = chosen?.kind ?? service.value; const cli = ['codex', 'antigravity'].includes(kind); urlField.hidden = !!chosen || cli; providerName.disabled = !!chosen; nodeChecks.hidden = !!chosen || cli; groupChecks.hidden = !!chosen || cli; secretField.hidden = cli; const defaults: Record<string, string> = { ollama: 'http://127.0.0.1:11434', lmstudio: 'http://127.0.0.1:1234/v1', 'openai-responses': 'https://api.openai.com/v1', gemini: 'https://generativelanguage.googleapis.com/v1beta', gemrouter: '', 'openai-compatible': '' }; url.value = chosen?.baseUrl ?? defaults[service.value] ?? ''; url.required = !chosen && !cli; providerName.value = chosen?.label ?? presets.find(item => item.value === service.value)?.label.split(' · ')[0] ?? ''; note.textContent = cli ? kind === 'codex' ? 'La CLI ufficiale Codex deve essere installata sul server. Creiamo un profilo isolato e avviamo l’accesso ufficiale; dopo il login usa Trova modelli.' : 'Usa l’account Antigravity già autenticato nella CLI sul server. Account isolati multipli non supportati.' : 'Un provider può esporre più modelli. Li rileveremo senza aggiungerli uno per uno.'; submit.textContent = kind === 'codex' ? 'Collega e accedi a Codex' : 'Verifica e trova modelli'; createdProviderId = undefined; createdAccountId = undefined; };
+    const apply = () => { const chosen = this.data!.providers.find(item => service.value === `existing:${item.id}`); const kind = chosen?.kind ?? service.value; const cli = ['codex', 'antigravity'].includes(kind); urlField.hidden = !!chosen || cli; providerName.disabled = !!chosen; nodeChecks.hidden = !!chosen || cli; groupChecks.hidden = !!chosen || cli; secretField.hidden = cli; const defaults: Record<string, string> = { ollama: 'http://127.0.0.1:11434', lmstudio: 'http://127.0.0.1:1234/v1', 'openai-responses': 'https://api.openai.com/v1', gemini: 'https://generativelanguage.googleapis.com/v1beta', gemrouter: '', 'openai-compatible': '' }; url.value = chosen?.baseUrl ?? defaults[service.value] ?? ''; url.required = !chosen && !cli; providerName.value = chosen?.label ?? presets.find(item => item.value === service.value)?.label.split(' · ')[0] ?? ''; note.textContent = cli ? kind === 'codex' ? 'La CLI ufficiale Codex è installata sul server. Creiamo un profilo isolato e avviamo l’accesso ufficiale via codice di verifica.' : 'La CLI ufficiale Antigravity (agy) è installata sul server. Gestisce i modelli Gemini con strumenti e agenti.' : 'Un provider può esporre più modelli. Li rileveremo senza aggiungerli uno per uno.'; submit.textContent = kind === 'codex' ? 'Collega e accedi a Codex' : kind === 'antigravity' ? 'Collega Antigravity (agy)' : 'Verifica e trova modelli'; createdProviderId = undefined; createdAccountId = undefined; };
     const changeService = () => { secret.value = ''; nativeSecret.checked = false; const cli = service.value === 'codex' || this.data!.providers.some(item => service.value === `existing:${item.id}` && ['codex', 'antigravity'].includes(item.kind)); shared.disabled = cli; if (cli) { shared.checked = false; for (const check of [...nodeChecks.querySelectorAll<HTMLInputElement>('input'), ...groupChecks.querySelectorAll<HTMLInputElement>('input')]) check.checked = false; } apply(); };
     service.addEventListener('change', changeService); changeService();
     if (!options.length) { submit.disabled = true; note.textContent = 'L’operatore deve prima configurare almeno un provider.'; }
@@ -715,6 +726,10 @@ export class ControlRoom {
   }
 
   private async send(): Promise<void> {
+    if (this.data?.user.id === 'guest') {
+      this.showLogin();
+      return;
+    }
     if (this.sending || !this.canWrite || !this.project || !this.routeId) return;
     const input = this.q<HTMLTextAreaElement>('#message-input'); const text = input.value.trim(); if (!text) return;
     const active = this.currentRun && !closedRunStatuses.has(this.currentRun.status);

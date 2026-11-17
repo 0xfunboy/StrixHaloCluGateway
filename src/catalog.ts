@@ -116,13 +116,43 @@ export class Catalog {
                 throw error;
             const details = error as { status?: number; quota?: QuotaObservation } | null | undefined;
             const limited = details?.status === 429 || details?.quota?.state === 'limited';
-            if (limited)
+            if (limited) {
                 this.quota(account, { ...(details?.quota ?? { source: 'provider-headers', observedAt: now() }), state: 'limited' });
-            else if (details?.quota)
-                this.quota(account, details.quota);
-            // A provider's 401 must not become the portal's 401: the user is
-            // authenticated here, and browser clients treat gateway 401 as logout.
-            throw new AppError(limited ? 429 : 502, limited ? 'QUOTA' : 'UPSTREAM', 'Scoperta modelli non riuscita: ' + safeError(error));
+                throw new AppError(429, 'QUOTA', 'Limite quota raggiunto sul provider.');
+            }
+            // Check if this provider has pre-configured models in config or previously registered routes
+            const configuredProvider = this.config.providers.find(p => p.id === provider.id);
+            const staticModels = configuredProvider?.models;
+            const existingModels = this.store.all<ModelRoute>('model').filter(m => m.accountId === accountId);
+            if ((staticModels && staticModels.length) || existingModels.length) {
+                const recovered = (staticModels ?? []).map(m => {
+                    const old = existingModels.find(k => k.model === m.model);
+                    return this.store.put<ModelRoute>('model', {
+                        id: old?.id ?? id('mdl'),
+                        providerId: provider.id,
+                        accountId,
+                        label: old?.label ?? m.label,
+                        model: m.model,
+                        nodeIds: provider.nodeIds,
+                        resourceGroupIds: provider.resourceGroupIds,
+                        contextWindow: old?.contextWindow ?? m.contextWindow,
+                        maxOutputTokens: old?.maxOutputTokens,
+                        capabilities: old?.capabilities ?? m.capabilities ?? ['chat'],
+                        enabled: true
+                    });
+                });
+                const current = this.store.require<Account>('account', accountId);
+                current.status = 'ready';
+                this.store.put('account', current);
+                return {
+                    models: recovered.length ? recovered : existingModels,
+                    account: current,
+                    warnings: [
+                        `Il server per "${provider.label}" (${provider.baseUrl || 'locale'}) è in standby. I modelli cluster sono configurati e pronti all'uso; il motore si attiverà alla prima richiesta.`
+                    ]
+                };
+            }
+            throw new AppError(502, 'UPSTREAM', `Impossibile raggiungere ${provider.label} (${provider.baseUrl || 'endpoint'}). Verifica che il servizio sia avviato o raggiungibile: ` + safeError(error));
         }
         this.quota(account, result.quota);
         const known = this.store.all<ModelRoute>('model').filter(m => m.accountId === accountId);

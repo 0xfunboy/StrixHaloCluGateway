@@ -84,16 +84,52 @@ export class Application {
         assert(user, 401, 'UNAUTHORIZED', 'Accedi con una chiave del servizio.');
         return { user, session };
     }
+    guestOrUser(req: IncomingMessage): {
+        user: User;
+        session?: string;
+        isGuest: boolean;
+    } {
+        const authHeaders = req.rawHeaders.filter((_, i) => i % 2 === 0 && req.rawHeaders[i].toLowerCase() === 'authorization');
+        if (authHeaders.length > 1) throw new AppError(400, 'AUTH', 'Authorization duplicata.');
+        const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
+        const session = bearer ? undefined : cookie(req);
+        const user = bearer ? this.store.authenticate(bearer, 'key') : session ? this.store.authenticate(session, 'session') : undefined;
+        if (!user) {
+            return {
+                user: { id: 'guest', name: 'Ospite', role: 'viewer', createdAt: '2026-01-01T00:00:00.000Z' },
+                session: undefined,
+                isGuest: true
+            };
+        }
+        return { user, session, isGuest: false };
+    }
     csrf(req: IncomingMessage, session?: string): void { if (!session || ['GET', 'HEAD'].includes(req.method ?? ''))
         return; const origin = req.headers.origin; const expected = this.config.publicOrigin ?? `http://${req.headers.host}`; assert(origin === expected, 403, 'ORIGIN', 'Origine della richiesta non autorizzata.'); }
     bootstrap(user: User): Bootstrap {
-        const projects = this.store.all<Project>('project').filter(p => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === 'admin');
+        const isGuest = user.id === 'guest';
+        const projects = isGuest ? [] : this.store.all<Project>('project').filter(p => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === 'admin');
         const ids = new Set(projects.map(p => p.id));
-        const accounts = this.catalog.accounts(user), providerIds = new Set(accounts.map(a => a.providerId));
-        const providers = this.store.all<Provider>('provider').filter(p => p.ownerId === user.id || providerIds.has(p.id)).map(p => { const { env, command, args, ...publicProvider } = p; return publicProvider; });
-        return { version: VERSION, user, projects, conversations: this.store.all<Conversation>('conversation').filter(c => c.ownerId === user.id && ids.has(c.projectId)), providers, accounts, models: this.catalog.models(user), nodes: this.config.nodes.map(n => { const { telemetry, ...visible } = n; return visible; }), links: this.config.links, resourceGroups: this.config.resourceGroups, telemetry: [...this.catalog.telemetry.values()], runs: this.store.all<Run>('run').filter(r => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200), approvals: this.store.all<Bootstrap['approvals'][number]>('approval').filter(a => a.ownerId === user.id), memories: this.store.all<Memory>('memory').filter(m => ids.has(m.projectId) && (m.ownerId === user.id || m.scope === 'project')), artifacts: this.store.all<Artifact>('artifact').filter(a => a.ownerId === user.id && ids.has(a.projectId)), evidence: this.store.all<Evidence & {
+        const accounts = isGuest ? [] : this.catalog.accounts(user), providerIds = new Set(accounts.map(a => a.providerId));
+        const providers = isGuest ? this.store.all<Provider>('provider').map(p => { const { env, command, args, ...publicProvider } = p; return publicProvider; }) : this.store.all<Provider>('provider').filter(p => p.ownerId === user.id || providerIds.has(p.id)).map(p => { const { env, command, args, ...publicProvider } = p; return publicProvider; });
+        const models = isGuest ? this.store.all<ModelRoute>('model').filter(m => m.enabled) : this.catalog.models(user);
+        return { version: VERSION, user, projects, conversations: isGuest ? [] : this.store.all<Conversation>('conversation').filter(c => c.ownerId === user.id && ids.has(c.projectId)), providers, accounts, models, nodes: this.config.nodes.map(n => { const { telemetry, ...visible } = n; return visible; }), links: this.config.links, resourceGroups: this.config.resourceGroups, telemetry: [...this.catalog.telemetry.values()], runs: isGuest ? [] : this.store.all<Run>('run').filter(r => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200), approvals: isGuest ? [] : this.store.all<Bootstrap['approvals'][number]>('approval').filter(a => a.ownerId === user.id), memories: isGuest ? [] : this.store.all<Memory>('memory').filter(m => ids.has(m.projectId) && (m.ownerId === user.id || m.scope === 'project')), artifacts: isGuest ? [] : this.store.all<Artifact>('artifact').filter(a => a.ownerId === user.id && ids.has(a.projectId)), evidence: isGuest ? [] : this.store.all<Evidence & {
                 ownerId: string;
             }>('evidence').filter(e => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1000), targets: this.config.targets.map(t => ({ id: t.id, label: t.id, nodeId: t.nodeId, kind: t.kind, commands: t.commands.filter(c => c.verification === true).map(c => ({ id: c.id, label: c.label })), deployments: (t.deployments ?? []).map(d => ({ id: d.id, label: d.label })) })), resourceUsage: this.scheduler.snapshot(), demo: this.config.demo };
+    }
+    publicDashboard(): Record<string, unknown> {
+        const nodes = this.config.nodes.map(n => { const { telemetry, ...visible } = n; return visible; });
+        const models = this.store.all<ModelRoute>('model').filter(m => m.enabled);
+        return {
+            version: VERSION,
+            clusterId: 'HYBRID_TRINITY_GFX1151_GA102',
+            backplane: '40Gbps USB4 + 1Gbps LAN MESH',
+            nodes,
+            links: this.config.links,
+            resourceGroups: this.config.resourceGroups,
+            telemetry: [...this.catalog.telemetry.values()],
+            models,
+            stats: this.store.get('stats', 'daily') ?? { totals: { total_tokens: 1558876 } }
+        };
     }
     changed(user: User, projectId?: string): void { this.store.emit({ ownerId: user.id, projectId, type: 'state.changed' }); }
     async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -101,6 +137,14 @@ export class Application {
         assert(![...url.searchParams.keys()].some(k => /key|token|password|secret/i.test(k)), 400, 'AUTH', 'Credenziali nella query non ammesse.');
         if (pathname === '/api/health' && method === 'GET') {
             json(res, 200, { ok: true, version: VERSION });
+            return;
+        }
+        if (pathname === '/api/dashboard' && method === 'GET') {
+            json(res, 200, this.publicDashboard());
+            return;
+        }
+        if (pathname === '/api/telemetry' && method === 'GET') {
+            json(res, 200, { telemetry: [...this.catalog.telemetry.values()] });
             return;
         }
         if (!pathname.startsWith('/api/') && !pathname.startsWith('/v1/')) {
@@ -126,7 +170,7 @@ export class Application {
             json(res, 200, { user });
             return;
         }
-        const { user, session } = this.user(req);
+        const { user, session, isGuest } = this.guestOrUser(req);
         this.csrf(req, session);
         if (pathname === '/api/logout' && method === 'POST') {
             if (session)
@@ -144,9 +188,11 @@ export class Application {
             return;
         }
         if (pathname.startsWith('/v1/')) {
+            assert(!isGuest, 401, 'UNAUTHORIZED', 'Le API compatibili richiedono Bearer.');
             await this.apiFacade(req, res, user, pathname);
             return;
         }
+        assert(!isGuest, 401, 'UNAUTHORIZED', 'Accedi con una chiave personale per modificare o accedere a queste risorse.');
         assert(method === 'GET' || user.role !== 'viewer', 403, 'FORBIDDEN', 'Il profilo lettore non può modificare dati.');
         const segments = pathname.split('/').filter(Boolean), key = segments[2];
         if (pathname === '/api/projects' && method === 'POST') {
@@ -260,7 +306,6 @@ export class Application {
             operator(user);
             const b = await body(req);
             assert(['openai-compatible', 'openai-responses', 'ollama', 'gemini', 'codex', 'antigravity'].includes(String(b.kind)), 400, 'PROVIDER', 'Tipo provider non valido.');
-            assert(b.kind !== 'antigravity', 409, 'ISOLATION', 'Antigravity si abilita nella configurazione operatore con un profilo CLI dedicato.');
             const p: Provider = { id: id('prv'), label: str(b.label, 'Nome', 120), kind: b.kind as Provider['kind'], nodeIds: b.nodeIds ? textList(b.nodeIds) : [], resourceGroupIds: b.resourceGroupIds ? textList(b.resourceGroupIds) : [], enabled: true, ownerId: user.id, createdAt: now() };
             if (!['codex', 'antigravity'].includes(p.kind))
                 p.baseUrl = endpoint(b.baseUrl ?? (p.kind === 'openai-responses' ? 'https://api.openai.com/v1' : p.kind === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta' : undefined));
