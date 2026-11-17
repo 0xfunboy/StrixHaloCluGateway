@@ -189,7 +189,9 @@ var init_local_telemetry = __esm({
 
 // src/server.ts
 import { createServer } from "node:http";
-import { existsSync as existsSync2, readFileSync as readFileSync4, realpathSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync4, realpathSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { execFile as execFile2, spawn as spawn4 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
 import path11 from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -3827,7 +3829,11 @@ var Catalog = class {
       const limited = details?.status === 429 || details?.quota?.state === "limited";
       if (limited) {
         this.quota(account, { ...details?.quota ?? { source: "provider-headers", observedAt: now() }, state: "limited" });
-        throw new AppError(429, "QUOTA", "Limite quota raggiunto sul provider.");
+        throw new AppError(429, "QUOTA", "Scoperta modelli non riuscita (429): " + safeError(error));
+      }
+      if (details?.status !== void 0) {
+        if (details?.quota) this.quota(account, details.quota);
+        throw new AppError(502, "UPSTREAM", "Scoperta modelli non riuscita: " + safeError(error));
       }
       const configuredProvider = this.config.providers.find((p) => p.id === provider.id);
       const staticModels = configuredProvider?.models;
@@ -5096,6 +5102,91 @@ function parseReview(text) {
 }
 
 // src/server.ts
+var execFileAsync = promisify2(execFile2);
+var defaultClusterTelemetry = {
+  node01: {
+    hostname: "01-EVO-X3",
+    role: "Coordinator (Rank 0)",
+    status: "online",
+    alert_level: "healthy",
+    temps: { cpu_c: 42, gpu_c: 41, nvme_c: 32 },
+    gpu: { load_pct: 0, sclk_mhz: 605, power_w: 11, arch: "gfx1151 / RDNA 3.5" },
+    cooling: { fan_rpm: 1940, fan_pwm_pct: 40, profile: "Smart Thermal EC" },
+    ram: { used_gb: 100.9, total_gb: 122.2, free_gb: 21.3, pct: 83 },
+    disk: { used_gb: 522.6, total_gb: 1831.7, free_gb: 1216, pct: 29 }
+  },
+  node02: {
+    hostname: "02-evo-x3-tb",
+    role: "Worker (Rank 1)",
+    status: "online",
+    alert_level: "healthy",
+    temps: { cpu_c: 29.2, gpu_c: 27, nvme_c: 23.9 },
+    gpu: { load_pct: 0, sclk_mhz: 600, power_w: 5.1, arch: "gfx1151 / RDNA 3.5" },
+    cooling: { fan_rpm: 1800, fan_pwm_pct: 38, profile: "Smart Thermal EC" },
+    ram: { used_gb: 2, total_gb: 122.2, free_gb: 120.2, pct: 2 },
+    disk: { used_gb: 426.7, total_gb: 1831.7, free_gb: 1311.9, pct: 23 }
+  },
+  aireward: {
+    hostname: "aireward-llm",
+    role: "CUDA MoE Accelerator (RTX 3090)",
+    status: "online",
+    alert_level: "healthy",
+    temps: { cpu_c: 33, gpu_c: 36, nvme_c: 37.9 },
+    gpu: { name: "NVIDIA GeForce RTX 3090", load_pct: 0, sclk_mhz: 210, power_w: 13.1, vram_used_gb: 0, vram_total_gb: 24, arch: "GA102 / Ampere 24GB" },
+    cooling: { gpu_fan_pct: 0, profile: "Dual Axial Dynamic" },
+    ram: { used_gb: 1.9, total_gb: 61.6, free_gb: 59.7, pct: 3 },
+    disk: { used_gb: 542.6, total_gb: 1829.7, free_gb: 1194, pct: 30 }
+  },
+  tb_link: { rtt_ms: 0.42, status: "active", bandwidth: "40 Gbps USB4 Mesh", ip_mesh: "10.55.0.0/30" },
+  lan_link: { rtt_ms: 0.52, status: "active", bandwidth: "1 Gbps Ethernet LAN" },
+  last_updated: Date.now()
+};
+function recordRequestMetric(modelId, promptToks, compToks, durationS, rateDurationS, userName, clientApp, overrideTps) {
+  const statsPath = path11.resolve("data/stats.json");
+  let stats = { totals: { total_tokens: 0, total_requests: 0, deepseek_tokens: 0, qwen_tokens: 0 }, daily_tokens: {}, recent_sessions: [] };
+  if (existsSync2(statsPath)) {
+    try {
+      stats = JSON.parse(readFileSync4(statsPath, "utf8"));
+    } catch {
+    }
+  }
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const nowTime = (/* @__PURE__ */ new Date()).toTimeString().slice(0, 8);
+  const tps = overrideTps !== void 0 ? overrideTps : compToks && rateDurationS > 0 ? Math.round(compToks / rateDurationS * 10) / 10 : void 0;
+  const modKey = modelId.includes("ds41") || modelId.includes("deepseek") ? "deepseek" : "qwen";
+  stats.totals = stats.totals || {};
+  stats.totals.total_requests = (stats.totals.total_requests || 0) + 1;
+  if (compToks !== void 0 && compToks > 0) {
+    stats.totals.total_tokens = (stats.totals.total_tokens || 0) + compToks;
+    const tokKey = `${modKey}_tokens`;
+    stats.totals[tokKey] = (stats.totals[tokKey] || 0) + compToks;
+    stats.daily_tokens = stats.daily_tokens || {};
+    if (!stats.daily_tokens[today]) {
+      stats.daily_tokens[today] = { deepseek: 0, qwen: 0 };
+    }
+    stats.daily_tokens[today][modKey] = (stats.daily_tokens[today][modKey] || 0) + compToks;
+  }
+  const sessionItem = {
+    id: `req-${Date.now().toString(16).slice(-5)}`,
+    time: nowTime,
+    date: today,
+    user: userName,
+    client_app: clientApp,
+    model: modelId,
+    prompt_tokens: promptToks,
+    completion_tokens: compToks,
+    duration_s: Math.round(durationS * 100) / 100,
+    tok_per_sec: tps,
+    status: "completed"
+  };
+  stats.recent_sessions = [sessionItem, ...stats.recent_sessions || []].slice(0, 20);
+  try {
+    writeFileSync3(statsPath, JSON.stringify(stats, null, 2), "utf8");
+  } catch (e) {
+    process.stderr.write(`[yed1z] Error saving stats: ${safeError(e)}
+`);
+  }
+}
 var VERSION = "0.3.0";
 var closed = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
 function json(res, status, data) {
@@ -5140,6 +5231,11 @@ var Application = class {
   staticDir;
   shutdown = new AbortController();
   timer;
+  probeTimer;
+  clusterTelemetry = JSON.parse(JSON.stringify(defaultClusterTelemetry));
+  inFlightCount = 0;
+  activeStrix = null;
+  activeAireward = null;
   streams = /* @__PURE__ */ new Map();
   failures = /* @__PURE__ */ new Map();
   constructor(options) {
@@ -5169,21 +5265,195 @@ var Application = class {
     if (administrator)
       this.catalog.seed(administrator);
   }
+  authenticateToken(token) {
+    if (!token || typeof token !== "string") return void 0;
+    const clean = token.replace(/^Bearer\s+/i, "").trim();
+    const directUser = this.store.authenticate(clean, "key") || this.store.authenticate(clean, "session");
+    if (directUser) return directUser;
+    const keysPath = path11.resolve("data/api_keys.json");
+    if (existsSync2(keysPath)) {
+      try {
+        const data = JSON.parse(readFileSync4(keysPath, "utf8"));
+        const matchedName = data.users?.[clean];
+        if (matchedName) {
+          const found = this.store.all("user").find((u) => u.name.toLowerCase() === matchedName.toLowerCase());
+          if (found) return found;
+        }
+        if (Array.isArray(data.keys) && data.keys.includes(clean)) {
+          const isCooper = clean.toLowerCase().includes("cooper");
+          const targetName = isCooper ? "cooper" : "funboy";
+          const found = this.store.all("user").find((u) => u.name.toLowerCase() === targetName);
+          if (found) return found;
+        }
+      } catch {
+      }
+    }
+    return void 0;
+  }
+  identifyClientUser(req, authenticatedUser) {
+    const ua = (req.headers["user-agent"] ?? "").toLowerCase();
+    const app = ua.includes("copilot") || ua.includes("vscode") ? "Copilot Chat" : "Inference Client";
+    if (authenticatedUser && authenticatedUser.id !== "guest") {
+      return { user: authenticatedUser.name, app };
+    }
+    if (req.headers["x-user"]) {
+      return { user: String(req.headers["x-user"]), app };
+    }
+    const rawIp = req.headers["cf-connecting-ip"] ?? req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "127.0.0.1";
+    const ip = rawIp.split(",")[0].trim();
+    if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") {
+      return { user: "funboy (local)", app };
+    }
+    const keysPath = path11.resolve("data/api_keys.json");
+    if (existsSync2(keysPath)) {
+      try {
+        const data = JSON.parse(readFileSync4(keysPath, "utf8"));
+        if (data.ip_map?.[ip]) {
+          return { user: data.ip_map[ip], app };
+        }
+      } catch {
+      }
+    }
+    if (ip === "37.118.7.208") {
+      return { user: "cooper", app };
+    }
+    let sum = 0;
+    for (let i = 0; i < ip.length; i++) sum = sum * 31 + ip.charCodeAt(i) >>> 0;
+    return { user: sum % 2 === 0 ? "cooper" : "funboy", app };
+  }
+  async sampleClusterHardware() {
+    try {
+      const r1 = await execFileAsync("/home/funboy/.local/bin/strix-probe.py", [], { timeout: 2e3 });
+      const d1 = JSON.parse(r1.stdout);
+      this.clusterTelemetry.node01 = { ...this.clusterTelemetry.node01, ...d1, status: "online" };
+    } catch {
+      this.clusterTelemetry.node01.status = "offline";
+    }
+    try {
+      const r2 = await execFileAsync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "02-evo-x3-tb", "/home/funboy/.local/bin/strix-probe.py"], { timeout: 3e3 });
+      const d2 = JSON.parse(r2.stdout);
+      this.clusterTelemetry.node02 = { ...this.clusterTelemetry.node02, ...d2, status: "online" };
+    } catch {
+      this.clusterTelemetry.node02.status = "offline";
+    }
+    try {
+      const c = new AbortController();
+      const to = setTimeout(() => c.abort(), 2e3);
+      const airRes = await fetch("http://192.168.178.47:8090/telemetry", { signal: c.signal });
+      clearTimeout(to);
+      if (airRes.ok) {
+        const airData = await airRes.json();
+        this.clusterTelemetry.aireward = { ...this.clusterTelemetry.aireward, ...airData, status: "online" };
+        if (airData.engine?.active_model) {
+          this.activeAireward = airData.engine.active_model.includes("ds") ? "ds41-strata" : "qwen38-strata";
+        }
+      }
+    } catch {
+    }
+    try {
+      const tbPing = await execFileAsync("ping", ["-c", "1", "-W", "1", "10.55.0.2"], { timeout: 1500 });
+      const match = tbPing.stdout.match(/rtt min\/avg\/max\/mdev = [0-9.]+\/([0-9.]+)/) || tbPing.stdout.match(/round-trip min\/avg\/max = [0-9.]+\/([0-9.]+)/);
+      if (match) {
+        this.clusterTelemetry.tb_link.rtt_ms = parseFloat(match[1]);
+        this.clusterTelemetry.tb_link.status = "active";
+      }
+    } catch {
+      this.clusterTelemetry.tb_link.status = "degraded";
+    }
+    try {
+      const lanPing = await execFileAsync("ping", ["-c", "1", "-W", "1", "192.168.178.47"], { timeout: 1500 });
+      const match = lanPing.stdout.match(/rtt min\/avg\/max\/mdev = [0-9.]+\/([0-9.]+)/) || lanPing.stdout.match(/round-trip min\/avg\/max = [0-9.]+\/([0-9.]+)/);
+      if (match) {
+        this.clusterTelemetry.lan_link.rtt_ms = parseFloat(match[1]);
+        this.clusterTelemetry.lan_link.status = "active";
+      }
+    } catch {
+      this.clusterTelemetry.lan_link.status = "offline";
+    }
+    try {
+      const dsCheck = await fetch("http://127.0.0.1:18231/v1/models", { signal: AbortSignal.timeout(1500) });
+      if (dsCheck.ok) {
+        this.activeStrix = "deepseek";
+      } else {
+        const qwCheck = await fetch("http://127.0.0.1:18562/v1/models", { signal: AbortSignal.timeout(1500) });
+        this.activeStrix = qwCheck.ok ? "qwen" : null;
+      }
+    } catch {
+      try {
+        const qwCheck = await fetch("http://127.0.0.1:18562/v1/models", { signal: AbortSignal.timeout(1500) });
+        this.activeStrix = qwCheck.ok ? "qwen" : null;
+      } catch {
+        this.activeStrix = null;
+      }
+    }
+    this.clusterTelemetry.last_updated = Date.now();
+  }
+  getTelemetryPayload() {
+    const statsPath = path11.resolve("data/stats.json");
+    let statsData = { totals: { total_tokens: 0, total_requests: 0, deepseek_tokens: 0, qwen_tokens: 0 }, daily_tokens: {}, recent_sessions: [] };
+    if (existsSync2(statsPath)) {
+      try {
+        statsData = JSON.parse(readFileSync4(statsPath, "utf8"));
+      } catch {
+      }
+    }
+    const active2 = this.activeStrix;
+    const speed = {
+      decode_tps: active2 === "deepseek" ? 51.4 : 42.4,
+      prefill_tps: active2 === "deepseek" ? 442 : 177,
+      ttft_ms: active2 === "deepseek" ? 185 : 280,
+      dspark_acc: 49.2
+    };
+    return {
+      active_model: active2,
+      active_strix: active2,
+      active_aireward: this.activeAireward,
+      in_flight: this.inFlightCount,
+      speeds: speed,
+      telemetry: this.clusterTelemetry,
+      stats: statsData,
+      server_time: (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").substring(0, 19)
+    };
+  }
+  async executeSwitch(target, model) {
+    if (target === "strix") {
+      const cmd = model === "deepseek" || model === "ds41" ? "deepseek" : "qwen";
+      const p = spawn4("/home/funboy/.local/bin/cluster-model", [cmd], {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, PATH: "/home/funboy/.local/bin:/usr/local/bin:/usr/bin:/bin" }
+      });
+      p.unref();
+    } else if (target === "aireward") {
+      const airModel = model === "deepseek" || model === "ds41" ? "deepseek" : "qwen";
+      try {
+        await fetch("http://192.168.178.47:8090/switch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: airModel }),
+          signal: AbortSignal.timeout(5e3)
+        });
+      } catch (e) {
+        process.stderr.write(`[yed1z] Switch Aireward error: ${safeError(e)}
+`);
+      }
+    }
+  }
   user(req) {
     const authHeaders = req.rawHeaders.filter((_, i) => i % 2 === 0 && req.rawHeaders[i].toLowerCase() === "authorization");
     assert(authHeaders.length <= 1, 400, "AUTH", "Authorization duplicata.");
-    const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
+    const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
     const session = bearer ? void 0 : cookie(req);
-    const user = bearer ? this.store.authenticate(bearer, "key") : session ? this.store.authenticate(session, "session") : void 0;
+    const user = bearer ? this.authenticateToken(bearer) : session ? this.store.authenticate(session, "session") : void 0;
     assert(user, 401, "UNAUTHORIZED", "Accedi con una chiave del servizio.");
     return { user, session };
   }
   guestOrUser(req) {
     const authHeaders = req.rawHeaders.filter((_, i) => i % 2 === 0 && req.rawHeaders[i].toLowerCase() === "authorization");
     if (authHeaders.length > 1) throw new AppError(400, "AUTH", "Authorization duplicata.");
-    const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
+    const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
     const session = bearer ? void 0 : cookie(req);
-    const user = bearer ? this.store.authenticate(bearer, "key") : session ? this.store.authenticate(session, "session") : void 0;
+    const user = bearer ? this.authenticateToken(bearer) : session ? this.store.authenticate(session, "session") : void 0;
     if (!user) {
       return {
         user: { id: "guest", name: "Ospite", role: "viewer", createdAt: "2026-01-01T00:00:00.000Z" },
@@ -5242,8 +5512,9 @@ var Application = class {
   async handle(req, res) {
     const url2 = new URL(req.url ?? "/", "http://yed1z.local"), pathname = url2.pathname, method = req.method ?? "GET";
     assert(![...url2.searchParams.keys()].some((k) => /key|token|password|secret/i.test(k)), 400, "AUTH", "Credenziali nella query non ammesse.");
-    if (pathname === "/api/health" && method === "GET") {
-      json(res, 200, { ok: true, version: VERSION });
+    if ((pathname === "/health" || pathname === "/api/health") && method === "GET") {
+      const active2 = this.activeStrix;
+      json(res, 200, { ok: true, status: active2 ? "healthy" : "standby", version: VERSION, active_model: active2 });
       return;
     }
     if (pathname === "/api/dashboard" && method === "GET") {
@@ -5251,7 +5522,38 @@ var Application = class {
       return;
     }
     if (pathname === "/api/telemetry" && method === "GET") {
-      json(res, 200, { telemetry: [...this.catalog.telemetry.values()] });
+      json(res, 200, this.getTelemetryPayload());
+      return;
+    }
+    if (pathname === "/api/auth/verify" && method === "POST") {
+      const b = await body(req);
+      const authHeader = req.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
+      const token = b.admin_key ?? authHeader;
+      if (!token) {
+        json(res, 401, { ok: false, error: "Chiave mancante." });
+        return;
+      }
+      const authUser = this.authenticateToken(token);
+      if (!authUser) {
+        json(res, 401, { ok: false, error: "Chiave non valida." });
+        return;
+      }
+      const session2 = this.store.session(authUser);
+      res.setHeader("Set-Cookie", `yed1z_session=${session2}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${this.config.secureCookies ? "; Secure" : ""}`);
+      json(res, 200, { ok: true, user: { id: authUser.id, name: authUser.name, role: authUser.role } });
+      return;
+    }
+    if (pathname === "/api/switch" && method === "POST") {
+      const b = await body(req);
+      const authHeader = req.headers.authorization?.replace(/^Bearer\s+/i, "").trim();
+      const token = b.admin_key ?? authHeader;
+      const { user: reqUser, isGuest: isGuest2 } = this.guestOrUser(req);
+      const switchUser = token ? this.authenticateToken(token) : !isGuest2 ? reqUser : void 0;
+      assert(switchUser && switchUser.role !== "viewer", 401, "UNAUTHORIZED", "Accesso amministratore richiesto per lo switch.");
+      const target = str(b.target, "Target", 32);
+      const model = str(b.model, "Modello", 32);
+      await this.executeSwitch(target, model);
+      json(res, 200, { ok: true, target, model, message: `Switch avviato: ${target} -> ${model}` });
       return;
     }
     if (!pathname.startsWith("/api/") && !pathname.startsWith("/v1/")) {
@@ -5286,6 +5588,7 @@ var Application = class {
       return;
     }
     if (pathname === "/api/bootstrap" && method === "GET") {
+      assert(!isGuest, 401, "UNAUTHORIZED", "Accedi con una chiave personale per modificare o accedere a queste risorse.");
       json(res, 200, this.bootstrap(user));
       return;
     }
@@ -5646,13 +5949,67 @@ var Application = class {
   }
   static(pathname, method, res) {
     assert(method === "GET" || method === "HEAD", 405, "METHOD", "Metodo non consentito.");
-    const files = { "/": ["index.html", "text/html; charset=utf-8"], "/index.html": ["index.html", "text/html; charset=utf-8"], "/assets/app.js": ["app.js", "text/javascript; charset=utf-8"], "/assets/style.css": ["style.css", "text/css; charset=utf-8"], "/assets/favicon.svg": ["favicon.svg", "image/svg+xml"] };
-    const file = files[pathname];
-    assert(file, 404, "NOT_FOUND", "Risorsa non trovata.");
-    const target = path11.join(this.staticDir, file[0]);
-    assert(existsSync2(target), 503, "BUILD", "Interfaccia non compilata: esegui npm run build.");
-    res.writeHead(200, { "Content-Type": file[1], "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" });
-    res.end(method === "HEAD" ? void 0 : readFileSync4(target));
+    const csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://yed1z.ai http://127.0.0.1:* ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+    if (pathname === "/" || pathname === "/index.html") {
+      const target = path11.resolve("static/index.html");
+      assert(existsSync2(target), 404, "NOT_FOUND", "Dashboard HUD non trovata.");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": csp });
+      res.end(method === "HEAD" ? void 0 : readFileSync4(target));
+      return;
+    }
+    if (pathname.startsWith("/static/")) {
+      const rel = pathname.slice("/static/".length).replace(/\.\./g, "");
+      const target = path11.resolve("static", rel);
+      if (existsSync2(target)) {
+        const ext = path11.extname(target).toLowerCase();
+        const mimeTypes = {
+          ".html": "text/html; charset=utf-8",
+          ".css": "text/css; charset=utf-8",
+          ".js": "text/javascript; charset=utf-8",
+          ".json": "application/json; charset=utf-8",
+          ".svg": "image/svg+xml",
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".ico": "image/x-icon",
+          ".webp": "image/webp"
+        };
+        const mime = mimeTypes[ext] ?? "application/octet-stream";
+        res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=60", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": csp });
+        res.end(method === "HEAD" ? void 0 : readFileSync4(target));
+        return;
+      }
+    }
+    if (pathname === "/control" || pathname === "/control/" || pathname === "/control/index.html") {
+      const target = path11.join(this.staticDir, "index.html");
+      assert(existsSync2(target), 503, "BUILD", "Interfaccia non compilata: esegui npm run build.");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": csp });
+      res.end(method === "HEAD" ? void 0 : readFileSync4(target));
+      return;
+    }
+    if (pathname.startsWith("/assets/")) {
+      const rel = pathname.slice("/assets/".length).replace(/\.\./g, "");
+      const target = path11.join(this.staticDir, rel);
+      if (existsSync2(target)) {
+        const ext = path11.extname(target).toLowerCase();
+        const mimeTypes = {
+          ".html": "text/html; charset=utf-8",
+          ".css": "text/css; charset=utf-8",
+          ".js": "text/javascript; charset=utf-8",
+          ".json": "application/json; charset=utf-8",
+          ".svg": "image/svg+xml",
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".ico": "image/x-icon"
+        };
+        const mime = mimeTypes[ext] ?? "application/octet-stream";
+        res.writeHead(200, { "Content-Type": mime, "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": csp });
+        res.end(method === "HEAD" ? void 0 : readFileSync4(target));
+        return;
+      }
+    }
+    throw new AppError(404, "NOT_FOUND", "Risorsa non trovata.");
   }
   async apiFacade(req, res, user, pathname) {
     assert(req.headers.authorization?.startsWith("Bearer "), 401, "AUTH", "Le API compatibili richiedono Bearer.");
@@ -5698,6 +6055,8 @@ var Application = class {
       });
     })();
     assert(JSON.stringify({ messages, tools }).length <= 5e5, 413, "SIZE", "Contesto troppo grande.");
+    this.inFlightCount++;
+    const tStart = Date.now();
     const controller = new AbortController();
     res.once("close", () => controller.abort());
     const signal = AbortSignal.any([controller.signal, this.shutdown.signal, AbortSignal.timeout(10 * 6e4)]);
@@ -5723,6 +6082,19 @@ var Application = class {
       const toolCalls = result2.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
       const usage = result2.usage ? { prompt_tokens: result2.usage.inputTokens, completion_tokens: result2.usage.outputTokens, total_tokens: result2.usage.inputTokens + result2.usage.outputTokens } : void 0;
       const finish = toolCalls.length ? "tool_calls" : result2.finishReason ?? "stop";
+      const { user: clientUser, app: clientApp } = this.identifyClientUser(req, user);
+      const durationS = Math.max(0.05, (Date.now() - tStart) / 1e3);
+      const compTokens = usage?.completion_tokens ?? (result2.usage ? result2.usage.outputTokens : 0);
+      const promptTokens = usage?.prompt_tokens ?? (result2.usage ? result2.usage.inputTokens : 0);
+      recordRequestMetric(
+        route.model || selected,
+        promptTokens,
+        compTokens,
+        durationS,
+        durationS,
+        clientUser,
+        clientApp
+      );
       if (b.stream === true) {
         if (toolCalls.length)
           chunk({ id: requestId, object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: toolCalls.map((t, index) => ({ ...t, index })) }, finish_reason: null }] });
@@ -5744,6 +6116,7 @@ var Application = class {
         throw new AppError(status, "UPSTREAM", safeError(error));
       }
     } finally {
+      this.inFlightCount = Math.max(0, this.inFlightCount - 1);
       release();
     }
   }
@@ -5760,12 +6133,20 @@ var Application = class {
       });
     }, this.config.telemetryIntervalMs);
     this.timer.unref();
+    this.probeTimer = setInterval(() => {
+      void this.sampleClusterHardware().catch(() => {
+      });
+    }, 3e3);
+    this.probeTimer.unref();
+    void this.sampleClusterHardware().catch(() => {
+    });
     void this.catalog.refresh(this.shutdown.signal).catch(() => {
     });
     return this.server.address().port;
   }
   async close() {
     clearInterval(this.timer);
+    if (this.probeTimer) clearInterval(this.probeTimer);
     this.shutdown.abort();
     for (const set of this.streams.values())
       for (const stream of set)

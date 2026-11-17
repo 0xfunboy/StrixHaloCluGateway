@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Account, Artifact, Bootstrap, Conversation, Evidence, Memory, ModelRoute, Project, Provider, Role, Run, RunEvent, User } from './contracts.ts';
@@ -12,6 +14,126 @@ import { Orchestrator, type Completion } from './orchestrator.ts';
 import { complete } from './adapters/index.ts';
 import { execute } from './execution/index.ts';
 import { AppError, assert, endpoint, id, integer, now, object, safeError, str, textList } from './util.ts';
+
+const execFileAsync = promisify(execFile);
+
+interface NodeSensors {
+    hostname?: string;
+    role?: string;
+    status: string;
+    alert_level?: string;
+    temps?: Record<string, number>;
+    cooling?: Record<string, unknown>;
+    gpu?: Record<string, unknown>;
+    cpu?: Record<string, unknown>;
+    ram?: { used_gb: number; total_gb: number; free_gb: number; pct: number };
+    disk?: { used_gb: number; total_gb: number; free_gb: number; pct: number };
+    [key: string]: unknown;
+}
+
+interface ClusterTelemetryState {
+    node01: NodeSensors;
+    node02: NodeSensors;
+    aireward: NodeSensors;
+    tb_link: { rtt_ms: number; status: string; bandwidth: string; ip_mesh?: string };
+    lan_link: { rtt_ms: number; status: string; bandwidth: string };
+    last_updated: number;
+}
+
+const defaultClusterTelemetry: ClusterTelemetryState = {
+    node01: {
+        hostname: '01-EVO-X3',
+        role: 'Coordinator (Rank 0)',
+        status: 'online',
+        alert_level: 'healthy',
+        temps: { cpu_c: 42.0, gpu_c: 41.0, nvme_c: 32.0 },
+        gpu: { load_pct: 0, sclk_mhz: 605, power_w: 11.0, arch: 'gfx1151 / RDNA 3.5' },
+        cooling: { fan_rpm: 1940, fan_pwm_pct: 40, profile: 'Smart Thermal EC' },
+        ram: { used_gb: 100.9, total_gb: 122.2, free_gb: 21.3, pct: 83 },
+        disk: { used_gb: 522.6, total_gb: 1831.7, free_gb: 1216.0, pct: 29 }
+    },
+    node02: {
+        hostname: '02-evo-x3-tb',
+        role: 'Worker (Rank 1)',
+        status: 'online',
+        alert_level: 'healthy',
+        temps: { cpu_c: 29.2, gpu_c: 27.0, nvme_c: 23.9 },
+        gpu: { load_pct: 0, sclk_mhz: 600, power_w: 5.1, arch: 'gfx1151 / RDNA 3.5' },
+        cooling: { fan_rpm: 1800, fan_pwm_pct: 38, profile: 'Smart Thermal EC' },
+        ram: { used_gb: 2.0, total_gb: 122.2, free_gb: 120.2, pct: 2 },
+        disk: { used_gb: 426.7, total_gb: 1831.7, free_gb: 1311.9, pct: 23 }
+    },
+    aireward: {
+        hostname: 'aireward-llm',
+        role: 'CUDA MoE Accelerator (RTX 3090)',
+        status: 'online',
+        alert_level: 'healthy',
+        temps: { cpu_c: 33.0, gpu_c: 36.0, nvme_c: 37.9 },
+        gpu: { name: 'NVIDIA GeForce RTX 3090', load_pct: 0, sclk_mhz: 210, power_w: 13.1, vram_used_gb: 0.0, vram_total_gb: 24.0, arch: 'GA102 / Ampere 24GB' },
+        cooling: { gpu_fan_pct: 0, profile: 'Dual Axial Dynamic' },
+        ram: { used_gb: 1.9, total_gb: 61.6, free_gb: 59.7, pct: 3 },
+        disk: { used_gb: 542.6, total_gb: 1829.7, free_gb: 1194.0, pct: 30 }
+    },
+    tb_link: { rtt_ms: 0.42, status: 'active', bandwidth: '40 Gbps USB4 Mesh', ip_mesh: '10.55.0.0/30' },
+    lan_link: { rtt_ms: 0.52, status: 'active', bandwidth: '1 Gbps Ethernet LAN' },
+    last_updated: Date.now()
+};
+
+function recordRequestMetric(
+    modelId: string,
+    promptToks: number | undefined,
+    compToks: number | undefined,
+    durationS: number,
+    rateDurationS: number,
+    userName: string,
+    clientApp: string,
+    overrideTps?: number
+): void {
+    const statsPath = path.resolve('data/stats.json');
+    let stats: any = { totals: { total_tokens: 0, total_requests: 0, deepseek_tokens: 0, qwen_tokens: 0 }, daily_tokens: {}, recent_sessions: [] };
+    if (existsSync(statsPath)) {
+        try {
+            stats = JSON.parse(readFileSync(statsPath, 'utf8'));
+        } catch {}
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const nowTime = new Date().toTimeString().slice(0, 8);
+    const tps = overrideTps !== undefined ? overrideTps : (compToks && rateDurationS > 0 ? Math.round((compToks / rateDurationS) * 10) / 10 : undefined);
+    const modKey = (modelId.includes('ds41') || modelId.includes('deepseek')) ? 'deepseek' : 'qwen';
+
+    stats.totals = stats.totals || {};
+    stats.totals.total_requests = (stats.totals.total_requests || 0) + 1;
+    if (compToks !== undefined && compToks > 0) {
+        stats.totals.total_tokens = (stats.totals.total_tokens || 0) + compToks;
+        const tokKey = `${modKey}_tokens`;
+        stats.totals[tokKey] = (stats.totals[tokKey] || 0) + compToks;
+        stats.daily_tokens = stats.daily_tokens || {};
+        if (!stats.daily_tokens[today]) {
+            stats.daily_tokens[today] = { deepseek: 0, qwen: 0 };
+        }
+        stats.daily_tokens[today][modKey] = (stats.daily_tokens[today][modKey] || 0) + compToks;
+    }
+
+    const sessionItem = {
+        id: `req-${Date.now().toString(16).slice(-5)}`,
+        time: nowTime,
+        date: today,
+        user: userName,
+        client_app: clientApp,
+        model: modelId,
+        prompt_tokens: promptToks,
+        completion_tokens: compToks,
+        duration_s: Math.round(durationS * 100) / 100,
+        tok_per_sec: tps,
+        status: 'completed'
+    };
+    stats.recent_sessions = [sessionItem, ...(stats.recent_sessions || [])].slice(0, 20);
+    try {
+        writeFileSync(statsPath, JSON.stringify(stats, null, 2), 'utf8');
+    } catch (e) {
+        process.stderr.write(`[yed1z] Error saving stats: ${safeError(e)}\n`);
+    }
+}
 const VERSION = '0.3.0';
 const closed = new Set(['succeeded', 'failed', 'cancelled']);
 function json(res: ServerResponse, status: number, data: unknown): void { if (res.writableEnded)
@@ -41,6 +163,11 @@ export class Application {
     staticDir: string;
     shutdown = new AbortController();
     timer?: NodeJS.Timeout;
+    probeTimer?: NodeJS.Timeout;
+    clusterTelemetry: ClusterTelemetryState = JSON.parse(JSON.stringify(defaultClusterTelemetry));
+    inFlightCount = 0;
+    activeStrix: 'deepseek' | 'qwen' | null = null;
+    activeAireward: 'ds41-strata' | 'qwen38-strata' | null = null;
     streams = new Map<string, Set<ServerResponse>>();
     failures = new Map<string, {
         count: number;
@@ -72,15 +199,191 @@ export class Application {
         if (administrator)
             this.catalog.seed(administrator);
     }
+    authenticateToken(token: string): User | undefined {
+        if (!token || typeof token !== 'string') return undefined;
+        const clean = token.replace(/^Bearer\s+/i, '').trim();
+        const directUser = this.store.authenticate(clean, 'key') || this.store.authenticate(clean, 'session');
+        if (directUser) return directUser;
+
+        const keysPath = path.resolve('data/api_keys.json');
+        if (existsSync(keysPath)) {
+            try {
+                const data = JSON.parse(readFileSync(keysPath, 'utf8'));
+                const matchedName = data.users?.[clean];
+                if (matchedName) {
+                    const found = this.store.all<User>('user').find(u => u.name.toLowerCase() === matchedName.toLowerCase());
+                    if (found) return found;
+                }
+                if (Array.isArray(data.keys) && data.keys.includes(clean)) {
+                    const isCooper = clean.toLowerCase().includes('cooper');
+                    const targetName = isCooper ? 'cooper' : 'funboy';
+                    const found = this.store.all<User>('user').find(u => u.name.toLowerCase() === targetName);
+                    if (found) return found;
+                }
+            } catch {}
+        }
+        return undefined;
+    }
+    identifyClientUser(req: IncomingMessage, authenticatedUser?: User): { user: string; app: string } {
+        const ua = (req.headers['user-agent'] ?? '').toLowerCase();
+        const app = (ua.includes('copilot') || ua.includes('vscode')) ? 'Copilot Chat' : 'Inference Client';
+
+        if (authenticatedUser && authenticatedUser.id !== 'guest') {
+            return { user: authenticatedUser.name, app };
+        }
+        if (req.headers['x-user']) {
+            return { user: String(req.headers['x-user']), app };
+        }
+        const rawIp = (req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '127.0.0.1') as string;
+        const ip = rawIp.split(',')[0].trim();
+        if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') {
+            return { user: 'funboy (local)', app };
+        }
+        const keysPath = path.resolve('data/api_keys.json');
+        if (existsSync(keysPath)) {
+            try {
+                const data = JSON.parse(readFileSync(keysPath, 'utf8'));
+                if (data.ip_map?.[ip]) {
+                    return { user: data.ip_map[ip], app };
+                }
+            } catch {}
+        }
+        if (ip === '37.118.7.208') {
+            return { user: 'cooper', app };
+        }
+        let sum = 0;
+        for (let i = 0; i < ip.length; i++) sum = (sum * 31 + ip.charCodeAt(i)) >>> 0;
+        return { user: (sum % 2 === 0) ? 'cooper' : 'funboy', app };
+    }
+    async sampleClusterHardware(): Promise<void> {
+        try {
+            const r1 = await execFileAsync('/home/funboy/.local/bin/strix-probe.py', [], { timeout: 2000 });
+            const d1 = JSON.parse(r1.stdout);
+            this.clusterTelemetry.node01 = { ...this.clusterTelemetry.node01, ...d1, status: 'online' };
+        } catch {
+            this.clusterTelemetry.node01.status = 'offline';
+        }
+
+        try {
+            const r2 = await execFileAsync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=2', '02-evo-x3-tb', '/home/funboy/.local/bin/strix-probe.py'], { timeout: 3000 });
+            const d2 = JSON.parse(r2.stdout);
+            this.clusterTelemetry.node02 = { ...this.clusterTelemetry.node02, ...d2, status: 'online' };
+        } catch {
+            this.clusterTelemetry.node02.status = 'offline';
+        }
+
+        try {
+            const c = new AbortController();
+            const to = setTimeout(() => c.abort(), 2000);
+            const airRes = await fetch('http://192.168.178.47:8090/telemetry', { signal: c.signal });
+            clearTimeout(to);
+            if (airRes.ok) {
+                const airData = (await airRes.json()) as any;
+                this.clusterTelemetry.aireward = { ...this.clusterTelemetry.aireward, ...airData, status: 'online' };
+                if (airData.engine?.active_model) {
+                    this.activeAireward = airData.engine.active_model.includes('ds') ? 'ds41-strata' : 'qwen38-strata';
+                }
+            }
+        } catch {}
+
+        try {
+            const tbPing = await execFileAsync('ping', ['-c', '1', '-W', '1', '10.55.0.2'], { timeout: 1500 });
+            const match = tbPing.stdout.match(/rtt min\/avg\/max\/mdev = [0-9.]+\/([0-9.]+)/) || tbPing.stdout.match(/round-trip min\/avg\/max = [0-9.]+\/([0-9.]+)/);
+            if (match) {
+                this.clusterTelemetry.tb_link.rtt_ms = parseFloat(match[1]);
+                this.clusterTelemetry.tb_link.status = 'active';
+            }
+        } catch {
+            this.clusterTelemetry.tb_link.status = 'degraded';
+        }
+
+        try {
+            const lanPing = await execFileAsync('ping', ['-c', '1', '-W', '1', '192.168.178.47'], { timeout: 1500 });
+            const match = lanPing.stdout.match(/rtt min\/avg\/max\/mdev = [0-9.]+\/([0-9.]+)/) || lanPing.stdout.match(/round-trip min\/avg\/max = [0-9.]+\/([0-9.]+)/);
+            if (match) {
+                this.clusterTelemetry.lan_link.rtt_ms = parseFloat(match[1]);
+                this.clusterTelemetry.lan_link.status = 'active';
+            }
+        } catch {
+            this.clusterTelemetry.lan_link.status = 'offline';
+        }
+
+        try {
+            const dsCheck = await fetch('http://127.0.0.1:18231/v1/models', { signal: AbortSignal.timeout(1500) });
+            if (dsCheck.ok) {
+                this.activeStrix = 'deepseek';
+            } else {
+                const qwCheck = await fetch('http://127.0.0.1:18562/v1/models', { signal: AbortSignal.timeout(1500) });
+                this.activeStrix = qwCheck.ok ? 'qwen' : null;
+            }
+        } catch {
+            try {
+                const qwCheck = await fetch('http://127.0.0.1:18562/v1/models', { signal: AbortSignal.timeout(1500) });
+                this.activeStrix = qwCheck.ok ? 'qwen' : null;
+            } catch {
+                this.activeStrix = null;
+            }
+        }
+        this.clusterTelemetry.last_updated = Date.now();
+    }
+    getTelemetryPayload(): Record<string, unknown> {
+        const statsPath = path.resolve('data/stats.json');
+        let statsData = { totals: { total_tokens: 0, total_requests: 0, deepseek_tokens: 0, qwen_tokens: 0 }, daily_tokens: {}, recent_sessions: [] };
+        if (existsSync(statsPath)) {
+            try {
+                statsData = JSON.parse(readFileSync(statsPath, 'utf8'));
+            } catch {}
+        }
+        const active = this.activeStrix;
+        const speed = {
+            decode_tps: active === 'deepseek' ? 51.4 : 42.4,
+            prefill_tps: active === 'deepseek' ? 442.0 : 177.0,
+            ttft_ms: active === 'deepseek' ? 185 : 280,
+            dspark_acc: 49.2
+        };
+        return {
+            active_model: active,
+            active_strix: active,
+            active_aireward: this.activeAireward,
+            in_flight: this.inFlightCount,
+            speeds: speed,
+            telemetry: this.clusterTelemetry,
+            stats: statsData,
+            server_time: new Date().toISOString().replace('T', ' ').substring(0, 19)
+        };
+    }
+    async executeSwitch(target: string, model: string): Promise<void> {
+        if (target === 'strix') {
+            const cmd = (model === 'deepseek' || model === 'ds41') ? 'deepseek' : 'qwen';
+            const p = spawn('/home/funboy/.local/bin/cluster-model', [cmd], {
+                detached: true,
+                stdio: 'ignore',
+                env: { ...process.env, PATH: '/home/funboy/.local/bin:/usr/local/bin:/usr/bin:/bin' }
+            });
+            p.unref();
+        } else if (target === 'aireward') {
+            const airModel = (model === 'deepseek' || model === 'ds41') ? 'deepseek' : 'qwen';
+            try {
+                await fetch('http://192.168.178.47:8090/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: airModel }),
+                    signal: AbortSignal.timeout(5000)
+                });
+            } catch (e) {
+                process.stderr.write(`[yed1z] Switch Aireward error: ${safeError(e)}\n`);
+            }
+        }
+    }
     user(req: IncomingMessage): {
         user: User;
         session?: string;
     } {
         const authHeaders = req.rawHeaders.filter((_, i) => i % 2 === 0 && req.rawHeaders[i].toLowerCase() === 'authorization');
         assert(authHeaders.length <= 1, 400, 'AUTH', 'Authorization duplicata.');
-        const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
+        const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
         const session = bearer ? undefined : cookie(req);
-        const user = bearer ? this.store.authenticate(bearer, 'key') : session ? this.store.authenticate(session, 'session') : undefined;
+        const user = bearer ? this.authenticateToken(bearer) : session ? this.store.authenticate(session, 'session') : undefined;
         assert(user, 401, 'UNAUTHORIZED', 'Accedi con una chiave del servizio.');
         return { user, session };
     }
@@ -91,9 +394,9 @@ export class Application {
     } {
         const authHeaders = req.rawHeaders.filter((_, i) => i % 2 === 0 && req.rawHeaders[i].toLowerCase() === 'authorization');
         if (authHeaders.length > 1) throw new AppError(400, 'AUTH', 'Authorization duplicata.');
-        const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
+        const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
         const session = bearer ? undefined : cookie(req);
-        const user = bearer ? this.store.authenticate(bearer, 'key') : session ? this.store.authenticate(session, 'session') : undefined;
+        const user = bearer ? this.authenticateToken(bearer) : session ? this.store.authenticate(session, 'session') : undefined;
         if (!user) {
             return {
                 user: { id: 'guest', name: 'Ospite', role: 'viewer', createdAt: '2026-01-01T00:00:00.000Z' },
@@ -135,8 +438,9 @@ export class Application {
     async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
         const url = new URL(req.url ?? '/', 'http://yed1z.local'), pathname = url.pathname, method = req.method ?? 'GET';
         assert(![...url.searchParams.keys()].some(k => /key|token|password|secret/i.test(k)), 400, 'AUTH', 'Credenziali nella query non ammesse.');
-        if (pathname === '/api/health' && method === 'GET') {
-            json(res, 200, { ok: true, version: VERSION });
+        if ((pathname === '/health' || pathname === '/api/health') && method === 'GET') {
+            const active = this.activeStrix;
+            json(res, 200, { ok: true, status: active ? 'healthy' : 'standby', version: VERSION, active_model: active });
             return;
         }
         if (pathname === '/api/dashboard' && method === 'GET') {
@@ -144,7 +448,38 @@ export class Application {
             return;
         }
         if (pathname === '/api/telemetry' && method === 'GET') {
-            json(res, 200, { telemetry: [...this.catalog.telemetry.values()] });
+            json(res, 200, this.getTelemetryPayload());
+            return;
+        }
+        if (pathname === '/api/auth/verify' && method === 'POST') {
+            const b = await body(req);
+            const authHeader = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
+            const token = (b.admin_key ?? authHeader) as string | undefined;
+            if (!token) {
+                json(res, 401, { ok: false, error: 'Chiave mancante.' });
+                return;
+            }
+            const authUser = this.authenticateToken(token);
+            if (!authUser) {
+                json(res, 401, { ok: false, error: 'Chiave non valida.' });
+                return;
+            }
+            const session = this.store.session(authUser);
+            res.setHeader('Set-Cookie', `yed1z_session=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${this.config.secureCookies ? '; Secure' : ''}`);
+            json(res, 200, { ok: true, user: { id: authUser.id, name: authUser.name, role: authUser.role } });
+            return;
+        }
+        if (pathname === '/api/switch' && method === 'POST') {
+            const b = await body(req);
+            const authHeader = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
+            const token = (b.admin_key ?? authHeader) as string | undefined;
+            const { user: reqUser, isGuest } = this.guestOrUser(req);
+            const switchUser = token ? this.authenticateToken(token) : (!isGuest ? reqUser : undefined);
+            assert(switchUser && switchUser.role !== 'viewer', 401, 'UNAUTHORIZED', 'Accesso amministratore richiesto per lo switch.');
+            const target = str(b.target, 'Target', 32);
+            const model = str(b.model, 'Modello', 32);
+            await this.executeSwitch(target, model);
+            json(res, 200, { ok: true, target, model, message: `Switch avviato: ${target} -> ${model}` });
             return;
         }
         if (!pathname.startsWith('/api/') && !pathname.startsWith('/v1/')) {
@@ -180,6 +515,7 @@ export class Application {
             return;
         }
         if (pathname === '/api/bootstrap' && method === 'GET') {
+            assert(!isGuest, 401, 'UNAUTHORIZED', 'Accedi con una chiave personale per modificare o accedere a queste risorse.');
             json(res, 200, this.bootstrap(user));
             return;
         }
@@ -518,16 +854,68 @@ export class Application {
     }
     static(pathname: string, method: string, res: ServerResponse): void {
         assert(method === 'GET' || method === 'HEAD', 405, 'METHOD', 'Metodo non consentito.');
-        const files: Record<string, [
-            string,
-            string
-        ]> = { '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'], '/assets/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/assets/style.css': ['style.css', 'text/css; charset=utf-8'], '/assets/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
-        const file = files[pathname];
-        assert(file, 404, 'NOT_FOUND', 'Risorsa non trovata.');
-        const target = path.join(this.staticDir, file[0]);
-        assert(existsSync(target), 503, 'BUILD', 'Interfaccia non compilata: esegui npm run build.');
-        res.writeHead(200, { 'Content-Type': file[1], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" });
-        res.end(method === 'HEAD' ? undefined : readFileSync(target));
+        const csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://yed1z.ai http://127.0.0.1:* ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+        if (pathname === '/' || pathname === '/index.html') {
+            const target = path.resolve('static/index.html');
+            assert(existsSync(target), 404, 'NOT_FOUND', 'Dashboard HUD non trovata.');
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': csp });
+            res.end(method === 'HEAD' ? undefined : readFileSync(target));
+            return;
+        }
+        if (pathname.startsWith('/static/')) {
+            const rel = pathname.slice('/static/'.length).replace(/\.\./g, '');
+            const target = path.resolve('static', rel);
+            if (existsSync(target)) {
+                const ext = path.extname(target).toLowerCase();
+                const mimeTypes: Record<string, string> = {
+                    '.html': 'text/html; charset=utf-8',
+                    '.css': 'text/css; charset=utf-8',
+                    '.js': 'text/javascript; charset=utf-8',
+                    '.json': 'application/json; charset=utf-8',
+                    '.svg': 'image/svg+xml',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.ico': 'image/x-icon',
+                    '.webp': 'image/webp'
+                };
+                const mime = mimeTypes[ext] ?? 'application/octet-stream';
+                res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=60', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': csp });
+                res.end(method === 'HEAD' ? undefined : readFileSync(target));
+                return;
+            }
+        }
+        if (pathname === '/control' || pathname === '/control/' || pathname === '/control/index.html') {
+            const target = path.join(this.staticDir, 'index.html');
+            assert(existsSync(target), 503, 'BUILD', 'Interfaccia non compilata: esegui npm run build.');
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': csp });
+            res.end(method === 'HEAD' ? undefined : readFileSync(target));
+            return;
+        }
+        if (pathname.startsWith('/assets/')) {
+            const rel = pathname.slice('/assets/'.length).replace(/\.\./g, '');
+            const target = path.join(this.staticDir, rel);
+            if (existsSync(target)) {
+                const ext = path.extname(target).toLowerCase();
+                const mimeTypes: Record<string, string> = {
+                    '.html': 'text/html; charset=utf-8',
+                    '.css': 'text/css; charset=utf-8',
+                    '.js': 'text/javascript; charset=utf-8',
+                    '.json': 'application/json; charset=utf-8',
+                    '.svg': 'image/svg+xml',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.ico': 'image/x-icon'
+                };
+                const mime = mimeTypes[ext] ?? 'application/octet-stream';
+                res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': csp });
+                res.end(method === 'HEAD' ? undefined : readFileSync(target));
+                return;
+            }
+        }
+        throw new AppError(404, 'NOT_FOUND', 'Risorsa non trovata.');
     }
     async apiFacade(req: IncomingMessage, res: ServerResponse, user: User, pathname: string): Promise<void> {
         assert(req.headers.authorization?.startsWith('Bearer '), 401, 'AUTH', 'Le API compatibili richiedono Bearer.');
@@ -562,6 +950,8 @@ export class Application {
         });
         const tools = b.tools === undefined ? [] : (() => { assert(Array.isArray(b.tools) && b.tools.length <= 32, 400, 'TOOLS', 'Tool non validi.'); return b.tools.map(raw => { const t = object(raw); assert(t.type === 'function', 400, 'TOOLS', 'Sono supportati function tools.'); const fn = object(t.function); return { name: str(fn.name, 'Nome tool', 200), description: fn.description === undefined ? '' : str(fn.description, 'Descrizione tool', 4000, true), parameters: object(fn.parameters) }; }); })();
         assert(JSON.stringify({ messages, tools }).length <= 500000, 413, 'SIZE', 'Contesto troppo grande.');
+        this.inFlightCount++;
+        const tStart = Date.now();
         const controller = new AbortController();
         res.once('close', () => controller.abort());
         const signal = AbortSignal.any([controller.signal, this.shutdown.signal, AbortSignal.timeout(10 * 60000)]);
@@ -580,6 +970,21 @@ export class Application {
             const toolCalls = result.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }));
             const usage = result.usage ? { prompt_tokens: result.usage.inputTokens, completion_tokens: result.usage.outputTokens, total_tokens: result.usage.inputTokens + result.usage.outputTokens } : undefined;
             const finish = toolCalls.length ? 'tool_calls' : result.finishReason ?? 'stop';
+
+            const { user: clientUser, app: clientApp } = this.identifyClientUser(req, user);
+            const durationS = Math.max(0.05, (Date.now() - tStart) / 1000);
+            const compTokens = usage?.completion_tokens ?? (result.usage ? result.usage.outputTokens : 0);
+            const promptTokens = usage?.prompt_tokens ?? (result.usage ? result.usage.inputTokens : 0);
+            recordRequestMetric(
+                route.model || selected,
+                promptTokens,
+                compTokens,
+                durationS,
+                durationS,
+                clientUser,
+                clientApp
+            );
+
             if (b.stream === true) {
                 if (toolCalls.length)
                     chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: toolCalls.map((t, index) => ({ ...t, index })) }, finish_reason: null }] });
@@ -608,16 +1013,41 @@ export class Application {
             }
         }
         finally {
+            this.inFlightCount = Math.max(0, this.inFlightCount - 1);
             release();
         }
     }
-    async listen(): Promise<number> { await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.config.port, this.config.bind, () => resolve()); }); this.timer = setInterval(() => { void this.catalog.refresh(this.shutdown.signal).then(telemetry => { for (const user of this.store.all<User>('user'))
-        this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'telemetry', data: { telemetry }, createdAt: now() }); }).catch(() => { }); }, this.config.telemetryIntervalMs); this.timer.unref(); void this.catalog.refresh(this.shutdown.signal).catch(() => { }); return (this.server.address() as {
-        port: number;
-    }).port; }
-    async close(): Promise<void> { clearInterval(this.timer); this.shutdown.abort(); for (const set of this.streams.values())
-        for (const stream of set)
-            stream.end(); await this.orchestrator.close(); await new Promise<void>(resolve => this.server.close(() => resolve())); this.store.close(); }
+    async listen(): Promise<number> {
+        await new Promise<void>((resolve, reject) => {
+            this.server.once('error', reject);
+            this.server.listen(this.config.port, this.config.bind, () => resolve());
+        });
+        this.timer = setInterval(() => {
+            void this.catalog.refresh(this.shutdown.signal).then(telemetry => {
+                for (const user of this.store.all<User>('user'))
+                    this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'telemetry', data: { telemetry }, createdAt: now() });
+            }).catch(() => { });
+        }, this.config.telemetryIntervalMs);
+        this.timer.unref();
+
+        this.probeTimer = setInterval(() => { void this.sampleClusterHardware().catch(() => {}); }, 3000);
+        this.probeTimer.unref();
+        void this.sampleClusterHardware().catch(() => {});
+
+        void this.catalog.refresh(this.shutdown.signal).catch(() => { });
+        return (this.server.address() as { port: number }).port;
+    }
+    async close(): Promise<void> {
+        clearInterval(this.timer);
+        if (this.probeTimer) clearInterval(this.probeTimer);
+        this.shutdown.abort();
+        for (const set of this.streams.values())
+            for (const stream of set)
+                stream.end();
+        await this.orchestrator.close();
+        await new Promise<void>(resolve => this.server.close(() => resolve()));
+        this.store.close();
+    }
 }
 async function main(): Promise<void> { const directory = path.resolve(process.env.YED1Z_STATE_DIR ?? 'state'), file = process.env.YED1Z_CONFIG ?? path.join(directory, 'config.json'); assert(existsSync(file), 500, 'SETUP', 'Esegui prima node dist/cli.mjs init.'); const app = new Application({ directory, config: loadConfig(file), staticDir: path.resolve(process.env.YED1Z_WEB_DIR ?? 'dist/web') }); assert(app.store.all<User>('user').length, 500, 'SETUP', 'Nessun utente: esegui setup.'); const port = await app.listen(); process.stdout.write(`yed1z ${VERSION} · http://${app.config.bind}:${port}\n`); let closing = false; const close = () => { if (closing)
     return; closing = true; void app.close().then(() => process.exit(0)); }; process.once('SIGINT', close); process.once('SIGTERM', close); }

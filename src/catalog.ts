@@ -118,7 +118,11 @@ export class Catalog {
             const limited = details?.status === 429 || details?.quota?.state === 'limited';
             if (limited) {
                 this.quota(account, { ...(details?.quota ?? { source: 'provider-headers', observedAt: now() }), state: 'limited' });
-                throw new AppError(429, 'QUOTA', 'Limite quota raggiunto sul provider.');
+                throw new AppError(429, 'QUOTA', 'Scoperta modelli non riuscita (429): ' + safeError(error));
+            }
+            if (details?.status !== undefined) {
+                if (details?.quota) this.quota(account, details.quota);
+                throw new AppError(502, 'UPSTREAM', 'Scoperta modelli non riuscita: ' + safeError(error));
             }
             // Check if this provider has pre-configured models in config or previously registered routes
             const configuredProvider = this.config.providers.find(p => p.id === provider.id);

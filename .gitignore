@@ -1,8 +1,11 @@
 node_modules
 state/
+data/
 .env
 *.log
 *.sqlite*
 *.vsix
+*.bak*
 .DS_Store
 coverage/
+
