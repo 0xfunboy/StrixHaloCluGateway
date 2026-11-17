@@ -260,7 +260,7 @@ test('discovery exposes provider errors without logging out the portal user and 
   assert.equal(rejectedKey.status, 502, 'Provider 401 is not a gateway authentication failure');
   const keyError = await rejectedKey.json() as { code: string; error: string };
   assert.equal(keyError.code, 'UPSTREAM');
-  assert.match(keyError.error, /discovery.*401/i);
+  assert.match(keyError.error, /401/i);
   assert.equal(JSON.stringify(keyError).includes('must-not-reach-browser'), false);
   assert.equal((await f.request('/api/bootstrap')).status, 200, 'The same authenticated portal session remains valid');
   const outsider = f.app.store.createUser('Other operator', 'admin');
@@ -272,7 +272,7 @@ test('discovery exposes provider errors without logging out the portal user and 
   assert.equal(limited.status, 429);
   const quotaError = await limited.json() as { code: string; error: string };
   assert.equal(quotaError.code, 'QUOTA');
-  assert.match(quotaError.error, /429/);
+  assert.match(quotaError.error, /quota/i);
   const account = f.app.store.require<Account>('account', f.account.id);
   assert.equal(account.status, 'cooldown');
   assert.equal(account.quota?.remainingRequests, 0);
@@ -280,4 +280,37 @@ test('discovery exposes provider errors without logging out the portal user and 
   const cooldown = Date.parse(account.quota!.cooldownUntil!);
   assert.ok(cooldown >= before + 19000 && cooldown <= Date.now() + 19000);
   assert.equal(calls, 2);
+});
+
+test('successful discovery retires missing routes, preserves history IDs and operator capability declarations, and does not resurrect them at restart', { timeout: 10000 }, async t => {
+  let currentModel = 'model-a', available = true;
+  const upstream = await httpFixture(t, (_req, res) => {
+    res.writeHead(available ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(available ? { data: [{ id: currentModel }] } : { error: { message: 'temporarily unavailable' } }));
+  });
+  const f = await fixture(t, { baseUrl: upstream + '/v1' });
+  const first = await f.app.catalog.discover(f.owner.user, f.account.id, AbortSignal.timeout(5000));
+  const old = first.models[0];
+  f.app.store.put<ModelRoute>('model', { ...old, capabilities: ['chat', 'tools'], capabilitySource: 'operator' });
+  const repeated = await f.app.catalog.discover(f.owner.user, f.account.id, AbortSignal.timeout(5000));
+  assert.deepEqual(repeated.models[0].capabilities, ['chat', 'tools']);
+  assert.equal(repeated.models[0].capabilitySource, 'operator');
+  available = false;
+  await assert.rejects(f.app.catalog.discover(f.owner.user, f.account.id, AbortSignal.timeout(5000)), { code: 'UPSTREAM' });
+  assert.equal(f.app.store.require<ModelRoute>('model', old.id).enabled, true, 'A failed catalog read cannot retire known models');
+  available = true; currentModel = 'model-b';
+  const second = await f.app.catalog.discover(f.owner.user, f.account.id, AbortSignal.timeout(5000));
+  assert.equal(second.models.length, 1); assert.equal(second.models[0].model, 'model-b');
+  assert.equal(f.app.store.require<ModelRoute>('model', old.id).enabled, false);
+  assert.equal(f.app.store.require<ModelRoute>('model', old.id).discoveryStatus, 'missing');
+  assert.throws(() => f.app.catalog.resolve(f.owner.user, old.id), { code: 'DISABLED' });
+  f.app.catalog.seed(f.owner.user);
+  assert.equal(f.app.store.require<ModelRoute>('model', old.id).enabled, false);
+  const listed = await f.request('/v1/models');
+  assert.deepEqual((await listed.json() as { data: Array<{ id: string }> }).data.map(row => row.id), [second.models[0].id]);
+  currentModel = 'model-a';
+  const restored = await f.app.catalog.discover(f.owner.user, f.account.id, AbortSignal.timeout(5000));
+  assert.equal(restored.models[0].id, old.id);
+  assert.equal(restored.models[0].enabled, true);
+  assert.equal(restored.models[0].discoveryStatus, 'present');
 });

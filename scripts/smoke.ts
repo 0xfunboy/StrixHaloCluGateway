@@ -59,7 +59,13 @@ try {
   assert.equal(asset.status, 200);
   assert.ok((await asset.text()).length > 10000);
   assert.equal((await fetch(url + '/api/health')).status, 200);
-  assert.equal((await fetch(url + '/api/bootstrap')).status, 401);
+  const guest = await fetch(url + '/api/bootstrap');
+  assert.equal(guest.status, 200);
+  const guestState = await guest.json();
+  assert.equal(guestState.user.id, 'guest');
+  assert.deepEqual(guestState.accounts, []);
+  assert.deepEqual(guestState.conversations, []);
+  assert.equal((await fetch(url + '/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Unauthorized' }) })).status, 401);
   const login = await fetch(url + '/api/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json', Origin: url }, body: JSON.stringify({ token })
   });

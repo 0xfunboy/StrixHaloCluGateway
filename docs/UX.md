@@ -1,77 +1,202 @@
-# yed1z Control Room: esperienza d’uso
+# UX 0.4 — un solo yed1z per dashboard, chat e squadra
 
-## Il centro del prodotto è il progetto
+## Obiettivo e provenienza
 
-L’interfaccia riunisce l’obiettivo dell’utente, l’orchestratore primario, la squadra e le risorse distribuite. Un progetto conserva conversazioni, route dei diversi ruoli, documenti, metodi approvati, contesto, evidenze e destinazione di esecuzione. Web e VS Code utilizzano lo stesso contratto API e gli stessi dati sul coordinator.
+La 0.4 parte dall'archivio installato fornito il 17 novembre 2026, conservando la
+modalità ospite e le variazioni applicative dell'utente. Il riferimento visivo è
+la dashboard `StrixHaloCluGateway-main_2.zip`, il cui frontend usa un HUD tecnico
+con geometria squadrata, reticolo, intestazioni compatte e palette cyan, viola e
+verde su fondo blu quasi nero.
 
-La macchina che fornisce inferenza non viene confusa con quella che esegue i tool. Una route può occupare entrambi gli Strix, mentre un task modifica un workspace autorizzato sul coordinator o su un target SSH. GemRouter resta un provider di inferenza: i suoi modelli sono selezionabili insieme agli altri.
+Il tema condiviso riprende questi elementi in tutte le viste. Le risposte lunghe
+mantengono una tipografia sans leggibile, mentre misure, etichette tecniche,
+stati e intestazioni usano il monospace locale. Nessun font o asset richiede
+servizi esterni. Il modulo web è lo stesso incluso nel VSIX.
 
-## Schermata principale
+## Struttura del prodotto
 
-La struttura della Control room contiene quattro aree:
+- **Chat e squadra:** conversazione centrale, composer, stato del sistema e
+  pannello degli agenti con grafo delle dipendenze effettive.
+- **Dashboard cluster:** nodi, GPU/CPU/memoria, misure di rete, gruppi di risorse,
+  disponibilità delle route e fonti delle osservazioni.
+- **Conoscenza:** memorie e documenti, revisioni, fonti e ricerca.
+- **Modelli e account:** connessioni, quote osservate, discovery e capacità.
+- **Consegne e rilasci:** risultati, evidenze, ricette e autorizzazioni.
 
-1. **Navigazione personale.** Progetto attivo, conversazioni dell’utente e viste secondarie. Le bozze restano separate per progetto e conversazione in memoria della vista, senza scrivere credenziali nel browser.
-2. **Panoramica sempre visibile.** Nodi configurati, stato della telemetria, GPU, temperatura e potenza quando misurati, numero di attività e decisioni in attesa. Da qui si apre anche l’elenco delle missioni dei diversi progetti.
-3. **Orchestratore.** Conversazione, allegati, modello/account e modalità. Il cambio di route conserva la cronologia. Durante una missione il composer invia nuove istruzioni e allegati alla missione aperta; la ripianificazione passa da una pausa esplicita per non ripetere effetti già eseguiti.
-4. **Squadra.** Mappa SVG delle dipendenze effettive, attività, modello assegnato, stato, dipendenze, budget e iterazioni. Selezionando un agente si vedono output, eventi, contesto ed evidenze. Un task in coda o in pausa può cambiare modello e account.
+La panoramica hardware rimane visibile nella chat. Il pulsante **Collega modello**
+è disponibile nella testata: non serve aprire una pagina amministrativa prima di
+iniziare. Nella vista ospite la dashboard viene realmente resa visibile; il login
+riporta l'utente nel proprio spazio. La UI non costruisce dati privati assenti dal
+bootstrap pubblico.
 
-Il grafo deriva dagli ID di dipendenza dei task: attività indipendenti occupano lo stesso livello, le frecce collegano solo dipendenze dichiarate. I nodi del grafo sono selezionabili anche con tastiera.
+L'ospite può annullare l'accesso e tornare al monitor con il flusso live
+ripristinato. Una sessione privata scaduta richiede invece una nuova
+autenticazione. Nel layout stretto la navigazione chiusa è `inert`, viene esclusa
+dal percorso di tastiera e restituisce il focus al menu quando si chiude.
 
-I task Ricercatore e Sviluppatore espongono pausa, ripresa, annullamento e istruzioni dedicate. Fermare un agente lascia proseguire i rami indipendenti; le dipendenze restano in attesa. Orchestratore, revisore e fasi di verifica/rilascio usano i controlli della missione. Le verifiche e il release controller sono identificati come esecuzioni deterministiche, non come chiamate a un modello.
+## Un flusso breve per collegare i modelli
 
-## Viste secondarie
+`web/connections.ts` contiene il percorso di collegamento. I preset sono Codex,
+Antigravity, OpenAI API, Gemini API, Ollama, LM Studio, GemRouter e un endpoint
+compatibile OpenAI. Le connessioni esistenti sono raccolte in una sezione
+separata, per aggiungere un account senza ricreare il provider.
 
-| Vista | Contenuto | Azioni principali |
-| --- | --- | --- |
-| Infrastruttura | Nodi, RAM/VRAM, CPU/GPU, tempi di osservazione, pool condivisi, collegamenti configurati, route e macchine | Aggiornare telemetria; espandere interfacce e contatori di rete |
-| Conoscenza | Metodi, decisioni, brief, documenti e relativa provenienza | Creare una proposta, approvare, aggiornare una revisione, dimenticare, cercare, reindicizzare |
-| Modelli e account | Provider, account distinti, modelli scoperti e quote osservate | Collegare un account, trovare modelli, accedere a Codex, dichiarare capacità verificate |
-| Consegne e rilasci | Missioni, risultati, evidenze di test/revisione/deploy | Esaminare la consegna, tornare alla missione, autorizzare una ricetta di rilascio |
+Per OpenAI e Gemini l'indirizzo standard è già impostato: il campo richiesto
+all'utente è la chiave, quando necessaria. Per Codex e Antigravity non vengono
+chiesti URL o API key. Per i provider locali e gli endpoint personalizzati
+l'indirizzo resta visibile, con la specifica che deve essere raggiungibile dal
+coordinator.
 
-I grafici GPU usano esclusivamente campioni ricevuti nella sessione della vista. Il grafico compare dopo almeno due misure e riporta questa provenienza; non è presentato come archivio storico del cluster. RX e TX di rete vengono mostrati solo quando il backend ha ricavato una velocità da più contatori. Velocità nominale del link, traffico osservato e durata della richiesta di telemetria sono etichettati separatamente.
+Il nome account è facoltativo. L'azione "Aggiungi account" a un provider esistente
+precompila un nuovo nome distinto. Nome della connessione, condivisione,
+associazione ai nodi, gruppi di risorse e ID manuali dei modelli rimangono nelle
+opzioni avanzate.
 
-## Primo utilizzo
+Il comando **Rileva servizi locali e configurati** usa la discovery del server:
+controlla i candidati autorizzati dal servizio, mostra indirizzo e risultato e
+permette di selezionarne uno. Non promette una scansione dell'intera LAN, né che
+"localhost" corrisponda al computer che visualizza il browser.
 
-Un nuovo utente entra con una chiave personale predisposta dall’amministratore. Crea un progetto dando un nome e scegliendo l’orchestratore. Le impostazioni avanzate raccolgono ruoli della squadra, embedding, workspace, verifiche e rilascio.
+Una richiesta `POST /api/connections` gestisce il collegamento. Il wizard conserva
+un `requestId` per tentativo e usa l'account restituito per i retry. Se cambia
+l'endpoint, la UI apre un nuovo tentativo invece di ripuntare silenziosamente un
+account già creato. La chiave viene rimossa dal campo dopo l'invio; in VS Code la
+richiesta passa dal prompt protetto dell'extension host.
 
-L’aggiunta di un provider HTTP segue il flusso **servizio → indirizzo/chiave → Verifica e trova modelli**. L’account rimane riconoscibile e la scoperta riempie il catalogo. Una creazione parzialmente riuscita riusa gli ID già ottenuti quando si riprova la scoperta; il modulo non crea automaticamente un secondo account.
+I risultati hanno esiti distinti:
 
-I provider e i target definiti dall’operatore vengono mantenuti come risorse configurate. L’interfaccia non interpreta una directory o una porta come prova che un servizio sia duplicato.
+- **Pronto / standby:** elenco dei modelli realmente rilevati o registrati come
+  standby, con scelta esplicita del modello da usare.
+- **Accesso necessario:** Codex avvia il flusso ufficiale; alla conferma il server
+  completa la discovery e la UI presenta i modelli di quell'account.
+- **Configurazione necessaria:** istruzioni della CLI e collegamento ufficiale,
+  con azione di verifica successiva.
+- **Non disponibile:** messaggio operativo e retry sullo stesso account.
+- **Modelli dichiarati:** ID manuali chiaramente indicati come non verificati.
 
-Antigravity è assegnabile allo Sviluppatore. Il ruolo di orchestratore e quelli di sola lettura usano altri adapter perché il bridge Antigravity non dichiara una modalità sola lettura verificata. Una missione senza workspace o verifiche eseguibili apre le impostazioni del progetto prima dell’invio: la bozza dell’utente viene conservata.
+Antigravity resta assegnabile al ruolo sviluppatore. La scelta "Usa per
+sviluppatore" configura quel ruolo nel progetto tramite l'API autorizzata; non
+lo imposta come orchestratore o revisore. Un progetto attivo o non modificabile
+continua a ricevere i controlli del server.
 
-## Autonomia e ruoli
+## Domande, lavoro e risposte immediate
 
-L’amministratore configura utenti e infrastruttura. Gli operatori autorizzati possono eseguire missioni e rilasci. I membri usano chat HTTP, conversazioni e conoscenza autorizzata; il ruolo di sola lettura non espone azioni di modifica abilitate. Il server verifica comunque ogni richiesta: i controlli grafici sono una spiegazione delle capacità, non il confine di sicurezza.
+La modalità iniziale per un operatore è **Auto**. Il classificatore condiviso
+`src/intent.ts` decide il percorso anche sul server:
 
-Il composer permette di impostare le autorizzazioni della prossima missione, il numero massimo di agenti paralleli e il limite di iterazioni. Scritture e ricette non già autorizzate richiedono una decisione puntuale. La capacità dei nodi e i lock del workspace possono ridurre il parallelismo effettivo.
+- una normale domanda riceve una risposta in chat;
+- una richiesta esplicita di modifica o esecuzione può aprire una missione;
+- saluti, aiuto e richieste esatte di stato possono ricevere una risposta del
+  servizio senza invocare un modello.
 
-Una quota sconosciuta resta tale. Un 429 mantiene la bozza e non invia il task a un altro account. Un cambio di provider è una scelta dell’utente e non implica la migrazione dello stato interno di una CLI nativa.
+La UI etichetta queste ultime **Servizio yed1z · Nessuna inferenza**. Il percorso
+è disponibile anche senza un modello configurato e non sospende una missione
+aperta. Le altre istruzioni rivolte a una missione in corso continuano a usare
+il controllo della missione, con lo stato di pausa/ripresa visibile.
 
-## Memoria e contesto comprensibili
+Il composer mostra prima dell'invio il percorso atteso: risposta del servizio,
+chat diretta, squadra o istruzione alla missione. La scelta esplicita Chat o
+Squadra rimane disponibile. Gli utenti senza ruolo operativo continuano a usare
+la modalità chat consentita dal server.
 
-Una memoria mostra stato, visibilità, revisione e fonti. Le proposte del revisore richiedono approvazione prima di entrare nel contesto. Il comando **Dimentica** elimina la voce e il suo indice; la conversazione sorgente è un oggetto separato.
+## Occupazione e instradamento comprensibili
 
-Il dettaglio del contesto spiega quante risorse sono state stimate, quanto spazio è riservato all’output e quali fonti sono incluse o escluse. Una stima di token viene descritta come stima. Non viene trasformata in una misura della KV cache o della memoria GPU.
+Il selettore modelli mostra le osservazioni `routeAvailability`: slot libero,
+occupato, quota in attesa, disabilitato, non disponibile o da verificare. Mostra
+anche il motivo e il numero di richieste in coda, quando restituiti dal server.
+Bootstrap, telemetria e heartbeat `routing.updated` aggiornano il selettore già
+aperto, preservando ricerca, scorrimento e focus. L'heartbeat aggiorna soltanto
+disponibilità e conteggi: non ricostruisce i form e non entra nella timeline degli
+agenti. Le richieste osservate sul motore sono mostrate separatamente da quelle
+del coordinator; non vengono sommate perché possono sovrapporsi.
 
-HTML, immagini e istruzioni contenuti in documenti o output non vengono eseguiti dal renderer. I link ammettono solo HTTP/HTTPS senza credenziali incorporate. La scelta di aprire un sito rimane dell’utente.
+**Slot libero non significa endpoint certamente sano.** La disponibilità deriva
+dalle prenotazioni del coordinator o dai probe del provider, secondo la fonte
+indicata. La UI non deduce l'occupazione dell'engine dalla percentuale GPU e non
+inventa tempi di fine attesa.
 
-## Browser e VS Code
+La sezione **Se il modello è occupato** permette di scegliere:
 
-Il browser usa una sessione HttpOnly. La chiave viene svuotata dal modulo di login immediatamente dopo l’invio e non viene conservata nel localStorage.
+1. attesa del modello fissato;
+2. uso di un'alternativa autorizzata disponibile.
 
-La webview di VS Code non riceve la chiave del gateway. Le richieste passano al bridge dell’extension host, che verifica il workspace trust. L’aggiunta di una API key apre un input nativo password. Allegare una selezione e salvare un’esportazione utilizzano i dialoghi nativi di VS Code.
+Le alternative richiedono una selezione esplicita. Non esiste una selezione
+implicita di tutti i provider cloud. Le scelte fatte nel picker valgono per le
+richieste successive della finestra; le impostazioni del progetto permettono di
+salvare il comportamento condiviso. Il dettaglio del task riporta route scelta,
+motivo della selezione e attesa misurata.
 
-Lo streaming usa eventi correlati a messaggi, run e task. Gli offset dei messaggi impediscono di duplicare testo già contenuto in uno snapshot. Il risultato finale dell’agente rimane separato dall’anteprima parziale ricevuta durante lo streaming.
+## Movimento legato agli eventi
 
-## Layout e accessibilità
+`web/activity.ts` rende il medesimo flusso nella chat e nella dashboard:
+**Knowledge → orchestratore → inferenza → agenti → evidenze**.
 
-Il layout desktop usa sidebar, orchestratore e squadra. Sotto 1020 px la squadra diventa un pannello richiamabile; sotto 720 px la navigazione diventa un pannello laterale. La panoramica dei nodi resta scorribile senza comprimere i valori in colonne illeggibili.
+Il componente usa fonti incluse nei report di contesto, memorie e documenti del
+progetto, task realmente presenti, route e risultati registrati. Le dipendenze
+fra agenti rimangono nel grafo SVG dei task. Il flusso generale rappresenta le
+relazioni del prodotto, non una seconda pianificazione inventata.
 
-Sono presenti nomi accessibili per i controlli, focus visibile, navigazione del grafo da tastiera, link di salto al composer, stati di errore testuali e rispetto di `prefers-reduced-motion`. Il colore non è l’unico indicatore di stato. I colori di testo secondario sono stati verificati numericamente sullo sfondo principale; il colore meno evidente delle variabili di tema supera 5:1 sul pannello.
+Le linee di attività si animano durante le fasi osservate. I delta di risposta e
+di task producono impulsi sul nodo corrispondente; eventi di contesto, strumenti
+ed evidenze illuminano il relativo passaggio. Una richiesta in coda viene
+mostrata come attesa, senza simulare generazione di token. Un risultato del
+servizio indica che non c'è stata inferenza.
 
-## Verifica e limiti
+Il pulsante **FX ON/OFF** e `prefers-reduced-motion` disattivano le animazioni. Non
+ci sono contatori FPS, percentuali di avanzamento artificiali o tempi di risposta
+inventati. Gli elementi del flusso sono pulsanti raggiungibili da tastiera e
+aprono la vista pertinente.
 
-I test DOM attraversano i flussi di selezione, messaggistica, steering, memoria, allegati, ruoli, approvazioni e rilascio. Test separati collegano la stessa interfaccia al server HTTP reale, con cookie, SSE, SQLite e un upstream di discovery locale. Questi controlli verificano interazioni e contratti, non la qualità delle risposte di modelli reali.
+## Prestazioni e layout
 
-La verifica visiva con Chromium non è stata possibile nell’ambiente di sviluppo: il processo ha terminato l’avvio con `socket() failed: Operation not permitted`. Non sono state prodotte schermate di validazione né dichiarata parità visiva con Codex/Copilot. Prima della distribuzione occorre controllare rendering e ridimensionamento in un browser reale e nella webview di VS Code collegati al proprio gateway.
+I delta vengono applicati al modello client subito, mentre il rendering è
+raggruppato per frame. Questo evita una ricostruzione completa del DOM per ogni
+frammento di token. Gli offset evitano il raddoppio del testo quando bootstrap e
+SSE contengono parti già ricevute.
+
+Una conversazione lunga mostra inizialmente gli ultimi 80 messaggi; il comando
+"Mostra precedenti" carica gli altri a blocchi. La cronologia canonica e il
+contesto lato server restano integri. Il rendering progressivo riguarda soltanto
+la presentazione.
+
+Su schermi ampi rimangono visibili navigazione, chat e squadra. Sotto 1020 px il
+pannello squadra si apre su richiesta; sotto 720 px la navigazione diventa un
+pannello e il flusso nella chat si riduce ai tre passaggi centrali. La dashboard
+conserva l'intero flusso in una griglia compatta. Il composer, i pulsanti e le
+finestre di collegamento si adattano anche alla larghezza del webview VS Code.
+
+## Verifica e limiti osservati
+
+La suite DOM copre i flussi originali e le regressioni introdotte dalla 0.4:
+collegamento atomico, richiesta di segreti al bridge, saluti durante una missione,
+assenza di modello, occupazione e alternative esplicite, etichetta delle risposte
+del servizio, stato del flusso, animazioni disattivabili, cronologia progressiva e
+atterraggio ospite. La suite HTTP attraversa il server reale, cookie, SSE,
+SQLite e un upstream HTTP locale per il collegamento GemRouter.
+
+Ultimo collaudo del frontend: **36 casi DOM e 2 casi HTTP/SSE superati**, con
+controllo TypeScript strict dei moduli web riuscito. Questi risultati verificano
+interazione e integrazione, non la resa grafica del browser o un login sui
+provider dell'installazione.
+
+Il browser è stato tentato con Playwright e l'eseguibile installato
+`/usr/bin/chromium`. Il processo ha terminato con:
+
+```text
+FATAL:chrome/browser/process_singleton_posix.cc
+socket() failed: Operation not permitted
+```
+
+È stato tentato anche il browser cloud: l'apertura della preview locale
+`file://` è stata negata dalla policy, che non consente di aggirare il blocco.
+Non sono stati prodotti screenshot e non è dichiarata una revisione visiva
+completata. Non va confuso il collaudo DOM con un collaudo di rendering reale.
+I risultati finali dell'intero monorepo sono nel rapporto di verifica della
+release. Nel collaudo dell'installazione vanno ancora controllati:
+
+- viewport desktop 1600×1000 e 1280×800, browser mobile e webview VS Code;
+- navigazione da tastiera, zoom 200%, riduzione del movimento e focus dei dialog;
+- connessione a un account Codex reale, profilo Antigravity e API del cluster;
+- flusso visuale con due richieste concorrenti e un modello realmente occupato;
+- continuità della conversazione quando cambia il provider;
+- assenza di richieste esterne per font o risorse decorative.

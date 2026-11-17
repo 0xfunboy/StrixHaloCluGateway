@@ -1,4 +1,30 @@
-# Migrazione a yed1z Control Room 0.3
+# Migrazione e aggiornamento a yed1z Control Room 0.4
+
+## Aggiornamento dalla tua 0.3 modificata
+
+La release 0.4 parte dall'archivio `StrixHaloCluGateway-feature-distributed-control-room.zip`
+fornito dall'utente. Mantiene lo schema di stato della 0.3: i nuovi campi JSON
+sono opzionali e le identità di progetti, conversazioni e route restano valide.
+Non usare l'importatore 0.2 per questo aggiornamento e non rigenerare lo stato.
+
+La procedura di backup, prova su copia, aggiornamento del servizio e rollback è
+in [`../HANDOFF.md`](../HANDOFF.md). Conservare insieme SQLite/WAL, `master.key`,
+allegati e directory account native; il solo database non basta a recuperare le
+credenziali. Ferma il coordinator prima del backup completo e del cutover. Non
+avviare due coordinator contro lo stesso stato o contro gli stessi engine
+commutabili. La copia di prova non deve avere accesso al lifecycle di produzione.
+
+`publicDashboard` è `true` per preservare la dashboard ospite che hai aggiunto.
+La vista pubblica 0.4 filtra dati privati e connessioni cloud/native. Se il monitor
+deve essere privato, imposta `publicDashboard:false` prima di esporlo al dominio.
+Il VSIX 0.4 mantiene l'ID `funboy.haloforge` e richiede il coordinator 0.4.
+
+I provider dichiarati nel file sono riconciliati all'avvio: non sostituire la tua
+configurazione con il template. Nel template aggiornato Qwen Strix usa solo il
+nodo 01, come indicato nel sorgente legacy allegato; verifica il tuo script
+`cluster-model` e la distribuzione attuale prima di applicare questa modifica.
+
+## Migrazione storica dalla 0.2 / gateway Python
 
 La 0.3 è un nuovo piano di controllo TypeScript con uno schema dati nuovo. Web,
 VS Code e API usano lo stesso coordinator. I processi degli engine restano sulle

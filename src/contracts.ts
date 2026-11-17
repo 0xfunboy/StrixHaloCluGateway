@@ -1,4 +1,13 @@
 /** Shared product contract. Runtime, browser and VS Code are authored in TypeScript. */
+export type { RouteAvailability, RouteDecision } from './routing-types.ts';
+export type { ConnectionInput, ConnectionResult, ConnectionOptions, ConnectionDetection, ConnectionPreset } from './connection-types.ts';
+export type { ProviderLoadObservation } from './load-types.ts';
+export type RequestedMode = 'auto' | 'chat' | 'mission';
+export interface RoutingPreferences {
+    strategy: 'auto' | 'pinned';
+    fallbackRouteIds: string[];
+    maxWaitMs?: number;
+}
 export type Role = 'admin' | 'operator' | 'member' | 'viewer';
 export interface User {
     id: string;
@@ -62,6 +71,7 @@ export interface Provider {
     nodeIds: string[];
     resourceGroupIds: string[];
     enabled: boolean;
+    maxConcurrent?: number;
     tag?: 'gemrouter' | 'cluster' | 'cloud' | 'local';
     ownerId: string;
     createdAt: string;
@@ -100,6 +110,8 @@ export interface ModelRoute {
     contextWindow?: number;
     maxOutputTokens?: number;
     capabilities: string[];
+    capabilitySource?: 'provider' | 'operator' | 'unknown';
+    discoveryStatus?: 'present' | 'missing';
     enabled: boolean;
 }
 export interface Project {
@@ -119,6 +131,7 @@ export interface Project {
     };
     verifyRecipeIds: string[];
     deploymentRecipeId?: string;
+    routing?: RoutingPreferences;
     createdAt: string;
     updatedAt: string;
 }
@@ -129,6 +142,9 @@ export interface Metrics {
     totalTokens?: number;
     ttftMs?: number;
     durationMs?: number;
+    queueMs?: number;
+    contextMs?: number;
+    loadMs?: number;
     decodeTokensPerSecond?: number;
     prefillMs?: number;
     prefillTokensPerSecond?: number;
@@ -147,6 +163,7 @@ export interface ChatMessage {
     status?: 'streaming' | 'complete' | 'error' | 'cancelled';
     metrics?: Metrics;
     attachmentIds?: string[];
+    source?: 'model' | 'service';
 }
 export interface Conversation {
     id: string;
@@ -178,6 +195,7 @@ export interface AgentTask {
     metrics?: Metrics;
     context?: ContextReport;
     evidenceIds: string[];
+    routing?: { requestedRouteId: string; chosenRouteId: string; switched: boolean; waitMs: number; reason: string };
 }
 export interface Run {
     id: string;
@@ -186,6 +204,9 @@ export interface Run {
     ownerId: string;
     goal: string;
     mode: 'chat' | 'mission';
+    requestedMode?: RequestedMode;
+    intent?: 'conversation' | 'work' | 'service';
+    routing?: RoutingPreferences;
     status: RunStatus;
     phase: string;
     routeId: string;
@@ -323,6 +344,8 @@ export interface Bootstrap {
     evidence: Evidence[];
     targets: TargetSummary[];
     resourceUsage: Record<string, number>;
+    routeAvailability?: import('./routing-types.ts').RouteAvailability[];
+    providerLoads?: import('./load-types.ts').ProviderLoadObservation[];
     demo: boolean;
 }
 export interface ApiError {

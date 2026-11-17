@@ -242,7 +242,7 @@ var CommandView = class {
       const path2 = apiPath(message.path), method = typeof message.method === "string" ? message.method : "GET";
       if (method !== "GET" && !vscode.workspace.isTrusted && path2 !== "/api/logout") throw new Error("Rendi attendibile il workspace prima di inviare attivit\xE0 o file al gateway.");
       let body = message.body;
-      if (method === "POST" && path2 === "/api/accounts" && body && typeof body === "object" && !Array.isArray(body)) {
+      if (method === "POST" && ["/api/accounts", "/api/connections"].includes(path2) && body && typeof body === "object" && !Array.isArray(body)) {
         const account = { ...body };
         if (account.requestSecret === true) {
           const secret = await vscode.window.showInputBox({ title: "yed1z \xB7 Chiave del provider", prompt: "La chiave viene inviata al gateway e non entra nel webview.", password: true, ignoreFocusOut: true });

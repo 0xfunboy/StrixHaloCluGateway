@@ -1,19 +1,49 @@
-# yed1z Control Room · 0.3.0
+# yed1z Control Room · 0.4.0
 
 Un centro di controllo per progetti, conversazioni, conoscenza, squadre di agenti e
 infrastruttura distribuita. **Un coordinator TypeScript, la stessa applicazione in
 web e VS Code, più macchine per inferenza ed esecuzione.**
 
-Questa release sostituisce l'architettura Python + worker TypeScript della 0.2 con
-un'applicazione TypeScript. Le infrastrutture esterne continuano a essere adattate:
+Questa release evolve la tua installazione TypeScript 0.3 e conserva le variazioni
+utili dell'archivio fornito: dashboard pubblica, endpoint monitor e accesso ai
+provider dalla UI. Le infrastrutture esterne continuano a essere adattate:
 engine sui due Strix, engine CUDA sulla 3090, GemRouter e provider cloud. Non serve
 spostare tutti i modelli sul coordinator.
 
+## Novità della 0.4
+
+- **Un unico HUD:** chat, monitor, squadra e connessioni usano la grammatica visiva
+  della dashboard storica: reticolo discreto, pannelli squadrati e accenti cyan,
+  viola e verde. Il flusso animato rappresenta contesto, inferenza, strumenti e
+  verifiche realmente osservati. FX è disattivabile e rispetta reduced motion.
+- **Collegamento guidato:** scegli provider, inserisci soltanto i dati necessari,
+  verifica e seleziona il modello. Un'unica operazione conserva il collegamento
+  anche se occorre correggere la chiave o completare il login. Codex e Antigravity
+  non chiedono URL/API key; usano le rispettive CLI ufficiali.
+- **Auto come percorso iniziale:** i saluti e alcune richieste di stato ricevono
+  una risposta del servizio, esplicitamente indicata, senza avviare un modello.
+  Una normale domanda usa una chiamata chat; una richiesta operativa può diventare
+  missione. Chat e Missione restano selezionabili. Auto non concede permessi.
+- **Disponibilità prima della scelta:** risorse fisiche, concorrenza per account,
+  quota osservata e probe opzionali del motore partecipano all'ammissione. Le
+  alternative sono un insieme autorizzato esplicitamente dall'utente.
+- **Attesa controllata:** chat con priorità interattiva, coda con scadenza, retrieval
+  vettoriale opzionale entro 600 ms per la chat e ripiego sul contesto testuale.
+  La UI distingue attesa, contesto, caricamento e generazione.
+- **Nessuna ripetizione nascosta dopo un effetto:** se il provider cade dopo testo
+  parziale o un comando mutativo completato, il risultato viene conservato e il
+  run interrotto. Il ciclo di riparazione non riesegue automaticamente il comando.
+
+Leggi **[HANDOFF.md](HANDOFF.md)** per aggiornamento, collaudo sul cluster, rollback,
+criteri di accettazione e implementazioni future. [CHANGELOG.md](CHANGELOG.md)
+identifica anche i problemi trovati nei sorgenti caricati.
+
 **Stato della consegna:** implementazione e pacchetti verificati con HTTP, RPC,
 filesystem, SQLite e flussi UI di prova. Nessuna installazione su `yed1z.ai`, nessun
-servizio di produzione fermato, nessuna connessione SSH al cluster riuscita in
-questa sessione. Il rendering nella finestra reale del browser/VS Code resta da
-collaudare: Chromium nell'ambiente di verifica è bloccato dal sistema.
+servizio di produzione fermato e nessun accesso alle vostre macchine in questa
+sessione. Il rendering nella finestra reale del browser/VS Code resta da
+collaudare: Chromium è bloccato dal sistema e la preview locale del browser cloud
+è stata rifiutata dalla sua policy. Non sono stati prodotti screenshot di verifica.
 
 ## Il prodotto
 
@@ -37,14 +67,15 @@ configurazioni.
 |---|---|
 | Inferenza | OpenAI compatibile, GemRouter, Ollama, Responses e Gemini; discovery dei modelli e più account. |
 | OAuth ufficiale | Codex tramite app-server e device code, con `CODEX_HOME` privato per account. Antigravity tramite profilo CLI ufficiale configurato dall'operatore. |
-| Risorse | Prenotazione atomica di tutti i nodi necessari. Una route Dual Strix occupa entrambi; CUDA ha il proprio gruppo. |
+| Risorse e routing | Prenotazione atomica di nodi e account, alternative autorizzate, priorità e attesa limitata. DeepSeek Dual Strix occupa entrambi; Qwen Strix 01 e CUDA hanno associazioni distinte. |
 | Lifecycle | Readiness sul motore effettivo e attivazione tramite ricette Strix o node-agent CUDA; risorsa trattenuta fino a fine richiesta. |
 | Esecuzione | Target locale o SSH indipendente dal modello. Runner TypeScript stateless, nessun ulteriore server pubblico. |
 | Missioni | Piano con dipendenze, agenti di lettura paralleli, scritture serializzate nello stesso workspace, review, verifiche e riparazione entro budget. |
 | Controllo agenti | Pausa, ripresa, annullamento e istruzioni per ricercatori/sviluppatori. Cambio modello/account in coda o pausa. |
 | Rilascio | Ricette operatore, nuove verifiche, autorizzazione, health check e rollback configurato. |
 | Conoscenza | Allegati testuali, memorie private o di progetto, revisioni e provenienza; ricerca FTS5 e vettoriale con embeddings reali opzionali. |
-| Interfacce | Web e VS Code condividono applicazione, API e stato. Nessun database di chat indipendente nel plug-in. |
+| Interfacce | HUD condiviso, attività animata da eventi reali, onboarding guidato, stessa applicazione/API/stato in web e VS Code. |
+| Accesso ospite | Dashboard hardware pubblica in sola lettura, disattivabile con `publicDashboard:false`; nessuna conversazione, chiave, endpoint privato o identità account. |
 | Persistenza | SQLite/WAL, chiavi di accesso hashate, segreti API cifrati, checkpoint, eventi e approvazioni persistenti. |
 | Migrazione | Import idempotente delle conversazioni 0.2, senza toccare il database originale o importare credenziali. |
 
@@ -73,12 +104,17 @@ libera. Sul coordinator che ospita il gateway precedente usa prima una porta
 diversa in `state/config.json`, come descritto nella migrazione. Il setup stampa
 la chiave una sola volta. Apri `http://127.0.0.1:8081`, inserisci la chiave, quindi:
 
-1. **Connessioni → Aggiungi connessione**: scegli il preset e usa **Verifica e trova modelli**.
+1. **Collega modello / Connessioni**: scegli il provider, compila i soli campi
+   richiesti e usa **Collega e trova modelli**. Puoi rilevare i servizi già
+   configurati e i runtime locali noti; non viene scandagliata la rete.
 2. **Progetto → Impostazioni**: seleziona il modello primario e, se desiderato,
    modelli diversi per sviluppatore, ricercatore e revisore.
 3. Per una chat basta la connessione. Per una missione configura target/workspace
    e almeno una ricetta di verifica reale.
-4. Scrivi l'obiettivo, scegli Chat o Missione e i permessi concessi per quella missione.
+4. Scrivi in **Auto**, oppure scegli esplicitamente Chat o Missione. Concedi i
+   permessi necessari per le azioni; il classificatore non li concede da solo.
+5. Nel selettore del modello indica quali alternative puoi usare. Senza una
+   selezione esplicita non viene inviata la richiesta a un altro provider.
 
 Un nuovo progetto può creare la propria sottodirectory nella radice configurata.
 La creazione è confinata alla radice del target e non sostituisce file esistenti.
@@ -88,7 +124,7 @@ workspace su cui gli agenti lavorano.
 ### Collegare VS Code
 
 ```bash
-code --install-extension yed1z-control-room-0.3.0.vsix
+code --install-extension artifacts/yed1z-control-room-0.4.0.vsix
 ```
 
 Apri **yed1z Control Room** e scegli **Collega il gateway**. Inserisci lo stesso URL
@@ -108,7 +144,8 @@ al progetto scelto; non espone automaticamente tutto il disco locale.
 | Coordinator | `01-EVO-X3` | Coordinator, inferenza, eventuale esecuzione locale. |
 | Secondo Strix | `02-evo-x3-tb`, collegamento documentato `10.55.0.2` | Nodo distinto, spesso parte della stessa route distribuita. |
 | CUDA | `aireward-llm`, `192.168.178.47` | Engine Qwen su 8080 e DeepSeek su 8085, lifecycle 8090. |
-| Strix engine | 18231 DeepSeek, 18562 Qwen | Endpoint sul coordinator, riservando entrambi gli Strix. |
+| Strix DeepSeek | Porta 18231 | Endpoint sul coordinator, prenotazione di entrambi gli Strix. |
+| Strix Qwen | Porta 18562 | Nel sorgente allegato usa il solo Strix 01; il template 0.4 corregge questa associazione. |
 | GemRouter | URL da impostare dall'operatore | Un ulteriore provider di inferenza selezionabile nei modelli. |
 
 Sono **riferimenti di configurazione**, non risultati di una scansione live. Gli
@@ -174,6 +211,11 @@ effettivo. Non sono script di deploy già installati sui tuoi server.
 - Dopo un crash o un esito remoto incerto, la missione richiede una ripresa esplicita.
 - Un 429 non avvia rotazioni o replay nascosti. Puoi scegliere un altro account
   mantenendo la stessa conversazione.
+- Il routing può scegliere una tua alternativa prima di iniziare l'inferenza;
+  non sposta testo già in streaming né riavvia uno strumento su un altro account.
+- La chat ordinaria ha una sola chiamata, una deadline di 120 secondi e attesa
+  hardware di 8 secondi per default. Il tempo effettivo del modello dipende dal
+  motore; questi limiti impediscono un'attesa indefinita, non garantiscono un TTFT.
 - Default: 3 cicli di correzione, 3 agenti di lettura paralleli, 48 chiamate esterne
   dell'harness, budget output e deadline di 60 minuti. Le CLI native gestiscono
   internamente ulteriori chiamate: il limite dei turni esterni non è una misura
@@ -258,6 +300,8 @@ database/vector aggiuntivi.
 - [Architettura completa](docs/ARCHITETTURA.md)
 - [Audit delle lacune 0.2 → 0.3 e confini della release](docs/GAP_AUDIT.md)
 - [Esperienza utente e verifiche dell'interfaccia](docs/UX.md)
+- [Collegamento provider e login](docs/CONNECTIONS.md)
+- [Routing, occupazione e probe dei motori](docs/ROUTING.md)
 - [API](docs/API.md)
 - [Adapter e fonti](docs/ADAPTERS.md)
 - [Esecuzione, SSH e rilascio](docs/EXECUTION.md)
@@ -268,7 +312,7 @@ I principali limiti residui sono il collaudo sul cluster reale, il collaudo graf
 in browser/VS Code, worktree Git e merge paralleli, isolamento automatico dei
 processi per utenti non fidati e alta disponibilità del coordinator. Le sessioni
 native vengono ricreate dal contesto canonico: i cursori nativi non sono ancora
-persistiti nell'orchestratore 0.3. La telemetria hardware è live con campioni della
+persistiti nell'orchestratore 0.4. La telemetria hardware è live con campioni della
 sessione UI, non un archivio storico TSDB. L'integrazione Antigravity non dichiara
 isolamento multiaccount o quote numeriche verificabili.
 

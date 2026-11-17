@@ -1,6 +1,6 @@
 {
   "name": "yed1z-command",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Distributed agent control room: one coordinator, many inference and execution nodes",

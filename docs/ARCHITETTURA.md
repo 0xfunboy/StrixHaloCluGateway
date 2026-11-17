@@ -1,9 +1,10 @@
-# Architettura di yed1z Control Room 0.3
+# Architettura di yed1z Control Room 0.4
 
 **Progetto:** un ambiente di lavoro condiviso per comandare un team di agenti,
 usare modelli distribuiti e controllare l'infrastruttura da web e VS Code.
 
-**Stato del documento:** descrive il codice della release 0.3, le sue scelte e i
+**Stato del documento:** descrive l'architettura introdotta nella 0.3 e aggiornata
+con la 0.4, le sue scelte e i
 confini effettivi. Le evoluzioni successive sono indicate separatamente. La
 disponibilità del codice e il superamento dei test locali non equivalgono a un
 collaudo o a una distribuzione su `yed1z.ai`.
@@ -27,13 +28,22 @@ storia delle decisioni e verifiche indipendenti dalle dichiarazioni del modello.
 Questi elementi appartengono al servizio yed1z; un cambio di modello non li
 trasferisce in un'altra applicazione.
 
-Le due modalità sono distinte:
+Il composer parte in **Auto**. Un classificatore deterministico condiviso fra UI
+e server distingue domande, richieste operative e un insieme ristretto di saluti
+o richieste di stato. Le risposte di servizio sono attribuite al coordinator,
+senza inferenza o metriche inventate; possono arrivare anche durante una missione
+senza interromperla. Le altre richieste entrano in una delle due modalità:
 
 - **Chat:** conversazione con cronologia e contesto di progetto. I modelli HTTP
   non ricevono tool di esecuzione.
 - **Missione:** ciclo di pianificazione, assegnazione, modifica, revisione e
   verifica, con eventuale rilascio. Richiede un operatore fidato e un target
   configurato. Le CLI native hanno ulteriori limiti descritti più avanti.
+
+La chat ordinaria usa una sola completion, budget di contesto testuale e retrieval
+vettoriale opzionale entro 600 ms. Il timeout complessivo è 120 secondi; il modello
+HTTP ha un limite di 90 secondi. Il classificatore non autorizza tool o deploy.
+Il passaggio manuale a Chat/Missione prevale sulla classificazione operativa.
 
 I tipi condivisi in [`src/contracts.ts`](../src/contracts.ts) definiscono gli
 oggetti del prodotto. La UI e il server usano lo stesso contratto.
@@ -84,7 +94,7 @@ La mappatura degli engine e delle porte ricavata dal gateway è in
 
 ## 3. Un unico servizio di coordinamento, scritto in TypeScript
 
-La 0.3 usa un **monolite modulare TypeScript** su Node 24. Server HTTP, scheduler,
+Il servizio usa un **monolite modulare TypeScript** su Node 24. Server HTTP, scheduler,
 orchestratore, memoria, adapter, runner e client VS Code sono nello stesso
 repository e nello stesso linguaggio applicativo. Il frontend è TypeScript
 compilato per il browser, con HTML e CSS per struttura e presentazione.
@@ -156,8 +166,15 @@ Prima di usare una route, lo scheduler raccoglie i gruppi espliciti della route
 e quelli associati ai suoi nodi. Prenota l'insieme **in modo atomico**: una
 richiesta per entrambi gli Strix non ne trattiene uno mentre attende l'altro.
 
-La coda evita che nuove richieste per le stesse risorse scavalchino continuamente
-una richiesta già bloccata. Risorse indipendenti possono procedere. La capacità
+Il router considera soltanto il modello selezionato e le alternative autorizzate
+per la richiesta/progetto. La prenotazione è atomica su risorse e account;
+l'accesso viene ricontrollato dopo l'uscita dalla coda. Chat, missioni, embeddings
+e facade API condividono questo percorso. Dopo l'inizio di un task i giri dei
+tool restano sul modello scelto; testo parziale o effetti non vengono riprodotti
+su un fallback.
+
+La coda dà priorità alla chat, con un limite di sorpassi delle richieste più
+vecchie per non affamare i lavori normali. Risorse indipendenti possono procedere. La capacità
 è configurata dall'operatore; gli engine commutabili richiedono esclusività,
 con `capacity: 1` sui gruppi interessati.
 
@@ -165,6 +182,12 @@ La prenotazione copre il controllo di readiness, l'eventuale attivazione e la
 generazione. Le richieste embedding e quelle della facade API passano attraverso
 lo stesso scheduler: indicizzare documenti non costituisce un percorso laterale
 per saturare un nodo già occupato da una conversazione.
+
+La disponibilità arriva alla UI ogni due secondi con `routing.updated`, separata
+dai campioni hardware. I probe opzionali leggono contatori reali dell'engine;
+GPU% non indica quanti slot siano liberi. Un probe configurato ma non verificabile
+impedisce prudentemente l'ammissione. Contratti, esempi, stati e limiti sono in
+[`ROUTING.md`](ROUTING.md); la procedura completa è in [`../HANDOFF.md`](../HANDOFF.md).
 
 Tre limiti rimangono espliciti:
 
@@ -328,7 +351,7 @@ Le autorizzazioni vengono applicate alle fonti recuperabili prima di costruire
 il contesto. Non è sufficiente che due utenti usino lo stesso modello embedding
 per rendere visibili le loro memorie reciproche.
 
-L'indice vettoriale della 0.3 è semplice e locale, con scansione dei vettori
+L'indice vettoriale è semplice e locale, con scansione dei vettori
 ammissibili. Non è un motore ANN dedicato per milioni di documenti. La scelta
 evita un altro servizio per la dimensione iniziale del prodotto; l'evoluzione
 verso un indice più grande deve preservare identità, ACL, revisioni e cancellazione.
@@ -446,7 +469,7 @@ all'account di servizio. Cifrare i segreti nel database non protegge da un
 processo che può leggere sia database sia master key.
 
 Per utenti o repository non fidati occorrono target con utenti Unix, container
-o VM isolati, senza mount dello stato del coordinator. La 0.3 non automatizza
+o VM isolati, senza mount dello stato del coordinator. La 0.4 non automatizza
 questa segregazione. Un progetto deve preferire una radice dedicata come
 `/home/funboy/yed1z-workspaces`, creata dall'operatore, non l'intera home che
 contiene configurazioni e credenziali. La creazione di un progetto può preparare
@@ -476,7 +499,7 @@ quindi i suoi task nativi ai target locali. Per un workspace SSH si usano i tool
 remoti dell'harness con un modello HTTP; il percorso remoto non viene passato
 come se fosse locale.
 
-La continuità comune della 0.3 è la conversazione canonica e il contesto
+La continuità comune è la conversazione canonica e il contesto
 ricompilato. Il contratto dell'adapter nativo accetta un `resumeId`, ma
 l'orchestratore attuale non conserva e riutilizza un cursore di sessione nativo
 fra i task. Non viene promessa la conservazione della cache o dell'intero stato

@@ -4,6 +4,7 @@ import { CodexBackend } from './vendor/backends/codex.ts';
 import { AntigravityBackend } from './vendor/backends/antigravity.ts';
 import { inspectCodex } from './vendor/inspect.ts';
 import { loginCodex } from './vendor/login.ts';
+import { inspectAntigravity } from './antigravity-inspect.ts';
 import { profile } from './inference.ts';
 import { cleanLabel, count, record, unknownQuota } from './http-utils.ts';
 import type { AdapterConnection, DiscoveryResult, NativeRequest, NativeResult, QuotaObservation } from './types.ts';
@@ -39,6 +40,9 @@ async function accountKey(connection: AdapterConnection): Promise<string> {
   if (!info.isDirectory() || info.isSymbolicLink() || real !== path.resolve(configured) || (process.platform !== 'win32' && ((info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid())))) throw new Error('Codex account directory must be owned by the service user, private (0700) and not a symlink.');
   return `codex:${real}`;
 }
+export async function nativeAccountBusy(connection: AdapterConnection): Promise<boolean> {
+  return queues.has(await accountKey(connection));
+}
 export function normalizeNativeQuota(value: unknown): QuotaObservation {
   const raw = record(value), result = unknownQuota();
   result.source = 'official-runtime';
@@ -67,19 +71,7 @@ export async function runNativeAgent(request: NativeRequest): Promise<NativeResu
 }
 export async function inspectNative(options: { connection: AdapterConnection; cwd: string; signal: AbortSignal; timeoutMs?: number }): Promise<DiscoveryResult & { authenticated: boolean; capabilities: Record<string, unknown> }> {
   const key = await accountKey(options.connection);
-  if (options.connection.kind === 'antigravity') {
-    return {
-      models: [
-        { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Antigravity)', contextWindow: 1048576, capabilities: ['chat', 'tools'], capabilitySource: 'provider' },
-        { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Antigravity)', contextWindow: 1048576, capabilities: ['chat', 'tools'], capabilitySource: 'provider' },
-        { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (Antigravity)', contextWindow: 1048576, capabilities: ['chat', 'tools'], capabilitySource: 'provider' }
-      ],
-      quota: unknownQuota(),
-      warnings: ['Antigravity è collegato tramite la CLI agy. Per il login Google esegui "agy acp --login" nel terminale oppure usa GEMINI_API_KEY.'],
-      authenticated: true,
-      capabilities: { modes: ['agent', 'chat'], login: true, approvalBoundary: 'official-runtime' }
-    };
-  }
+  if (options.connection.kind === 'antigravity') return exclusive(key, options.signal, () => inspectAntigravity(options));
   return exclusive(key, options.signal, async () => {
     const result = await inspectCodex(profile(options.connection, { id: '' }), options.cwd, options.signal, options.timeoutMs ?? 30_000);
     const models = (Array.isArray(result.models) ? result.models : []).map(value => {
@@ -91,12 +83,7 @@ export async function inspectNative(options: { connection: AdapterConnection; cw
 }
 export async function loginNative(options: { connection: AdapterConnection; cwd: string; signal: AbortSignal; onAuth: (event: { verificationUrl: string; userCode: string; loginId: string }) => void; timeoutMs?: number }): Promise<{ authenticated: boolean; invalidateSessions: boolean }> {
   if (options.connection.kind === 'antigravity') {
-    options.onAuth({
-      verificationUrl: 'https://aistudio.google.com/apikey',
-      userCode: 'Esegui "agy acp --login" sul server o imposta GEMINI_API_KEY',
-      loginId: 'antigravity-auth'
-    });
-    return { authenticated: true, invalidateSessions: false };
+    throw new Error('Antigravity richiede il login ufficiale sul coordinator: agy acp --login. Dopo l’accesso premi Riprova; il bridge verifica la sessione ACP senza copiare credenziali.');
   }
   if (options.connection.kind !== 'codex') throw new Error('Guided device login is available only for the official Codex runtime.');
   const key = await accountKey(options.connection);

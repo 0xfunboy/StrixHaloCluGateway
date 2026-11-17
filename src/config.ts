@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ModelRoute, NetworkLink, NodeConfig, Provider, ResourceGroup } from './contracts.ts';
 import type { ExecutionTarget } from './execution/types.ts';
+import type { LoadProbe } from './load-types.ts';
+import { validateLoadProbe } from './inference-load.ts';
 import { assert, endpoint, integer, object, str, textList } from './util.ts';
 export interface Activation {
     targetId?: string;
@@ -20,6 +22,7 @@ export interface SeedProvider extends Omit<Provider, 'ownerId' | 'createdAt'> {
         capabilities?: string[];
     }>;
     secretEnv?: string;
+    loadProbe?: LoadProbe;
     activation?: Activation;
 }
 export interface Config {
@@ -28,6 +31,7 @@ export interface Config {
     publicOrigin?: string;
     secureCookies: boolean;
     demo: boolean;
+    publicDashboard?: boolean;
     telemetryIntervalMs: number;
     nodes: NodeConfig[];
     links: NetworkLink[];
@@ -35,7 +39,7 @@ export interface Config {
     targets: ExecutionTarget[];
     providers: SeedProvider[];
 }
-export const defaultConfig = (): Config => ({ bind: '127.0.0.1', port: 8081, secureCookies: false, demo: false, telemetryIntervalMs: 10000, nodes: [
+export const defaultConfig = (): Config => ({ bind: '127.0.0.1', port: 8081, secureCookies: false, demo: false, publicDashboard: true, telemetryIntervalMs: 10000, nodes: [
         { id: 'strix01', label: '01-EVO-X3', kind: 'strix', host: '01-EVO-X3', capabilities: ['coordinator', 'inference', 'execution'] },
         { id: 'strix02', label: '02-EVO-X3', kind: 'strix', host: '02-evo-x3-tb', capabilities: ['inference'] },
         { id: 'aireward', label: 'aireward-llm · RTX 3090', kind: 'cuda', host: '192.168.178.47', capabilities: ['inference'] },
@@ -49,6 +53,7 @@ export function loadConfig(file: string): Config {
     cfg.port = integer(cfg.port, 8081, 0, 65535);
     cfg.telemetryIntervalMs = integer(cfg.telemetryIntervalMs, 10000, 1000, 300000);
     assert(typeof cfg.secureCookies === 'boolean' && typeof cfg.demo === 'boolean', 400, 'CONFIG', 'Flag configurazione non validi.');
+    assert(cfg.publicDashboard === undefined || typeof cfg.publicDashboard === 'boolean', 400, 'CONFIG', 'publicDashboard deve essere booleano.');
     if (cfg.publicOrigin) {
         const url = new URL(endpoint(cfg.publicOrigin));
         assert(url.pathname === '/', 400, 'CONFIG', 'publicOrigin deve essere solo origine.');
@@ -80,6 +85,8 @@ export function loadConfig(file: string): Config {
             str(t.sshHost, 'SSH host', 200);
     }
     for (const p of cfg.providers) {
+        if (p.loadProbe) validateLoadProbe(p.loadProbe);
+        if (p.maxConcurrent !== undefined) p.maxConcurrent = integer(p.maxConcurrent, 4, 1, 16);
         assert(['openai-compatible', 'openai-responses', 'ollama', 'gemini', 'codex', 'antigravity'].includes(p.kind), 400, 'CONFIG', 'Provider non valido.');
         if (p.baseUrl)
             p.baseUrl = endpoint(p.baseUrl);
