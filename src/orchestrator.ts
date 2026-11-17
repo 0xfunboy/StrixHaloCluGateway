@@ -200,6 +200,9 @@ export class Orchestrator {
         message.text = result.text;
         message.routeId = task.routeId;
         message.metrics = result.metrics;
+        message.thinking = task.thinking;
+        message.thinkingMs = task.thinkingMs;
+        message.actions = task.actions;
         message.status = 'complete';
         const final = this.store.require<Conversation>('conversation', run.conversationId);
         Object.assign(final.messages.find(m => m.id === message.id)!, message);
@@ -472,7 +475,10 @@ export class Orchestrator {
                 const cwd = await realpath(path.resolve(root, project.workspace ?? '.'));
                 assert(cwd === root || cwd.startsWith(root + path.sep), 403, 'WORKSPACE', 'Workspace fuori dal target.');
                 this.reserveCall(run);
+                const nativeStarted = performance.now();
                 let text = '';
+                let thinkingText = '';
+                const collectedActions: Array<{ title: string; kind?: 'command' | 'tool' | 'file' | 'status'; detail?: string; status?: string }> = [];
                 this.emit(run, 'inference.started', provider.label, { routeId: route.id }, task.id);
                 try {
                     const result = await runNativeAgent({ connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: route.maxOutputTokens }, cwd, prompt: compiled.messages.map(m => `[${m.role.toUpperCase()}]\n${m.content}`).join('\n\n'), readOnly, signal, approve: a => {
@@ -481,19 +487,47 @@ export class Orchestrator {
                             this.emit(run, 'approval.granted', a.title, {kind:a.kind,source:'run-grant'}, task.id);return Promise.resolve(true);
                         }
                         return this.approval(run, task, 'native', a.title, a.detail, signal);
-                    }, onEvent: event => { if (event.type === 'text' && event.text) {
+                    }, onEvent: event => {
+                        if (event.type === 'text' && event.text) {
                             text += event.text;
                             checkpointText(event.text);
                             onText?.(event.text);
                             this.ephemeral(run, 'task.delta', { delta: event.text }, task.id);
                         }
+                        else if (event.type === 'thinking' && event.text) {
+                            thinkingText += event.text;
+                            this.ephemeral(run, 'task.thinking', { delta: event.text }, task.id);
+                        }
+                        else if (event.type === 'tool') {
+                            collectedActions.push({ title: event.name ?? 'tool', detail: event.detail, status: 'completed' });
+                            this.emit(run, 'task.status', event.detail ?? event.name, { name: event.name }, task.id);
+                        }
                         else if (event.type !== 'quota')
-                            this.emit(run, 'task.status', event.text ?? event.detail, { name: event.name }, task.id); } });
+                            this.emit(run, 'task.status', event.text ?? event.detail, { name: event.name }, task.id);
+                    } });
                     this.catalog.succeeded(account, result.quota);
-                    run.budget.outputTokensUsed += result.usage?.outputTokens ?? estimateTokens(result.text);
-                    const metrics: Metrics = { queueMs, contextMs, inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens, source: result.usage ? 'official-runtime' : 'unknown' };
+                    const durationMs = performance.now() - nativeStarted;
+                    const outTokens = result.usage?.outputTokens ?? estimateTokens(result.text);
+                    const inTokens = result.usage?.inputTokens;
+                    const decodeTokensPerSecond = durationMs > 0 && outTokens > 0 ? (outTokens / (durationMs / 1000)) : undefined;
+                    run.budget.outputTokensUsed += outTokens;
+                    const metrics: Metrics = {
+                        queueMs,
+                        contextMs,
+                        durationMs,
+                        decodeTokensPerSecond,
+                        inputTokens: inTokens,
+                        outputTokens: outTokens,
+                        cachedInputTokens: result.usage?.cachedInputTokens,
+                        totalTokens: (inTokens ?? 0) + (outTokens ?? 0) || undefined,
+                        thinkingMs: result.thinkingMs,
+                        source: result.usage ? 'official-runtime' : 'unknown'
+                    };
                     task.output = result.text;
                     task.metrics = metrics;
+                    task.thinking = result.thinking ?? (thinkingText || undefined);
+                    task.thinkingMs = result.thinkingMs;
+                    task.actions = result.actions ?? (collectedActions.length ? collectedActions : undefined);
                     task.status = 'succeeded';
                     task.endedAt = now();
                     this.store.put('run', run);
@@ -562,18 +596,28 @@ export class Orchestrator {
                 messages.push({ role: 'assistant', content: result.text, toolCalls: result.toolCalls.length ? result.toolCalls : undefined, providerMetadata: result.providerMetadata });
                 output += result.text;
                 if (!result.toolCalls.length) {
-                    task.output = output;
+                    let cleanText = output;
+                    let thinkText: string | undefined;
+                    const m = output.match(/<think>([\s\S]*?)<\/think>/);
+                    if (m) {
+                        thinkText = m[1].trim();
+                        cleanText = output.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+                    }
+                    task.thinking = thinkText;
+                    task.output = cleanText;
                     task.metrics = completeUsage ? { ...last, ...totals, totalTokens: totals.inputTokens + totals.outputTokens, ...(round > 0 ? { contextUsed: undefined, contextSource: undefined } : {}) } : last;
                     task.status = 'succeeded';
                     task.endedAt = now();
                     this.store.put('run', run);
                     this.emit(run, 'task.updated', task.label, { status: task.status }, task.id);
-                    return { text: output, metrics: task.metrics };
+                    return { text: cleanText, metrics: task.metrics };
                 }
                 assert(target && !isChat, 409, 'TOOLS', 'Il modello ha richiesto tool in una chat senza strumenti.');
+                task.actions = task.actions ?? [];
                 for (const call of result.toolCalls) {
                     signal.throwIfAborted();
                     this.emit(run, 'tool.started', call.name, { arguments: call.arguments.slice(0, 4000) }, task.id);
+                    task.actions.push({ title: `${call.name}: ${call.arguments.slice(0, 100)}`, kind: 'tool', detail: call.arguments, status: 'completed' });
                     let resultTool: ExecutionResult;
                     try {
                         resultTool = await executeTool(call, { target, workspace: project.workspace, signal, approve: a => this.approveExecution(run, task, a, signal), onEvent: e => this.emit(run, 'tool.status', e.message, undefined, task.id) }, readOnly);

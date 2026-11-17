@@ -55,7 +55,7 @@ export interface CompletionResult {
 export interface HttpCompleter { complete(request: CompletionRequest): Promise<CompletionResult>; }
 
 export interface RuntimeEvent {
-  type: 'text' | 'tool' | 'status' | 'usage' | 'quota';
+  type: 'text' | 'tool' | 'status' | 'usage' | 'quota' | 'thinking';
   text?: string;
   name?: string;
   detail?: string;
@@ -78,7 +78,14 @@ export interface ExternalRequest {
   onEvent: (event: RuntimeEvent) => void;
   approve: (request: ApprovalRequest) => Promise<boolean>;
 }
-export interface ExternalResult { text: string; sessionId: string; usage?: Usage; }
+export interface ExternalResult {
+  text: string;
+  sessionId: string;
+  usage?: Usage;
+  thinking?: string;
+  thinkingMs?: number;
+  actions?: Array<{ title: string; kind?: 'command' | 'tool' | 'file' | 'status'; detail?: string; status?: string }>;
+}
 export interface ExternalBackend { run(request: ExternalRequest): Promise<ExternalResult>; }
 
 export interface ChatEntry {

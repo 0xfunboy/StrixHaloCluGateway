@@ -151,7 +151,14 @@ export interface Metrics {
     contextWindow?: number;
     contextUsed?: number;
     contextSource?: 'provider' | 'estimated';
+    thinkingMs?: number;
     source: string;
+}
+export interface ChatMessageAction {
+    title: string;
+    kind?: 'command' | 'tool' | 'file' | 'status';
+    detail?: string;
+    status?: string;
 }
 export interface ChatMessage {
     id: string;
@@ -164,6 +171,9 @@ export interface ChatMessage {
     metrics?: Metrics;
     attachmentIds?: string[];
     source?: 'model' | 'service';
+    thinking?: string;
+    thinkingMs?: number;
+    actions?: ChatMessageAction[];
 }
 export interface Conversation {
     id: string;
@@ -193,6 +203,9 @@ export interface AgentTask {
     startedAt?: string;
     endedAt?: string;
     metrics?: Metrics;
+    thinking?: string;
+    thinkingMs?: number;
+    actions?: ChatMessageAction[];
     context?: ContextReport;
     evidenceIds: string[];
     routing?: { requestedRouteId: string; chosenRouteId: string; switched: boolean; waitMs: number; reason: string };

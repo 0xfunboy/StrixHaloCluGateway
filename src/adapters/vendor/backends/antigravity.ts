@@ -38,6 +38,10 @@ export class AntigravityBackend implements ExternalBackend {
     let promptResponse: Promise<unknown> | undefined;
     let text = '';
     let textBytes = 0;
+    let thinkingText = '';
+    let thinkingStart: number | undefined;
+    let thinkingEnd: number | undefined;
+    const actions: Array<{ title: string; kind?: 'command' | 'tool' | 'file' | 'status'; detail?: string; status?: string }> = [];
     const rpc = new JsonRpcProcess({
       label: 'Antigravity', command: request.profile.command || 'agy',
       args: request.profile.args ?? ['acp', '--sandbox'],
@@ -55,13 +59,27 @@ export class AntigravityBackend implements ExternalBackend {
             text += content.text;
             request.onEvent({ type: 'text', text: content.text });
           }
+        } else if (update.sessionUpdate === 'agent_thought_chunk') {
+          const content = record(update.content);
+          if (content.type === 'text' && typeof content.text === 'string') {
+            thinkingStart ??= performance.now();
+            thinkingEnd = performance.now();
+            thinkingText += content.text;
+            request.onEvent({ type: 'thinking', text: content.text });
+          }
         } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
-          request.onEvent({ type: 'tool', name: string(update.name) || string(update.title) || string(update.kind) || 'tool',
-            detail: preview({ id: update.toolCallId, kind: update.kind, status: update.status, locations: update.locations }).slice(0, 4000) });
+          const toolName = string(update.name) || string(update.title) || string(update.kind) || 'tool';
+          const toolDetail = preview({ id: update.toolCallId, kind: update.kind, status: update.status, locations: update.locations }).slice(0, 4000);
+          request.onEvent({ type: 'tool', name: toolName, detail: toolDetail });
+          actions.push({
+            title: toolName,
+            kind: 'tool',
+            detail: toolDetail,
+            status: string(update.status) ?? 'completed'
+          });
         } else if (update.sessionUpdate === 'plan') {
           request.onEvent({ type: 'status', text: 'Antigravity updated its task plan.' });
         }
-        // agent_thought_chunk and unverified quota/usage extensions are not copied to chat.
       },
       onRequest: async (method, params) => {
         if (method !== 'session/request_permission') {
@@ -116,7 +134,12 @@ export class AntigravityBackend implements ExternalBackend {
         throw new Error(`Antigravity stopped before completing the task (${stop}).`);
       }
       if (response.stopReason === 'refusal') request.onEvent({ type: 'status', text: 'Antigravity declined this request.' });
-      return { text, sessionId };
+      return {
+        text,
+        sessionId,
+        ...(thinkingText ? { thinking: thinkingText, thinkingMs: thinkingStart !== undefined ? (thinkingEnd ?? performance.now()) - thinkingStart : undefined } : {}),
+        ...(actions.length ? { actions } : {})
+      };
     };
 
     try {

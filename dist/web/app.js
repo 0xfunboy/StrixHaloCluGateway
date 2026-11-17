@@ -1345,6 +1345,36 @@
       if (message2.routeId) meta.append(this.el("span", "message-model truncate", this.route(message2.routeId)?.label ?? "Modello precedente"));
       meta.append(this.el("time", "timestamp", time(message2.createdAt)));
       article.append(meta);
+      if (message2.thinking) {
+        const details = this.el("details", "message-thinking");
+        const summary = this.el("summary", "thinking-summary");
+        const timeStr = message2.thinkingMs ? ` \xB7 ${(message2.thinkingMs / 1e3).toFixed(1)}s` : "";
+        summary.append(this.el("span", "summary-badge", "\u{1F9E0} RAGIONAMENTO" + timeStr));
+        const content = this.el("div", "thinking-content");
+        content.append(renderMarkdown(this.document, message2.thinking));
+        details.append(summary, content);
+        article.append(details);
+      }
+      if (message2.actions?.length) {
+        const details = this.el("details", "message-actions");
+        const summary = this.el("summary", "actions-summary");
+        summary.append(this.el("span", "summary-badge", `\u26A1 AZIONI & COMANDI (${message2.actions.length})`));
+        const list = this.el("div", "actions-list");
+        for (const act of message2.actions) {
+          const item = this.el("div", "action-item");
+          const header = this.el("div", "action-header");
+          header.append(this.el("code", "action-cmd", act.title), this.pill(act.status === "inProgress" ? "pending" : act.status === "failed" ? "error" : "ready", act.status ?? "completato"));
+          item.append(header);
+          if (act.detail && act.detail !== act.title) {
+            const pre = this.el("pre", "action-detail");
+            pre.textContent = act.detail;
+            item.append(pre);
+          }
+          list.append(item);
+        }
+        details.append(summary, list);
+        article.append(details);
+      }
       const body = this.el("div", "message-body");
       body.append(renderMarkdown(this.document, message2.text || (message2.status === "streaming" ? "Preparazione della risposta\u2026" : "")));
       article.append(body);
@@ -1378,16 +1408,29 @@
       return article;
     }
     metricsElement(metrics) {
-      const row = this.el("div", "response-metrics");
+      const row = this.el("div", "response-metrics stats-bar");
       if (!metrics) return row;
-      const values = [["in", metrics.inputTokens, " token"], ["out", metrics.outputTokens, " token"], ["cache", metrics.cachedInputTokens, " token"], ["velocit\xE0", metrics.decodeTokensPerSecond, " tok/s"], ["TTFT", metrics.ttftMs === void 0 ? void 0 : metrics.ttftMs / 1e3, " s"], ["prefill", metrics.prefillMs === void 0 ? void 0 : metrics.prefillMs / 1e3, " s"]];
+      const total = metrics.totalTokens ?? ((metrics.inputTokens || 0) + (metrics.outputTokens || 0) || void 0);
+      const values = [
+        ["in", metrics.inputTokens, " token"],
+        ["out", metrics.outputTokens, " token"],
+        ["totale", total, " token"],
+        ["cache", metrics.cachedInputTokens, " token"],
+        ["velocit\xE0", metrics.decodeTokensPerSecond ? Number(metrics.decodeTokensPerSecond).toFixed(1) : void 0, " tok/s"],
+        ["prefill", metrics.prefillTokensPerSecond ? Number(metrics.prefillTokensPerSecond).toFixed(1) : metrics.prefillMs ? (metrics.prefillMs / 1e3).toFixed(2) : void 0, metrics.prefillTokensPerSecond ? " tok/s" : " s"],
+        ["caricamento", metrics.loadMs !== void 0 ? (metrics.loadMs / 1e3).toFixed(2) : void 0, " s"],
+        ["thinking", metrics.thinkingMs !== void 0 ? (metrics.thinkingMs / 1e3).toFixed(1) : void 0, " s"],
+        ["TTFT", metrics.ttftMs === void 0 ? void 0 : (metrics.ttftMs / 1e3).toFixed(2), " s"],
+        ["durata", metrics.durationMs === void 0 ? void 0 : (metrics.durationMs / 1e3).toFixed(1), " s"]
+      ];
       for (const [label, amount, suffix] of values) {
-        const text = this.el("span", "", `${label} `);
-        text.append(this.el("b", "", value(amount, suffix)));
-        row.append(text);
+        if (amount === void 0) continue;
+        const chip = this.el("span", "stat-chip", `${label} `);
+        chip.append(this.el("b", "", value(amount, suffix)));
+        row.append(chip);
       }
-      if (metrics.contextWindow !== void 0) row.append(this.el("span", "", `contesto ${value(metrics.contextUsed)} / ${formatNumber(metrics.contextWindow)}${metrics.contextSource === "estimated" ? " \xB7 stimato" : ""}`));
-      row.title = `Fonte: ${metrics.source}. TTFT osservato dal gateway comprende attesa e rete. Le misure assenti non sono stimate.`;
+      if (metrics.contextWindow !== void 0) row.append(this.el("span", "stat-chip", `contesto ${value(metrics.contextUsed)} / ${formatNumber(metrics.contextWindow)}${metrics.contextSource === "estimated" ? " \xB7 stimato" : ""}`));
+      row.title = `Fonte: ${metrics.source}. Misure reali osservate durante l\u2019inferenza.`;
       return row;
     }
     updateComposer() {
@@ -2198,23 +2241,23 @@
       description.placeholder = "Scopo, convenzioni e criteri di riuscita del progetto";
       const options = [{ value: "", label: "Scegli al primo messaggio" }, ...this.data.models.filter((item) => this.usableRoute(item)).map((item) => ({ value: item.id, label: `${item.label} \xB7 ${this.account(item.accountId)?.label ?? ""}` }))];
       const primary = this.select(options, project?.routes.primary ?? this.routeId);
-      form.append(this.field("Nome del progetto", name), this.field("Orchestratore primario", primary));
-      let routing = { ...project?.routing ?? { strategy: "auto", fallbackRouteIds: [] }, fallbackRouteIds: [...project?.routing?.fallbackRouteIds ?? []] };
-      form.append(this.routingEditor(routing, (value2) => {
-        routing = value2;
-      }));
-      const advanced = this.el("details", "advanced");
-      advanced.append(this.el("summary", "", "Squadra, contesto e destinazione"));
-      advanced.append(this.field("Obiettivo e convenzioni", description));
+      form.append(this.field("Nome del progetto", name), this.field("Orchestratore primario (chat & pianificazione)", primary));
       const roleInputs = {};
       const roles = this.el("div", "form-grid");
-      for (const [role, label] of [["coder", "Sviluppatore"], ["reviewer", "Revisore"], ["researcher", "Ricercatore"], ["embedding", "Embedding per la memoria"]]) {
+      for (const [role, label] of [["coder", "Sviluppatore (scrittura codice)"], ["reviewer", "Revisore (ispezione verifiche)"], ["researcher", "Ricercatore (analisi & doc)"], ["embedding", "Embedding memoria"]]) {
         const choices = role === "embedding" ? this.data.models.filter((item) => item.enabled && item.capabilities.includes("embedding")).map((item) => ({ value: item.id, label: `${item.label} \xB7 ${this.account(item.accountId)?.label ?? ""}` })) : role === "coder" ? this.data.models.filter((item) => this.usableRoute(item, true)).map((item) => ({ value: item.id, label: `${item.label} \xB7 ${this.account(item.accountId)?.label ?? ""}` })) : options.slice(1);
         const input = this.select([{ value: "", label: role === "embedding" ? "Solo ricerca lessicale" : "Come l\u2019orchestratore" }, ...choices], project?.routes[role] ?? "");
         roleInputs[role] = input;
         roles.append(this.field(label, input));
       }
-      advanced.append(roles);
+      form.append(this.el("div", "field-label", "Squadra e modelli specializzati"), roles);
+      let routing = { ...project?.routing ?? { strategy: "auto", fallbackRouteIds: [] }, fallbackRouteIds: [...project?.routing?.fallbackRouteIds ?? []] };
+      form.append(this.routingEditor(routing, (value2) => {
+        routing = value2;
+      }));
+      const advanced = this.el("details", "advanced");
+      advanced.append(this.el("summary", "", "Workspace, verifiche e destinazione"));
+      advanced.append(this.field("Obiettivo e convenzioni", description));
       const target = this.select([{ value: "", label: "Nessuna esecuzione su filesystem" }, ...this.data.targets.map((item) => ({ value: item.id, label: item.label }))], project?.targetId ?? "");
       const workspace = this.input("text", project?.workspace ?? "", "Percorso relativo alla radice autorizzata");
       if (this.operator) advanced.append(this.field("Macchina di esecuzione", target, "La macchina che esegue i tool pu\xF2 essere diversa da quella che fornisce inferenza."), this.field("Workspace", workspace, "Percorso relativo alla radice configurata dall\u2019operatore. Vuoto = radice del target."));
@@ -2298,6 +2341,14 @@
       const search = this.input("search", "", "Cerca modello, account o macchina\u2026");
       search.setAttribute("aria-label", "Cerca un modello o un account");
       searchWrap.append(search);
+      if (!task && this.project) {
+        const defaultRow = this.el("label", "row fine-print default-checkbox-label");
+        const defaultCheck = this.input("checkbox");
+        defaultCheck.id = "make-default-orchestrator";
+        defaultCheck.checked = true;
+        defaultRow.append(defaultCheck, this.document.createTextNode(` Imposta anche come orchestratore predefinito per "${this.project.name}"`));
+        searchWrap.append(defaultRow);
+      }
       const list = this.el("div", "model-options");
       body.append(searchWrap);
       if (!task) {
@@ -2336,8 +2387,12 @@
           button.dataset.routeId = model.id;
           const check = this.el("span", "check");
           if (selected) check.append(this.icon("check"));
+          const isDefault = !task && this.project?.routes.primary === model.id;
           const info = this.el("div", "grow");
-          info.append(this.el("h3", "", model.label), this.el("p", "", `${provider?.label ?? "Provider"} \xB7 ${account?.label ?? "Account"}${model.nodeIds.length ? ` \xB7 ${model.nodeIds.map((id) => this.data?.nodes.find((node) => node.id === id)?.label ?? id).join(" + ")}` : ""}`));
+          const titleRow = this.el("div", "row model-title-row");
+          titleRow.append(this.el("h3", "", model.label));
+          if (isDefault) titleRow.append(this.el("span", "pill ready small", "Predefinito"));
+          info.append(titleRow, this.el("p", "", `${provider?.label ?? "Provider"} \xB7 ${account?.label ?? "Account"}${model.nodeIds.length ? ` \xB7 ${model.nodeIds.map((id) => this.data?.nodes.find((node) => node.id === id)?.label ?? id).join(" + ")}` : ""}`));
           if (availability) info.append(this.el("p", "route-reason", availability.reason));
           const status = this.el("span", "option-quota");
           const statusLabels = { available: "Slot libero", ready: "Slot libero", busy: "Occupato", cooldown: "Quota in attesa", unavailable: "Non disponibile", disabled: "Disabilitato", unknown: "Da verificare" };
@@ -2348,8 +2403,20 @@
           button.append(check, info, status);
           button.addEventListener("click", () => {
             void this.perform(button, async () => {
-              if (task) await this.api.request("POST", `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id });
-              else this.routeId = model.id;
+              if (task) {
+                await this.api.request("POST", `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id });
+              } else {
+                this.routeId = model.id;
+                const makeDefault = searchWrap.querySelector("#make-default-orchestrator")?.checked;
+                if (makeDefault && this.project && this.canWrite && this.project.routes.primary !== model.id) {
+                  try {
+                    await this.api.request("PATCH", `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { ...this.project.routes, primary: model.id } });
+                    this.project.routes.primary = model.id;
+                    this.toast(`${model.label} impostato come orchestratore predefinito.`);
+                  } catch {
+                  }
+                }
+              }
               dialog.close();
               if (task) await this.refresh();
               this.updateComposer();

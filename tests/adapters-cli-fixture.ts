@@ -33,7 +33,7 @@ async function handle(message: Data): Promise<void> {
   if (message.method === 'turn/interrupt') return void reply(message.id, {});
   if (message.method === 'turn/start') {
     reply(message.id, { turn: { id: turnId, status: 'inProgress' } });
-    notify('item/reasoning/textDelta', { delta: 'PRIVATE_REASONING' });
+    notify('item/reasoning/textDelta', { delta: 'Model reasoning process' });
     notify('item/agentMessage/delta', { itemId: 'answer', delta: 'Hello. ' });
     if (mode === 'hang') return;
     send({ id: 'approval', method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'command', command: 'git status --short', cwd: process.cwd(), availableDecisions: ['accept', 'decline', 'cancel'] } }); return;

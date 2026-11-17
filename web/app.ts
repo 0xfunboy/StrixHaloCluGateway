@@ -383,6 +383,36 @@ export class ControlRoom {
     if (message.source === 'service') meta.append(this.el('span', 'service-label', 'Nessuna inferenza'));
     if (message.routeId) meta.append(this.el('span', 'message-model truncate', this.route(message.routeId)?.label ?? 'Modello precedente'));
     meta.append(this.el('time', 'timestamp', time(message.createdAt))); article.append(meta);
+    if (message.thinking) {
+      const details = this.el('details', 'message-thinking');
+      const summary = this.el('summary', 'thinking-summary');
+      const timeStr = message.thinkingMs ? ` · ${(message.thinkingMs / 1000).toFixed(1)}s` : '';
+      summary.append(this.el('span', 'summary-badge', '🧠 RAGIONAMENTO' + timeStr));
+      const content = this.el('div', 'thinking-content');
+      content.append(renderMarkdown(this.document, message.thinking));
+      details.append(summary, content);
+      article.append(details);
+    }
+    if (message.actions?.length) {
+      const details = this.el('details', 'message-actions');
+      const summary = this.el('summary', 'actions-summary');
+      summary.append(this.el('span', 'summary-badge', `⚡ AZIONI & COMANDI (${message.actions.length})`));
+      const list = this.el('div', 'actions-list');
+      for (const act of message.actions) {
+        const item = this.el('div', 'action-item');
+        const header = this.el('div', 'action-header');
+        header.append(this.el('code', 'action-cmd', act.title), this.pill(act.status === 'inProgress' ? 'pending' : act.status === 'failed' ? 'error' : 'ready', act.status ?? 'completato'));
+        item.append(header);
+        if (act.detail && act.detail !== act.title) {
+          const pre = this.el('pre', 'action-detail');
+          pre.textContent = act.detail;
+          item.append(pre);
+        }
+        list.append(item);
+      }
+      details.append(summary, list);
+      article.append(details);
+    }
     const body = this.el('div', 'message-body'); body.append(renderMarkdown(this.document, message.text || (message.status === 'streaming' ? 'Preparazione della risposta…' : ''))); article.append(body);
     if (message.attachmentIds?.length) { const files = this.el('div', 'response-metrics'); for (const id of message.attachmentIds) { const artifact = this.data?.artifacts.find(item => item.id === id); files.append(this.button(artifact?.name ?? 'Allegato', () => this.openArtifact(id), { className: 'context-chip', icon: 'file' })); } article.append(files); }
     if (message.metrics) article.append(this.metricsElement(message.metrics));
@@ -392,11 +422,29 @@ export class ControlRoom {
   }
 
   private metricsElement(metrics: ChatMessage['metrics']): HTMLElement {
-    const row = this.el('div', 'response-metrics'); if (!metrics) return row;
-    const values = [ ['in', metrics.inputTokens, ' token'], ['out', metrics.outputTokens, ' token'], ['cache', metrics.cachedInputTokens, ' token'], ['velocità', metrics.decodeTokensPerSecond, ' tok/s'], ['TTFT', metrics.ttftMs === undefined ? undefined : metrics.ttftMs / 1000, ' s'], ['prefill', metrics.prefillMs === undefined ? undefined : metrics.prefillMs / 1000, ' s'] ] as const;
-    for (const [label, amount, suffix] of values) { const text = this.el('span', '', `${label} `); text.append(this.el('b', '', value(amount, suffix))); row.append(text); }
-    if (metrics.contextWindow !== undefined) row.append(this.el('span', '', `contesto ${value(metrics.contextUsed)} / ${formatNumber(metrics.contextWindow)}${metrics.contextSource === 'estimated' ? ' · stimato' : ''}`));
-    row.title = `Fonte: ${metrics.source}. TTFT osservato dal gateway comprende attesa e rete. Le misure assenti non sono stimate.`;
+    const row = this.el('div', 'response-metrics stats-bar'); if (!metrics) return row;
+    const total = metrics.totalTokens ?? (((metrics.inputTokens || 0) + (metrics.outputTokens || 0)) || undefined);
+    const values: Array<[string, unknown, string]> = [
+      ['in', metrics.inputTokens, ' token'],
+      ['out', metrics.outputTokens, ' token'],
+      ['totale', total, ' token'],
+      ['cache', metrics.cachedInputTokens, ' token'],
+      ['velocità', metrics.decodeTokensPerSecond ? Number(metrics.decodeTokensPerSecond).toFixed(1) : undefined, ' tok/s'],
+      ['prefill', metrics.prefillTokensPerSecond ? Number(metrics.prefillTokensPerSecond).toFixed(1) : (metrics.prefillMs ? (metrics.prefillMs / 1000).toFixed(2) : undefined), metrics.prefillTokensPerSecond ? ' tok/s' : ' s'],
+      ['caricamento', metrics.loadMs !== undefined ? (metrics.loadMs / 1000).toFixed(2) : undefined, ' s'],
+      ['thinking', metrics.thinkingMs !== undefined ? (metrics.thinkingMs / 1000).toFixed(1) : undefined, ' s'],
+      ['TTFT', metrics.ttftMs === undefined ? undefined : (metrics.ttftMs / 1000).toFixed(2), ' s'],
+      ['durata', metrics.durationMs === undefined ? undefined : (metrics.durationMs / 1000).toFixed(1), ' s']
+    ];
+
+    for (const [label, amount, suffix] of values) {
+      if (amount === undefined) continue;
+      const chip = this.el('span', 'stat-chip', `${label} `);
+      chip.append(this.el('b', '', value(amount, suffix)));
+      row.append(chip);
+    }
+    if (metrics.contextWindow !== undefined) row.append(this.el('span', 'stat-chip', `contesto ${value(metrics.contextUsed)} / ${formatNumber(metrics.contextWindow)}${metrics.contextSource === 'estimated' ? ' · stimato' : ''}`));
+    row.title = `Fonte: ${metrics.source}. Misure reali osservate durante l’inferenza.`;
     return row;
   }
 
@@ -747,14 +795,15 @@ export class ControlRoom {
     const description = this.el('textarea'); description.value = project?.description ?? ''; description.rows = 3; description.placeholder = 'Scopo, convenzioni e criteri di riuscita del progetto';
     const options = [{ value: '', label: 'Scegli al primo messaggio' }, ...this.data.models.filter(item => this.usableRoute(item)).map(item => ({ value: item.id, label: `${item.label} · ${this.account(item.accountId)?.label ?? ''}` }))];
     const primary = this.select(options, project?.routes.primary ?? this.routeId);
-    form.append(this.field('Nome del progetto', name), this.field('Orchestratore primario', primary));
-    let routing: RoutingPreferences = { ...(project?.routing ?? { strategy: 'auto', fallbackRouteIds: [] }), fallbackRouteIds: [...(project?.routing?.fallbackRouteIds ?? [])] };
-    form.append(this.routingEditor(routing, value => { routing = value; }));
-    const advanced = this.el('details', 'advanced'); advanced.append(this.el('summary', '', 'Squadra, contesto e destinazione'));
-    advanced.append(this.field('Obiettivo e convenzioni', description));
+    form.append(this.field('Nome del progetto', name), this.field('Orchestratore primario (chat & pianificazione)', primary));
     const roleInputs = {} as Record<'coder' | 'reviewer' | 'researcher' | 'embedding', HTMLSelectElement>;
     const roles = this.el('div', 'form-grid');
-    for (const [role, label] of [['coder', 'Sviluppatore'], ['reviewer', 'Revisore'], ['researcher', 'Ricercatore'], ['embedding', 'Embedding per la memoria']] as const) { const choices = role === 'embedding' ? this.data.models.filter(item => item.enabled && item.capabilities.includes('embedding')).map(item => ({ value: item.id, label: `${item.label} · ${this.account(item.accountId)?.label ?? ''}` })) : role === 'coder' ? this.data.models.filter(item => this.usableRoute(item, true)).map(item => ({ value: item.id, label: `${item.label} · ${this.account(item.accountId)?.label ?? ''}` })) : options.slice(1); const input = this.select([{ value: '', label: role === 'embedding' ? 'Solo ricerca lessicale' : 'Come l’orchestratore' }, ...choices], project?.routes[role] ?? ''); roleInputs[role] = input; roles.append(this.field(label, input)); } advanced.append(roles);
+    for (const [role, label] of [['coder', 'Sviluppatore (scrittura codice)'], ['reviewer', 'Revisore (ispezione verifiche)'], ['researcher', 'Ricercatore (analisi & doc)'], ['embedding', 'Embedding memoria']] as const) { const choices = role === 'embedding' ? this.data.models.filter(item => item.enabled && item.capabilities.includes('embedding')).map(item => ({ value: item.id, label: `${item.label} · ${this.account(item.accountId)?.label ?? ''}` })) : role === 'coder' ? this.data.models.filter(item => this.usableRoute(item, true)).map(item => ({ value: item.id, label: `${item.label} · ${this.account(item.accountId)?.label ?? ''}` })) : options.slice(1); const input = this.select([{ value: '', label: role === 'embedding' ? 'Solo ricerca lessicale' : 'Come l’orchestratore' }, ...choices], project?.routes[role] ?? ''); roleInputs[role] = input; roles.append(this.field(label, input)); }
+    form.append(this.el('div', 'field-label', 'Squadra e modelli specializzati'), roles);
+    let routing: RoutingPreferences = { ...(project?.routing ?? { strategy: 'auto', fallbackRouteIds: [] }), fallbackRouteIds: [...(project?.routing?.fallbackRouteIds ?? [])] };
+    form.append(this.routingEditor(routing, value => { routing = value; }));
+    const advanced = this.el('details', 'advanced'); advanced.append(this.el('summary', '', 'Workspace, verifiche e destinazione'));
+    advanced.append(this.field('Obiettivo e convenzioni', description));
     const target = this.select([{ value: '', label: 'Nessuna esecuzione su filesystem' }, ...this.data.targets.map(item => ({ value: item.id, label: item.label }))], project?.targetId ?? '');
     const workspace = this.input('text', project?.workspace ?? '', 'Percorso relativo alla radice autorizzata');
     if (this.operator) advanced.append(this.field('Macchina di esecuzione', target, 'La macchina che esegue i tool può essere diversa da quella che fornisce inferenza.'), this.field('Workspace', workspace, 'Percorso relativo alla radice configurata dall’operatore. Vuoto = radice del target.'));
@@ -779,7 +828,16 @@ export class ControlRoom {
 
   private modelDialog(task?: AgentTask, accountId?: string): void {
     const { dialog, body } = this.modal(task ? `Modello per ${task.label}` : 'Scegli modello e disponibilità', task ? 'Riassegna un’attività in coda o in pausa.' : 'Il contesto resta nel progetto. Vedi subito le risorse occupate e le alternative autorizzate.');
-    body.className = ''; const searchWrap = this.el('div', 'model-search'); const search = this.input('search', '', 'Cerca modello, account o macchina…'); search.setAttribute('aria-label', 'Cerca un modello o un account'); searchWrap.append(search); const list = this.el('div', 'model-options'); body.append(searchWrap);
+    body.className = ''; const searchWrap = this.el('div', 'model-search'); const search = this.input('search', '', 'Cerca modello, account o macchina…'); search.setAttribute('aria-label', 'Cerca un modello o un account'); searchWrap.append(search);
+    if (!task && this.project) {
+      const defaultRow = this.el('label', 'row fine-print default-checkbox-label');
+      const defaultCheck = this.input('checkbox');
+      defaultCheck.id = 'make-default-orchestrator';
+      defaultCheck.checked = true;
+      defaultRow.append(defaultCheck, this.document.createTextNode(` Imposta anche come orchestratore predefinito per "${this.project.name}"`));
+      searchWrap.append(defaultRow);
+    }
+    const list = this.el('div', 'model-options'); body.append(searchWrap);
     if (!task) { const policy = this.el('div', 'picker-policy'); policy.append(this.routingEditor(this.routing, value => { this.routingOverrides.set(this.projectId, value); this.updateComposer(); })); body.append(policy); }
     body.append(list);
     const render = () => {
@@ -808,7 +866,12 @@ export class ControlRoom {
         const account = this.account(model.accountId), provider = this.provider(model.providerId), availability = this.availability(model.id);
         const selected = model.id === (task?.routeId ?? this.routeId), button = this.el('button', `model-option ${selected ? 'selected' : ''}`); button.type = 'button'; button.dataset.routeId = model.id;
         const check = this.el('span', 'check'); if (selected) check.append(this.icon('check'));
-        const info = this.el('div', 'grow'); info.append(this.el('h3', '', model.label), this.el('p', '', `${provider?.label ?? 'Provider'} · ${account?.label ?? 'Account'}${model.nodeIds.length ? ` · ${model.nodeIds.map(id => this.data?.nodes.find(node => node.id === id)?.label ?? id).join(' + ')}` : ''}`));
+        const isDefault = !task && this.project?.routes.primary === model.id;
+        const info = this.el('div', 'grow');
+        const titleRow = this.el('div', 'row model-title-row');
+        titleRow.append(this.el('h3', '', model.label));
+        if (isDefault) titleRow.append(this.el('span', 'pill ready small', 'Predefinito'));
+        info.append(titleRow, this.el('p', '', `${provider?.label ?? 'Provider'} · ${account?.label ?? 'Account'}${model.nodeIds.length ? ` · ${model.nodeIds.map(id => this.data?.nodes.find(node => node.id === id)?.label ?? id).join(' + ')}` : ''}`));
         if (availability) info.append(this.el('p', 'route-reason', availability.reason));
         const status = this.el('span', 'option-quota');
         const statusLabels: Record<string, string> = { available: 'Slot libero', ready: 'Slot libero', busy: 'Occupato', cooldown: 'Quota in attesa', unavailable: 'Non disponibile', disabled: 'Disabilitato', unknown: 'Da verificare' };
@@ -817,7 +880,27 @@ export class ControlRoom {
         if (availability && (availability.externalActiveRequests !== undefined || availability.externalQueuedRequests !== undefined)) status.append(this.el('small', '', `Motore: ${availability.externalActiveRequests ?? '—'} attive · ${availability.externalQueuedRequests ?? '—'} in coda`));
         if (account?.quota?.windows?.[0]?.usedPercent !== undefined) status.append(this.el('small', '', `${value(100 - account.quota.windows[0].usedPercent, '%')} quota`));
         button.append(check, info, status);
-        button.addEventListener('click', () => { void this.perform(button, async () => { if (task) await this.api.request('POST', `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id }); else this.routeId = model.id; dialog.close(); if (task) await this.refresh(); this.updateComposer(); this.renderActivity(); }); });
+        button.addEventListener('click', () => {
+          void this.perform(button, async () => {
+            if (task) {
+              await this.api.request('POST', `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id });
+            } else {
+              this.routeId = model.id;
+              const makeDefault = searchWrap.querySelector<HTMLInputElement>('#make-default-orchestrator')?.checked;
+              if (makeDefault && this.project && this.canWrite && this.project.routes.primary !== model.id) {
+                try {
+                  await this.api.request('PATCH', `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { ...this.project.routes, primary: model.id } });
+                  this.project.routes.primary = model.id;
+                  this.toast(`${model.label} impostato come orchestratore predefinito.`);
+                } catch { /* optional patch */ }
+              }
+            }
+            dialog.close();
+            if (task) await this.refresh();
+            this.updateComposer();
+            this.renderActivity();
+          });
+        });
         return button;
       };
 

@@ -23,12 +23,12 @@ test('native discovery uses official app-server protocol and returns only saniti
   } finally { await a.close(); }
 });
 
-test('native Codex turn relays approvals, captures usage, excludes reasoning and observes quota', async () => {
+test('native Codex turn relays approvals, captures usage, captures reasoning and observes quota', async () => {
   const a = await account(); const events: RuntimeEvent[] = []; let approvals = 0;
   try {
     const result = await runNativeAgent({ connection: a.connection, model: { id: 'fixture-model' }, cwd: a.home, prompt: 'Inspect', readOnly: false, signal: signal(), requestTimeoutMs: 1500, turnTimeoutMs: 3000,
       approve: async approval => { approvals++; assert.equal(approval.kind, 'command'); return true; }, onEvent: event => events.push(event) });
-    assert.equal(result.text, 'Hello. Approved.'); assert.equal(approvals, 1); assert.equal(result.usage?.inputTokens, 12); assert.equal(result.quota.buckets?.[0].windows[0].usedPercent, 25); assert(!JSON.stringify({ result, events }).includes('PRIVATE_'));
+    assert.equal(result.text, 'Hello. Approved.'); assert.equal(result.thinking, 'Model reasoning process'); assert.equal(approvals, 1); assert.equal(result.usage?.inputTokens, 12); assert.equal(result.quota.buckets?.[0].windows[0].usedPercent, 25); assert(!JSON.stringify({ result, events }).includes('PRIVATE_'));
   } finally { await a.close(); }
 });
 

@@ -1355,7 +1355,7 @@ var RouteRouter = class {
 };
 
 // src/adapters/inference.ts
-import { performance as performance2 } from "node:perf_hooks";
+import { performance as performance3 } from "node:perf_hooks";
 
 // src/adapters/ollama-info.ts
 async function enrichOllamaModels(connection, models, secret, signal) {
@@ -2024,7 +2024,7 @@ async function geminiStream(events, request, url2) {
 
 // src/adapters/ollama.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { performance } from "node:perf_hooks";
+import { performance as performance2 } from "node:perf_hooks";
 function history(messages) {
   const prepared = [];
   for (let i = 0; i < messages.length; i++) {
@@ -2102,7 +2102,7 @@ async function* lines(body2, signal) {
   }
 }
 async function completeOllama(request) {
-  const started = performance.now();
+  const started = performance2.now();
   let first;
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs ?? 15 * 6e4)]);
   const body2 = JSON.stringify({
@@ -2137,7 +2137,7 @@ async function completeOllama(request) {
     if (chunk.error) throw new AdapterError("Ollama reported an inference error.");
     const message = record(chunk.message);
     if (typeof message.content === "string" && message.content) {
-      first ??= performance.now();
+      first ??= performance2.now();
       text += message.content;
       if (text.length > 4 * 1024 * 1024) throw new AdapterError("Ollama output exceeds the size limit.");
       request.onText(message.content);
@@ -2196,7 +2196,7 @@ function profile(connection, model) {
 }
 function baseMetrics(started, first, model) {
   return {
-    totalMs: performance2.now() - started,
+    totalMs: performance3.now() - started,
     ...first !== void 0 ? { ttftMs: first - started } : {},
     ...model.contextWindow ? { contextLimit: model.contextWindow } : {},
     sources: { usage: "unknown", ttft: "gateway", prefill: "unknown", decode: "unknown", context: model.contextWindow ? "configured" : "unknown" }
@@ -2212,7 +2212,7 @@ async function complete(request) {
   if (["codex", "antigravity"].includes(request.connection.kind)) throw new AdapterError("Use runNativeAgent for an official coding-agent runtime.");
   baseURL(request.connection);
   request.signal.throwIfAborted();
-  const started = performance2.now();
+  const started = performance3.now();
   let first;
   try {
     const result2 = await createHttpCompleter({ requestTimeoutMs: request.timeoutMs ?? 15 * 6e4 }).complete({
@@ -2222,7 +2222,7 @@ async function complete(request) {
       tools: request.tools ?? [],
       signal: request.signal,
       onText: (text) => {
-        first ??= performance2.now();
+        first ??= performance3.now();
         request.onText(text);
       }
     });
@@ -2797,6 +2797,10 @@ var CodexBackend = class {
     let textBytes = 0;
     let usage;
     let knownQuotaObserved = false;
+    let thinkingText = "";
+    let thinkingStart;
+    let thinkingEnd;
+    const actions = [];
     let baseline = request.resumeId ? void 0 : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
     const messages = /* @__PURE__ */ new Map();
     const toolItems = /* @__PURE__ */ new Map();
@@ -2857,6 +2861,14 @@ var CodexBackend = class {
       }
       if (method === "item/agentMessage/delta") {
         append2(string2(params.itemId) || "assistant", string2(params.delta));
+      } else if (method === "item/reasoning/textDelta" || method === "item/reasoning/summaryTextDelta") {
+        const delta = string2(params.delta);
+        if (delta) {
+          thinkingStart ??= performance.now();
+          thinkingEnd = performance.now();
+          thinkingText += delta;
+          request.onEvent({ type: "thinking", text: delta });
+        }
       } else if (method === "item/started" || method === "item/completed") {
         const item = record2(params.item);
         const id2 = string2(item.id);
@@ -2865,7 +2877,18 @@ var CodexBackend = class {
         const supportedTools = ["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "collabAgentToolCall"];
         if (supportedTools.includes(type)) {
           if (method === "item/started" && toolItems.size < 256) toolItems.set(id2, item);
-          request.onEvent({ type: "tool", name: type, detail: preview({ status: item.status ?? (method === "item/started" ? "inProgress" : "completed"), command: item.command, cwd: item.cwd, tool: item.tool, server: item.server }).slice(0, 4e3) });
+          const cmd = typeof item.command === "string" ? item.command : void 0;
+          const status = string2(item.status) ?? (method === "item/started" ? "inProgress" : "completed");
+          const detail = preview({ status, command: item.command, cwd: item.cwd, tool: item.tool, server: item.server }).slice(0, 4e3);
+          request.onEvent({ type: "tool", name: type, detail });
+          if (method === "item/completed" || !toolItems.has(id2)) {
+            actions.push({
+              title: cmd ? `${type}: ${cmd}` : type,
+              kind: type === "commandExecution" ? "command" : type === "fileChange" ? "file" : "tool",
+              detail: cmd || detail,
+              status
+            });
+          }
           if (method === "item/completed") toolItems.delete(id2);
         }
       } else if (method === "thread/tokenUsage/updated" && baseline) {
@@ -2955,11 +2978,9 @@ var CodexBackend = class {
       if (thread.approvalsReviewer && thread.approvalsReviewer !== "user") {
         throw new Error("Codex did not route approvals to the user. Check the official CLI approval settings.");
       }
-      const access2 = { type: "restricted", includePlatformDefaults: true, readableRoots: [request.cwd] };
-      const sandboxPolicy = request.readOnly ? { type: "readOnly", access: access2, networkAccess: false } : {
+      const sandboxPolicy = request.readOnly ? { type: "readOnly", networkAccess: false } : {
         type: "workspaceWrite",
         writableRoots: [request.cwd],
-        readOnlyAccess: access2,
         networkAccess: false,
         excludeTmpdirEnvVar: true,
         excludeSlashTmp: true
@@ -2982,7 +3003,13 @@ var CodexBackend = class {
       early.length = 0;
       if (turn.status !== "inProgress") finish(turn);
       await completion.promise;
-      return { text: [...messages.values()].join("\n\n"), sessionId: threadId, ...usage ? { usage } : {} };
+      return {
+        text: [...messages.values()].join("\n\n"),
+        sessionId: threadId,
+        ...usage ? { usage } : {},
+        ...thinkingText ? { thinking: thinkingText, thinkingMs: thinkingStart !== void 0 ? (thinkingEnd ?? performance.now()) - thinkingStart : void 0 } : {},
+        ...actions.length ? { actions } : {}
+      };
     };
     try {
       const result2 = await bounded(run(), signal, this.options.turnTimeoutMs, "Codex turn", rpc.failure);
@@ -3042,6 +3069,10 @@ var AntigravityBackend = class {
     let promptResponse;
     let text = "";
     let textBytes = 0;
+    let thinkingText = "";
+    let thinkingStart;
+    let thinkingEnd;
+    const actions = [];
     const rpc = new JsonRpcProcess({
       label: "Antigravity",
       command: request.profile.command || "agy",
@@ -3060,11 +3091,23 @@ var AntigravityBackend = class {
             text += content.text;
             request.onEvent({ type: "text", text: content.text });
           }
+        } else if (update.sessionUpdate === "agent_thought_chunk") {
+          const content = record2(update.content);
+          if (content.type === "text" && typeof content.text === "string") {
+            thinkingStart ??= performance.now();
+            thinkingEnd = performance.now();
+            thinkingText += content.text;
+            request.onEvent({ type: "thinking", text: content.text });
+          }
         } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
-          request.onEvent({
-            type: "tool",
-            name: string2(update.name) || string2(update.title) || string2(update.kind) || "tool",
-            detail: preview({ id: update.toolCallId, kind: update.kind, status: update.status, locations: update.locations }).slice(0, 4e3)
+          const toolName = string2(update.name) || string2(update.title) || string2(update.kind) || "tool";
+          const toolDetail = preview({ id: update.toolCallId, kind: update.kind, status: update.status, locations: update.locations }).slice(0, 4e3);
+          request.onEvent({ type: "tool", name: toolName, detail: toolDetail });
+          actions.push({
+            title: toolName,
+            kind: "tool",
+            detail: toolDetail,
+            status: string2(update.status) ?? "completed"
           });
         } else if (update.sessionUpdate === "plan") {
           request.onEvent({ type: "status", text: "Antigravity updated its task plan." });
@@ -3124,7 +3167,12 @@ var AntigravityBackend = class {
         throw new Error(`Antigravity stopped before completing the task (${stop}).`);
       }
       if (response.stopReason === "refusal") request.onEvent({ type: "status", text: "Antigravity declined this request." });
-      return { text, sessionId };
+      return {
+        text,
+        sessionId,
+        ...thinkingText ? { thinking: thinkingText, thinkingMs: thinkingStart !== void 0 ? (thinkingEnd ?? performance.now()) - thinkingStart : void 0 } : {},
+        ...actions.length ? { actions } : {}
+      };
     };
     try {
       return await bounded(run(), signal, this.options.turnTimeoutMs, "Antigravity turn", rpc.failure);
@@ -4503,11 +4551,18 @@ var Catalog = class {
     const reported = new Set(result2.models.map((m) => m.id));
     const isAuthenticated = !("authenticated" in result2) || result2.authenticated === true;
     const models = this.store.transaction(() => {
-      for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
-      return result2.models.map((m) => {
-        const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
-        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled && isAuthenticated });
-      });
+      if (isAuthenticated) {
+        for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
+      } else {
+        for (const old of known) this.store.put("model", { ...old, discoveryStatus: "unverified", enabled: true });
+      }
+      if (result2.models.length) {
+        return result2.models.map((m) => {
+          const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
+          return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled });
+        });
+      }
+      return this.store.all("model").filter((m) => m.accountId === accountId);
     });
     const current = this.store.require("account", accountId);
     current.status = result2.quota.state === "limited" ? "cooldown" : "authenticated" in result2 && result2.authenticated !== true ? "unknown" : "ready";
@@ -5485,6 +5540,9 @@ Altri ${models.length - 24} modelli sono nel selettore.` : "");
     message.text = result2.text;
     message.routeId = task.routeId;
     message.metrics = result2.metrics;
+    message.thinking = task.thinking;
+    message.thinkingMs = task.thinkingMs;
+    message.actions = task.actions;
     message.status = "complete";
     const final = this.store.require("conversation", run.conversationId);
     Object.assign(final.messages.find((m) => m.id === message.id), message);
@@ -5772,7 +5830,10 @@ Your role: ${task.role}. ${readOnly ? "Read-only task; do not propose tool side 
         const cwd = await realpath6(path12.resolve(root, project.workspace ?? "."));
         assert(cwd === root || cwd.startsWith(root + path12.sep), 403, "WORKSPACE", "Workspace fuori dal target.");
         this.reserveCall(run);
+        const nativeStarted = performance.now();
         let text = "";
+        let thinkingText = "";
+        const collectedActions = [];
         this.emit(run, "inference.started", provider.label, { routeId: route.id }, task.id);
         try {
           const result2 = await runNativeAgent({ connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: route.maxOutputTokens }, cwd, prompt: compiled.messages.map((m) => `[${m.role.toUpperCase()}]
@@ -5789,14 +5850,38 @@ ${m.content}`).join("\n\n"), readOnly, signal, approve: (a) => {
               checkpointText(event.text);
               onText?.(event.text);
               this.ephemeral(run, "task.delta", { delta: event.text }, task.id);
+            } else if (event.type === "thinking" && event.text) {
+              thinkingText += event.text;
+              this.ephemeral(run, "task.thinking", { delta: event.text }, task.id);
+            } else if (event.type === "tool") {
+              collectedActions.push({ title: event.name ?? "tool", detail: event.detail, status: "completed" });
+              this.emit(run, "task.status", event.detail ?? event.name, { name: event.name }, task.id);
             } else if (event.type !== "quota")
               this.emit(run, "task.status", event.text ?? event.detail, { name: event.name }, task.id);
           } });
           this.catalog.succeeded(account, result2.quota);
-          run.budget.outputTokensUsed += result2.usage?.outputTokens ?? estimateTokens(result2.text);
-          const metrics = { queueMs, contextMs, inputTokens: result2.usage?.inputTokens, outputTokens: result2.usage?.outputTokens, source: result2.usage ? "official-runtime" : "unknown" };
+          const durationMs = performance.now() - nativeStarted;
+          const outTokens = result2.usage?.outputTokens ?? estimateTokens(result2.text);
+          const inTokens = result2.usage?.inputTokens;
+          const decodeTokensPerSecond = durationMs > 0 && outTokens > 0 ? outTokens / (durationMs / 1e3) : void 0;
+          run.budget.outputTokensUsed += outTokens;
+          const metrics = {
+            queueMs,
+            contextMs,
+            durationMs,
+            decodeTokensPerSecond,
+            inputTokens: inTokens,
+            outputTokens: outTokens,
+            cachedInputTokens: result2.usage?.cachedInputTokens,
+            totalTokens: (inTokens ?? 0) + (outTokens ?? 0) || void 0,
+            thinkingMs: result2.thinkingMs,
+            source: result2.usage ? "official-runtime" : "unknown"
+          };
           task.output = result2.text;
           task.metrics = metrics;
+          task.thinking = result2.thinking ?? (thinkingText || void 0);
+          task.thinkingMs = result2.thinkingMs;
+          task.actions = result2.actions ?? (collectedActions.length ? collectedActions : void 0);
           task.status = "succeeded";
           task.endedAt = now();
           this.store.put("run", run);
@@ -5861,18 +5946,28 @@ ${m.content}`).join("\n\n"), readOnly, signal, approve: (a) => {
         messages.push({ role: "assistant", content: result2.text, toolCalls: result2.toolCalls.length ? result2.toolCalls : void 0, providerMetadata: result2.providerMetadata });
         output += result2.text;
         if (!result2.toolCalls.length) {
-          task.output = output;
+          let cleanText = output;
+          let thinkText;
+          const m = output.match(/<think>([\s\S]*?)<\/think>/);
+          if (m) {
+            thinkText = m[1].trim();
+            cleanText = output.replace(/<think>[\s\S]*?<\/think>/, "").trim();
+          }
+          task.thinking = thinkText;
+          task.output = cleanText;
           task.metrics = completeUsage ? { ...last, ...totals, totalTokens: totals.inputTokens + totals.outputTokens, ...round > 0 ? { contextUsed: void 0, contextSource: void 0 } : {} } : last;
           task.status = "succeeded";
           task.endedAt = now();
           this.store.put("run", run);
           this.emit(run, "task.updated", task.label, { status: task.status }, task.id);
-          return { text: output, metrics: task.metrics };
+          return { text: cleanText, metrics: task.metrics };
         }
         assert(target && !isChat, 409, "TOOLS", "Il modello ha richiesto tool in una chat senza strumenti.");
+        task.actions = task.actions ?? [];
         for (const call of result2.toolCalls) {
           signal.throwIfAborted();
           this.emit(run, "tool.started", call.name, { arguments: call.arguments.slice(0, 4e3) }, task.id);
+          task.actions.push({ title: `${call.name}: ${call.arguments.slice(0, 100)}`, kind: "tool", detail: call.arguments, status: "completed" });
           let resultTool;
           try {
             resultTool = await executeTool(call, { target, workspace: project.workspace, signal, approve: (a) => this.approveExecution(run, task, a, signal), onEvent: (e) => this.emit(run, "tool.status", e.message, void 0, task.id) }, readOnly);

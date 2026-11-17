@@ -42,6 +42,10 @@ export class CodexBackend implements ExternalBackend {
     let textBytes = 0;
     let usage: Usage | undefined;
     let knownQuotaObserved = false;
+    let thinkingText = '';
+    let thinkingStart: number | undefined;
+    let thinkingEnd: number | undefined;
+    const actions: Array<{ title: string; kind?: 'command' | 'tool' | 'file' | 'status'; detail?: string; status?: string }> = [];
     // Thread totals must never be charged again when resuming a saved thread.
     let baseline: Usage | undefined = request.resumeId ? undefined : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
     const messages = new Map<string, string>();
@@ -108,6 +112,14 @@ export class CodexBackend implements ExternalBackend {
       if (method === 'turn/completed') { finish(record(params.turn)); return; }
       if (method === 'item/agentMessage/delta') {
         append(string(params.itemId) || 'assistant', string(params.delta));
+      } else if (method === 'item/reasoning/textDelta' || method === 'item/reasoning/summaryTextDelta') {
+        const delta = string(params.delta);
+        if (delta) {
+          thinkingStart ??= performance.now();
+          thinkingEnd = performance.now();
+          thinkingText += delta;
+          request.onEvent({ type: 'thinking', text: delta });
+        }
       } else if (method === 'item/started' || method === 'item/completed') {
         const item = record(params.item);
         const id = string(item.id);
@@ -116,7 +128,18 @@ export class CodexBackend implements ExternalBackend {
         const supportedTools = ['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch', 'imageView', 'collabAgentToolCall'];
         if (supportedTools.includes(type)) {
           if (method === 'item/started' && toolItems.size < 256) toolItems.set(id, item);
-          request.onEvent({ type: 'tool', name: type, detail: preview({ status: item.status ?? (method === 'item/started' ? 'inProgress' : 'completed'), command: item.command, cwd: item.cwd, tool: item.tool, server: item.server }).slice(0, 4000) });
+          const cmd = typeof item.command === 'string' ? item.command : undefined;
+          const status = string(item.status) ?? (method === 'item/started' ? 'inProgress' : 'completed');
+          const detail = preview({ status, command: item.command, cwd: item.cwd, tool: item.tool, server: item.server }).slice(0, 4000);
+          request.onEvent({ type: 'tool', name: type, detail });
+          if (method === 'item/completed' || !toolItems.has(id)) {
+            actions.push({
+              title: cmd ? `${type}: ${cmd}` : type,
+              kind: type === 'commandExecution' ? 'command' : type === 'fileChange' ? 'file' : 'tool',
+              detail: cmd || detail,
+              status
+            });
+          }
           if (method === 'item/completed') toolItems.delete(id);
         }
       } else if (method === 'thread/tokenUsage/updated' && baseline) {
@@ -135,7 +158,6 @@ export class CodexBackend implements ExternalBackend {
       } else if (method === 'error' && params.willRetry === true) {
         request.onEvent({ type: 'status', text: 'Codex is retrying a temporary runtime error.' });
       }
-      // Reasoning/private analysis and command stdout are intentionally not copied into chat.
     };
 
     const rpc = new JsonRpcProcess({
@@ -208,10 +230,9 @@ export class CodexBackend implements ExternalBackend {
       if (thread.approvalsReviewer && thread.approvalsReviewer !== 'user') {
         throw new Error('Codex did not route approvals to the user. Check the official CLI approval settings.');
       }
-      const access = { type: 'restricted', includePlatformDefaults: true, readableRoots: [request.cwd] };
       const sandboxPolicy = request.readOnly
-        ? { type: 'readOnly', access, networkAccess: false }
-        : { type: 'workspaceWrite', writableRoots: [request.cwd], readOnlyAccess: access, networkAccess: false,
+        ? { type: 'readOnly', networkAccess: false }
+        : { type: 'workspaceWrite', writableRoots: [request.cwd], networkAccess: false,
           excludeTmpdirEnvVar: true, excludeSlashTmp: true };
       capturing = true;
       const started = record(await rpc.request('turn/start', {
@@ -226,7 +247,13 @@ export class CodexBackend implements ExternalBackend {
       early.length = 0;
       if (turn.status !== 'inProgress') finish(turn);
       await completion.promise;
-      return { text: [...messages.values()].join('\n\n'), sessionId: threadId, ...(usage ? { usage } : {}) };
+      return {
+        text: [...messages.values()].join('\n\n'),
+        sessionId: threadId,
+        ...(usage ? { usage } : {}),
+        ...(thinkingText ? { thinking: thinkingText, thinkingMs: thinkingStart !== undefined ? (thinkingEnd ?? performance.now()) - thinkingStart : undefined } : {}),
+        ...(actions.length ? { actions } : {})
+      };
     };
 
     try {

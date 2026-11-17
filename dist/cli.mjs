@@ -3119,11 +3119,18 @@ var Catalog = class {
     const reported = new Set(result2.models.map((m) => m.id));
     const isAuthenticated = !("authenticated" in result2) || result2.authenticated === true;
     const models = this.store.transaction(() => {
-      for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
-      return result2.models.map((m) => {
-        const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
-        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled && isAuthenticated });
-      });
+      if (isAuthenticated) {
+        for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
+      } else {
+        for (const old of known) this.store.put("model", { ...old, discoveryStatus: "unverified", enabled: true });
+      }
+      if (result2.models.length) {
+        return result2.models.map((m) => {
+          const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
+          return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled });
+        });
+      }
+      return this.store.all("model").filter((m) => m.accountId === accountId);
     });
     const current = this.store.require("account", accountId);
     current.status = result2.quota.state === "limited" ? "cooldown" : "authenticated" in result2 && result2.authenticated !== true ? "unknown" : "ready";
