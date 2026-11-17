@@ -1,0 +1,8 @@
+node_modules
+state/
+.env
+*.log
+*.sqlite*
+*.vsix
+.DS_Store
+coverage/

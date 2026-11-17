@@ -1,0 +1,195 @@
+yed1z Control Room 0.3.0 — local validation, 2026-11-16
+
+
+### yed1z-command-check-final.log
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> yed1z-command@0.3.0 check
+> npm run typecheck && npm test && npm run build
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> yed1z-command@0.3.0 typecheck
+> tsc --noEmit
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> yed1z-command@0.3.0 test
+> node --test tests/*.test.ts
+
+✔ provider model discovery preserves unknown capabilities and exact IDs without returning credentials (564.305677ms)
+✔ GemRouter remains an ordinary provider; streamed usage and engine timings belong to the current response (35.707778ms)
+✔ 429 is observable with Retry-After; adapter never retries or discloses an echoed key (11.909904ms)
+✔ Ollama NDJSON handles multibyte text, tools, cached prefill and exact engine counts (22.100821ms)
+✔ Ollama does not invent prefill throughput when uncached token count is unavailable (27.973381ms)
+✔ Gemini paginated discovery and native completion preserve provider usage (171.110482ms)
+✔ Responses native adapter retains structured context metadata for subsequent tool exchanges (29.331485ms)
+✔ embedding adapter restores input order and rejects duplicated indices (46.432365ms)
+✔ Ollama embedding explicitly disables silent truncation (19.072617ms)
+✔ provider redirects are rejected and cannot forward an API key (20.620979ms)
+✔ cancel aborts an active HTTP stream without another request (71.216368ms)
+✔ telemetry preserves real zero, marks stale measurements and rejects fabricated legacy defaults (52.983052ms)
+✔ usage after the finish chunk is retained and missing engine throughput stays unknown (34.668395ms)
+✔ a truncated stream cannot produce a successful completed result (24.560627ms)
+✔ interface telemetry retains observed addresses, speed and zero counters without inventing peers or traffic rates (6.532166ms)
+✔ unknown interface state and invalid counters remain absent, including legacy network payloads (2.055778ms)
+✔ engine activation switches once then waits for the exact configured model on the direct engine (746.34721ms)
+✔ a node-agent static available catalog does not establish engine readiness (67.236413ms)
+✔ readiness authentication failure does not trigger engine mutation (8.085846ms)
+✔ readiness timeout and cancellation never report ready (368.609378ms)
+✔ native discovery uses official app-server protocol and returns only sanitized models/quotas (1270.492344ms)
+✔ native Codex turn relays approvals, captures usage, excludes reasoning and observes quota (460.315742ms)
+✔ read-only Codex turn never asks user to approve a write-capable runtime action (578.475286ms)
+✔ guided device login forwards ephemeral official URL/code and requires authenticated confirmation (475.085751ms)
+✔ guided login rejects unofficial verification URLs (684.659584ms)
+✔ CLI account isolation is mandatory and runtime sandbox downgrade is rejected (259.029024ms)
+✔ active native turn is interruptible and returns no success on cancellation (780.625382ms)
+✔ unknown native quota is unknown; real zero usage remains zero and windows stay separate (0.639878ms)
+✔ a queued account operation can cancel promptly without bypassing the active account lock (1291.721736ms)
+✔ durable auth hashes keys, encrypts provider secrets and enforces one coordinator (223.756909ms)
+✔ project membership does not expose another owner’s conversations or event history (198.002758ms)
+✔ memory is private and inactive until approved; project publication requires authority (85.663487ms)
+✔ vector retrieval honors ACL and forgetting removes text, versions and vectors (74.179053ms)
+✔ attachment ACL, integrity and shared-byte deletion preserve other owners’ files (126.849018ms)
+✔ multi-node scheduler acquires all resources atomically and cancelled waiters leak none (22.301739ms)
+✔ embedding inference competes for the same physical node resources as chat (93.863305ms)
+✔ context packing preserves the current request and reports excluded sources without promoting documents (66.991712ms)
+✔ restart marks work interrupted, expires approvals and never replays a side effect (160.74134ms)
+✔ real HTTP requires auth, rejects credential queries and gates cookie mutations by origin (198.619761ms)
+✔ HTTP object ownership, operator roles and static allowlist stay enforced (54.265016ms)
+✔ untrusted member cannot enter mission or native-CLI execution even with a project membership (94.472742ms)
+✔ explicit model/account switch preserves history when the first account reaches its quota (103.4129ms)
+✔ SSE replay contains only the authenticated owner and removes the subscription on disconnect (177.276871ms)
+✔ pause cancels a live model call and resuming requires an explicit action (611.217437ms)
+✔ exhausted call budget stops before inference and releases the workspace (133.922444ms)
+✔ planner rejects cyclic, missing and duplicate task dependencies (7.999371ms)
+✔ real HTTP mission plans, changes files, reviews, verifies and waits for release before deployment (1797.415366ms)
+✔ failed post-deployment health produces failed mission and observed rollback evidence (1110.144491ms)
+✔ a model’s positive review cannot override failing executable verification (256.725977ms)
+✔ read, bounded search and listing use configured project workspace (910.857282ms)
+✔ project preparation creates only a validated child of an existing operator workspace root (80.245749ms)
+✔ path traversal, symlinks and credentials cannot enter tools (37.027219ms)
+✔ writes require existing file hash and explicit grant; declined write preserves bytes (162.503719ms)
+✔ concurrent edit during approval and hardlinks are rejected (209.733263ms)
+✔ command execution only accepts operator recipe IDs and failure remains failure (575.206195ms)
+✔ command argv is never evaluated by a shell and provider environment secrets are absent (166.553974ms)
+✔ recipe directory cannot escape project into another workspace (37.638175ms)
+✔ read-only role cannot write or execute; model cannot select deployment tool (10.918832ms)
+✔ model command tools cannot invoke deployment, rollback or controller-only recipes (8.945502ms)
+✔ workspace lease serializes writers and a cancelled waiter never acquires (39.991017ms)
+✔ ancestor and descendant workspaces share a lease; disjoint projects proceed (35.386541ms)
+✔ process timeout and cancellation cannot report success (166.883265ms)
+✔ SSH is strict noninteractive, fixed runner argv is shell-quoted and bad aliases rejected (5.374408ms)
+✔ lost SSH runner result marks mutating operations uncertain instead of retryable failure (410.506676ms)
+✔ deployment has fresh verification, a concrete approval and observed HTTP health (776.054622ms)
+✔ failed health runs the approved rollback and never marks production successful (993.291431ms)
+✔ failed release verification prevents deployment and approval (203.916265ms)
+✔ one-shot node runner uses node-owned target config and correlated write approval (1095.05355ms)
+✔ model listing identifies account-specific routes and rejects an ambiguous underlying model without choosing a quota silently (764.404384ms)
+✔ facade streams tool calls and final usage, then forwards the canonical assistant/tool roundtrip without executing a tool (477.509937ms)
+✔ real upstream HTTP 429 preserves its status and Retry-After and persists the account cooldown before another request (235.361157ms)
+✔ repeated catalog seeding applies configuration changes while preserving account IDs, secrets and discovered routes (103.790532ms)
+✔ discovery exposes provider errors without logging out the portal user and preserves rate-limit cooldown and ownership errors (122.015803ms)
+✔ imports only the chosen legacy owner, preserves visible text/dates/metrics and never imports native state or secrets (540.982395ms)
+✔ label and owner hash select the same source identity; replay and a copied backup are idempotent (118.507892ms)
+✔ changed source and deleted destination are never silently overwritten or resurrected (196.72302ms)
+✔ system/tool text loses instruction authority and interrupted turns never become active jobs (237.030904ms)
+✔ invalid records are isolated and a missing selector never imports other users (238.224026ms)
+✔ destination project ACL and source schema are enforced before any import (126.42094ms)
+✔ read-only import includes committed WAL data without checkpointing or changing the source (62.156874ms)
+✔ legacy numeric validation keeps zeros, drops invalid values and does not mislabel aggregate context (0.636471ms)
+✔ pausing one researcher preserves its sibling, blocks the dependent coder and resumes the same DAG without resetting its budget (1620.703491ms)
+✔ cancelling a queued agent pauses the mission without executing or automatically regenerating that agent (125.024656ms)
+✔ task steering persists, pauses only the active agent and permits route changes only while queued or paused (589.557535ms)
+✔ a project colleague cannot control another owner’s agents through any task endpoint (200.438295ms)
+✔ global cancellation wakes a mission waiting on a paused queued task and releases the workspace and resources (649.601519ms)
+✔ REMOTE_UNCERTAIN raised while pausing an agent remains an uncertain mission outcome instead of a resumable task pause (138.957802ms)
+✔ NATIVE_UNCERTAIN raised while pausing an agent remains an uncertain mission outcome instead of a resumable task pause (111.191417ms)
+✔ VS Code origin and API paths reject credential/redirect escape routes (9.224154ms)
+✔ native transport sends token only to configured origin and rejects redirect (258.975691ms)
+✔ SSE handles partial UTF-8 and CRLF with bounded replay event IDs (5.921332ms)
+✔ SSE cancellation releases the reader (3.507414ms)
+✔ webview loads local shared UI under restrictive CSP and never embeds the gateway token (184.390698ms)
+✔ host proxy authenticates in SecretStorage and returns API shape without the token (291.350072ms)
+✔ untrusted workspace blocks mutations before network and still permits history reads (128.001214ms)
+✔ native account secret prompt sends key only to the configured server (187.40655ms)
+✔ configure validates the server before changing saved endpoint and key (417.80847ms)
+✔ selected editor context is explicit and trust-gated (37.735437ms)
+✔ native export writes only the destination selected in the save dialog (40.202862ms)
+✔ cockpit mostra tutti i nodi, distingue zero da misure ignote e non interpreta markup del modello (500.474082ms)
+✔ switch modello/account conserva conversazione e invia la route scelta al prossimo messaggio (369.480356ms)
+✔ parlare durante una missione produce una istruzione persistente senza avviare una seconda missione (119.733894ms)
+✔ attività in coda riassegnabile e dipendenze/contesto restano visibili (176.152083ms)
+✔ memorie candidate vengono approvate esplicitamente, con fonte visibile e contenuto inerte (111.428628ms)
+✔ ricerca memoria usa endpoint del progetto e indica metodo effettivo senza embedding fittizi (73.370402ms)
+✔ allegato dalla selezione native viene caricato, conservato e riferito nella richiesta (84.798288ms)
+✔ discovery native usa richiesta di segreto host senza campo API key nella webview (111.989996ms)
+✔ preset Codex avvia l’accesso ufficiale senza richiedere endpoint o chiave API (150.607095ms)
+✔ una risposta 429 mantiene la bozza e non ruota né ripete il task automaticamente (202.052389ms)
+✔ viewer ispeziona infrastruttura ma non avvia agenti o crea connessioni (91.011069ms)
+✔ member crea un progetto senza campi esecutivi riservati e usa chat senza missioni (74.641695ms)
+✔ stream con offset ignora delta già compresi nello snapshot e conserva il risultato (51.367094ms)
+✔ grafo usa le dipendenze effettive e il dettaglio agente riceve output live (97.680489ms)
+✔ un agente può essere messo in pausa, riassegnato e ripreso senza fermare l’intera missione (74.359881ms)
+✔ una missione in attesa di rilascio riceve istruzioni senza tentare una nuova missione in conflitto (70.535521ms)
+✔ la rete distingue velocità nominale, traffico osservato e contatori mancanti (78.360487ms)
+✔ cambiare progetto separa le bozze e non invia per errore il contesto di un altro workspace (70.063579ms)
+✔ rilascio mostra target e verifiche prima dell’autorizzazione concreta (95.159212ms)
+✔ accesso OAuth effimero non finisce nella conversazione e non apre URL non HTTPS (32.687982ms)
+✔ esportazione da VSCode usa la finestra native e conserva il testo della conversazione (55.554ms)
+✔ renderer Markdown lascia HTML inerte e rifiuta link eseguibili o con credenziali (23.922594ms)
+✔ transport native correla richieste, sottoscrizione, salvataggio e cancella risposte non richieste (15.369746ms)
+✔ transport browser include cookie, vieta redirect e non azzera il replay cursor per eventi effimeri (13.389649ms)
+✔ web reale: login cookie, progetto member, memoria e conversazione attraversano API/SSE/SQLite (1020.067657ms)
+✔ web reale: preset GemRouter crea provider/account e scopre modelli tramite un vero upstream HTTP (288.2803ms)
+ℹ tests 125
+ℹ suites 0
+ℹ pass 125
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18715.237241
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> yed1z-command@0.3.0 build
+> node scripts/build.ts
+
+Build server, CLI, runner SSH, web e VS Code completata.
+
+### yed1z-command-smoke.log
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> yed1z-command@0.3.0 smoke
+> node scripts/smoke.ts
+
+Release smoke PASS: bundled CLI + symlink startup + setup preservation + HTTP/CSP/assets + cookie login + authorization + project workspace + graceful shutdown.
+
+### yed1z-command-vsix.log
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> yed1z-command@0.3.0 package:vsix
+> node scripts/package-vsix.ts
+
+ INFO  Files included in the VSIX:
+yed1z-control-room-0.3.0.vsix
+├─ [Content_Types].xml
+├─ extension.vsixmanifest
+└─ extension/
+   ├─ LICENSE.md [6.28 KB]
+   ├─ package.json [1.31 KB]
+   ├─ readme.md
+   ├─ dist/
+   │  └─ extension.cjs [17.3 KB]
+   ├─ media/
+   │  └─ icon.svg [0.22 KB]
+   └─ web/
+      ├─ app.js [146.18 KB]
+      ├─ favicon.svg [0.29 KB]
+      ├─ index.html [0.65 KB]
+      └─ style.css [32.41 KB]
+
+ DONE  Packaged: /workspace/scratch/2a7a13facc60/yed1z-command/artifacts/yed1z-control-room-0.3.0.vsix (11 files, 56.39 KB)

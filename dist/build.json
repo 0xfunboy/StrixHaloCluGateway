@@ -1,0 +1,10 @@
+{
+  "version": "0.3.0",
+  "node": "v24.18.0",
+  "language": "TypeScript",
+  "entrypoints": [
+    "server.mjs",
+    "cli.mjs",
+    "runner.mjs"
+  ]
+}
