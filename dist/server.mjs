@@ -1153,7 +1153,6 @@ var RouteRouter = class {
     if (account.status === "error") return deny("CONNECTION", "Accesso alla connessione da verificare.");
     if (native && !["admin", "operator"].includes(user.role)) return deny("TRUSTED_EXECUTION", "La CLI richiede un operatore fidato.");
     if (native && options.nativeAllowed === false) return deny("NATIVE_TARGET", "Questa richiesta richiede un modello HTTP; la CLI necessita di un workspace locale autorizzato.");
-    if (provider.kind === "antigravity" && options.purpose && options.purpose !== "coder") return deny("CAPABILITY", "Antigravity \xE8 disponibile per attivit\xE0 di sviluppo nel workspace autorizzato.");
     const required = new Set(options.requiredCapabilities ?? []);
     if (options.purpose === "embedding") required.add("embedding");
     else if (options.purpose && !(route.capabilities.length === 0 && (!route.capabilitySource || route.capabilitySource === "unknown"))) required.add("chat");
@@ -3034,9 +3033,6 @@ var AntigravityBackend = class {
   }
   async run(request) {
     if (request.signal.aborted) throw cancelled();
-    if (request.readOnly) {
-      throw new Error("Antigravity ACP does not expose a verified read-only enforcement mode. Use a compatible backend for Plan/Team, or Antigravity in Agent mode.");
-    }
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal]);
     const scopedRequest = { ...request, signal };
@@ -4316,9 +4312,9 @@ async function executeTool(call, request, readOnly = false) {
   if (!toolDefinitions(request.target, readOnly).some((tool) => tool.name === call.name)) throw new Error("Tool is unavailable in this task role.");
   const raw = typeof call.arguments === "string" ? JSON.parse(call.arguments) : call.arguments;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Tool arguments must be an object.");
-  const args = raw, str2 = (key, optional2 = false) => {
+  const args = raw, str2 = (key, optional3 = false) => {
     const value2 = args[key];
-    if (optional2 && value2 === void 0) return void 0;
+    if (optional3 && value2 === void 0) return void 0;
     if (typeof value2 !== "string") throw new Error(`Invalid ${key}.`);
     return value2;
   };
@@ -4505,11 +4501,12 @@ var Catalog = class {
     this.quota(account, result2.quota);
     const known = this.store.all("model").filter((m) => m.accountId === accountId);
     const reported = new Set(result2.models.map((m) => m.id));
+    const isAuthenticated = !("authenticated" in result2) || result2.authenticated === true;
     const models = this.store.transaction(() => {
       for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
       return result2.models.map((m) => {
         const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
-        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: "present", enabled: provider.enabled });
+        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled && isAuthenticated });
       });
     });
     const current = this.store.require("account", accountId);
@@ -4843,7 +4840,7 @@ var PRESETS = [
 var SCOPE = "Solo Ollama e LM Studio su loopback del coordinator, pi\xF9 gli endpoint gi\xE0 configurati e visibili. Nessuna scansione della rete.";
 var NATIVE = /* @__PURE__ */ new Set(["codex", "antigravity"]);
 var allowedFields = /* @__PURE__ */ new Set(["preset", "providerId", "accountId", "label", "accountLabel", "baseUrl", "secret", "shared", "requestId", "nodeIds", "resourceGroupIds", "modelIds"]);
-var optional = (value2, name, max = 200) => value2 === void 0 || value2 === "" ? void 0 : str(value2, name, max).trim();
+var optional2 = (value2, name, max = 200) => value2 === void 0 || value2 === "" ? void 0 : str(value2, name, max).trim();
 var operator = (user) => user.role === "admin" || user.role === "operator";
 var publicProvider = ({ command, args, env, ...provider }) => provider;
 var sameIds = (left, right) => left.length === right.length && left.every((value2) => right.includes(value2));
@@ -4911,7 +4908,7 @@ var Connections = class {
     assert(user.role !== "viewer", 403, "FORBIDDEN", "Il profilo lettore non pu\xF2 collegare account.");
     const body2 = object(raw);
     assert(Object.keys(body2).every((key2) => allowedFields.has(key2)), 400, "INVALID", "La connessione contiene campi non consentiti.");
-    const requestId = optional(body2.requestId, "Richiesta", 120);
+    const requestId = optional2(body2.requestId, "Richiesta", 120);
     if (requestId) assert(/^[a-zA-Z0-9_-]+$/.test(requestId), 400, "INVALID", "Identificatore richiesta non valido.");
     const key = requestId ? `${user.id}:${requestId}` : id("connect");
     const signature = hash(JSON.stringify(body2));
@@ -4934,8 +4931,8 @@ var Connections = class {
     const store = this.catalog.store;
     const receiptId = requestId ? "enroll_" + hash(`${user.id}:${requestId}`) : void 0;
     const receipt = receiptId ? store.get("connection-enrollment", receiptId) : void 0;
-    const requestedProvider = optional(body2.providerId, "Connessione");
-    const requestedAccount = optional(body2.accountId, "Account");
+    const requestedProvider = optional2(body2.providerId, "Connessione");
+    const requestedAccount = optional2(body2.accountId, "Account");
     if (receipt) assert((!requestedProvider || receipt.providerId === requestedProvider) && (!requestedAccount || receipt.accountId === requestedAccount), 409, "ENROLLMENT", "La richiesta appartiene a un altro collegamento.");
     let account = requestedAccount || receipt?.accountId ? store.own(user, "account", requestedAccount ?? receipt.accountId) : void 0;
     const existingId = requestedProvider ?? receipt?.providerId ?? account?.providerId;
@@ -4948,9 +4945,9 @@ var Connections = class {
     if (provider) assert(provider.kind === preset.kind, 400, "PRESET", "Tipo di connessione non corrispondente.");
     const native = NATIVE.has(preset.kind);
     if (native) assert(operator(user), 403, "TRUSTED_EXECUTION", "Le CLI sono riservate agli operatori fidati.");
-    const secret = optional(body2.secret, "Credenziale", 65536);
+    const secret = optional2(body2.secret, "Credenziale", 65536);
     assert(!native || !secret, 400, "NATIVE_AUTH", "Per questa CLI usa il login ufficiale, senza incollare API key o token.");
-    const suppliedUrl = optional(body2.baseUrl, "URL", 4e3);
+    const suppliedUrl = optional2(body2.baseUrl, "URL", 4e3);
     const url2 = native ? void 0 : provider && (!suppliedUrl || endpoint2(suppliedUrl) === endpoint2(provider.baseUrl)) ? endpoint2(provider.baseUrl) : baseUrl(suppliedUrl ?? preset.defaultUrl ?? "", preset);
     if (provider && url2) assert(endpoint2(provider.baseUrl) === url2, 409, "ENDPOINT_CHANGED", "L\u2019endpoint \xE8 cambiato: avvia una nuova connessione per non modificare gli account gi\xE0 collegati.");
     if (!provider) provider = this.visible(user).find((p) => p.kind === preset.kind && (native || p.baseUrl === url2) && (native || p.ownerId === user.id || this.catalog.config.providers.some((seed) => seed.id === p.id)));
@@ -4965,8 +4962,8 @@ var Connections = class {
       if (provider) assert(provider.ownerId === user.id, 403, "ISOLATION", "Il profilo Antigravity \xE8 gestito dall\u2019operatore che lo ha configurato.");
     }
     const reusedProvider = !!provider;
-    const label2 = optional(body2.label, "Nome connessione", 120) ?? preset.label;
-    const accountLabel = optional(body2.accountLabel, "Nome account", 120) ?? account?.label ?? "Principale";
+    const label2 = optional2(body2.label, "Nome connessione", 120) ?? preset.label;
+    const accountLabel = optional2(body2.accountLabel, "Nome account", 120) ?? account?.label ?? "Principale";
     let nodeIds = body2.nodeIds === void 0 ? provider?.nodeIds ?? [] : textList(body2.nodeIds);
     let resourceGroupIds = body2.resourceGroupIds === void 0 ? provider?.resourceGroupIds ?? [] : textList(body2.resourceGroupIds);
     if (!provider && !nodeIds.length && url2 && ["ollama", "lmstudio"].includes(selected)) {
@@ -5007,7 +5004,6 @@ var Connections = class {
       account.shared = shared;
     }
     const manualIds = body2.modelIds === void 0 ? [] : textList(body2.modelIds, 32).map((value2) => str(value2.trim(), "Modello", 200));
-    assert(!native || !manualIds.length, 400, "MODELS", "Le CLI devono esporre i propri modelli attraverso il protocollo ufficiale.");
     if (secret && secret !== store.secret(account.id)) {
       account.hasSecret = true;
       account.status = "unknown";
@@ -5772,7 +5768,6 @@ Your role: ${task.role}. ${readOnly ? "Read-only task; do not propose tool side 
         assert(["admin", "operator"].includes(user.role), 403, "TRUSTED_EXECUTION", "Le CLI native richiedono un operatore fidato e un profilo dedicato.");
         const target2 = this.target(project);
         assert(target2.kind === "local", 409, "NATIVE_TARGET", "La CLI nativa opera sul coordinator: seleziona un target locale o usa un modello HTTP per un workspace SSH.");
-        assert(provider.kind !== "antigravity" || !readOnly, 409, "CAPABILITY", "Antigravity non offre una modalit\xE0 sola lettura verificata. Usalo per task coder, con un orchestratore HTTP o Codex.");
         const root = await realpath6(target2.workspaceRoot);
         const cwd = await realpath6(path12.resolve(root, project.workspace ?? "."));
         assert(cwd === root || cwd.startsWith(root + path12.sep), 403, "WORKSPACE", "Workspace fuori dal target.");
@@ -6950,6 +6945,35 @@ var Application = class {
       json(res, 202, { operationId });
       return;
     }
+    if (pathname === "/api/models" && method === "POST") {
+      operator2(user);
+      const b = await body(req);
+      const providerId = str(b.providerId, "Provider");
+      const accountId = str(b.accountId, "Account");
+      const provider = this.store.require("provider", providerId);
+      const account = this.store.require("account", accountId);
+      this.store.own(user, "account", account.id);
+      const modelName = str(b.model, "ID modello", 200);
+      const label2 = optional(b.label, "Nome", 200) ?? modelName;
+      const contextWindow = b.contextWindow ? integer2(b.contextWindow, 131072, 4096, 2e6) : 131072;
+      const capabilities = b.capabilities ? textList(b.capabilities) : ["chat", "tools"];
+      const m = this.store.put("model", {
+        id: id("mdl"),
+        providerId,
+        accountId,
+        label: label2,
+        model: modelName,
+        nodeIds: provider.nodeIds,
+        resourceGroupIds: provider.resourceGroupIds,
+        contextWindow,
+        capabilities,
+        capabilitySource: "operator",
+        enabled: true
+      });
+      this.changed(user);
+      json(res, 201, m);
+      return;
+    }
     if (segments[1] === "models" && segments.length === 3 && method === "PATCH") {
       operator2(user);
       const m = this.store.require("model", key);
@@ -6971,6 +6995,15 @@ var Application = class {
       this.store.put("model", m);
       this.changed(user);
       json(res, 200, m);
+      return;
+    }
+    if (segments[1] === "models" && segments.length === 3 && method === "DELETE") {
+      operator2(user);
+      const m = this.store.require("model", key);
+      this.store.own(user, "account", m.accountId);
+      this.store.delete("model", key);
+      this.changed(user);
+      json(res, 200, { ok: true });
       return;
     }
     if (pathname === "/api/artifacts" && method === "POST") {

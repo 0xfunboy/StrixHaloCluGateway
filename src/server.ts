@@ -790,6 +790,36 @@ export class Application {
             return;
         }
 
+        if (pathname === '/api/models' && method === 'POST') {
+            operator(user);
+            const b = await body(req);
+            const providerId = str(b.providerId, 'Provider');
+            const accountId = str(b.accountId, 'Account');
+            const provider = this.store.require<Provider>('provider', providerId);
+            const account = this.store.require<Account>('account', accountId);
+            this.store.own<Account>(user, 'account', account.id);
+            const modelName = str(b.model, 'ID modello', 200);
+            const label = optional(b.label, 'Nome', 200) ?? modelName;
+            const contextWindow = b.contextWindow ? integer(b.contextWindow, 131072, 4096, 2000000) : 131072;
+            const capabilities = b.capabilities ? textList(b.capabilities) : ['chat', 'tools'];
+            const m = this.store.put<ModelRoute>('model', {
+                id: id('mdl'),
+                providerId,
+                accountId,
+                label,
+                model: modelName,
+                nodeIds: provider.nodeIds,
+                resourceGroupIds: provider.resourceGroupIds,
+                contextWindow,
+                capabilities,
+                capabilitySource: 'operator',
+                enabled: true
+            });
+            this.changed(user);
+            json(res, 201, m);
+            return;
+        }
+
         if (segments[1] === 'models' && segments.length === 3 && method === 'PATCH') {
             operator(user);
             const m = this.store.require<ModelRoute>('model', key);
@@ -811,6 +841,16 @@ export class Application {
             this.store.put('model', m);
             this.changed(user);
             json(res, 200, m);
+            return;
+        }
+
+        if (segments[1] === 'models' && segments.length === 3 && method === 'DELETE') {
+            operator(user);
+            const m = this.store.require<ModelRoute>('model', key);
+            this.store.own<Account>(user, 'account', m.accountId);
+            this.store.delete('model', key);
+            this.changed(user);
+            json(res, 200, { ok: true });
             return;
         }
 

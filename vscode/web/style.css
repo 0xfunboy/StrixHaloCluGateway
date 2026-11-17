@@ -3560,6 +3560,21 @@ textarea,
   color: var(--muted);
   font-size: 10px;
 }
+.unverified-models-section {
+  margin-top: 12px;
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+}
+.unverified-models-section summary {
+  padding: 8px 14px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  user-select: none;
+}
+.unverified-models-section summary:hover {
+  color: var(--cyan);
+}
 .option-quota {
   display: flex;
   flex-direction: column;

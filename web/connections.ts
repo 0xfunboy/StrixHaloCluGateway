@@ -136,7 +136,7 @@ export function mountConnectionWizard(options: WizardOptions): void {
       const list = element('div', 'connected-models');
       for (const model of result.models) {
         const button = element('button', 'connected-model'); button.type = 'button'; button.dataset.connectedModel = model.id;
-        button.append(element('span', '', model.label), element('small', '', result.status === 'unverified' ? 'Dichiarato · da verificare' : model.capabilities.includes('embedding') && !model.capabilities.includes('chat') ? 'Embedding' : result.provider.kind === 'antigravity' ? 'Usa per sviluppatore' : 'Usa questo modello ↗'));
+        button.append(element('span', '', model.label), element('small', '', result.status === 'unverified' ? 'Dichiarato · da verificare' : model.capabilities.includes('embedding') && !model.capabilities.includes('chat') ? 'Embedding' : 'Usa questo modello ↗'));
         button.addEventListener('click', () => { button.disabled = true; void options.connected(result, model.id).then(() => dialog.close()).catch(reason => { error.textContent = message(reason); error.hidden = false; button.disabled = false; }); }); list.append(button);
       }
       resultPanel.append(list);

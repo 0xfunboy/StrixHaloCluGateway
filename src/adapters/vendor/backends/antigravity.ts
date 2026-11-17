@@ -29,9 +29,6 @@ export class AntigravityBackend implements ExternalBackend {
 
   async run(request: ExternalRequest): Promise<ExternalResult> {
     if (request.signal.aborted) throw cancelled();
-    if (request.readOnly) {
-      throw new Error('Antigravity ACP does not expose a verified read-only enforcement mode. Use a compatible backend for Plan/Team, or Antigravity in Agent mode.');
-    }
     const controller = new AbortController();
     const signal = AbortSignal.any([request.signal, controller.signal]);
     const scopedRequest = { ...request, signal };

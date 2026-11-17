@@ -468,7 +468,6 @@ export class Orchestrator {
                 assert(['admin', 'operator'].includes(user.role), 403, 'TRUSTED_EXECUTION', 'Le CLI native richiedono un operatore fidato e un profilo dedicato.');
                 const target = this.target(project);
                 assert(target.kind === 'local', 409, 'NATIVE_TARGET', 'La CLI nativa opera sul coordinator: seleziona un target locale o usa un modello HTTP per un workspace SSH.');
-                assert(provider.kind !== 'antigravity' || !readOnly, 409, 'CAPABILITY', 'Antigravity non offre una modalità sola lettura verificata. Usalo per task coder, con un orchestratore HTTP o Codex.');
                 const root = await realpath(target.workspaceRoot);
                 const cwd = await realpath(path.resolve(root, project.workspace ?? '.'));
                 assert(cwd === root || cwd.startsWith(root + path.sep), 403, 'WORKSPACE', 'Workspace fuori dal target.');

@@ -168,7 +168,6 @@ export class Connections {
       account = { id: id('acc'), ownerId: user.id, providerId: provider.id, label: accountLabel, shared, hasSecret: !!secret, status: 'unknown' };
     } else { account.label = accountLabel; account.shared = shared; }
     const manualIds = body.modelIds === undefined ? [] : textList(body.modelIds, 32).map(value => str(value.trim(), 'Modello', 200));
-    assert(!native || !manualIds.length, 400, 'MODELS', 'Le CLI devono esporre i propri modelli attraverso il protocollo ufficiale.');
     if (secret && secret !== store.secret(account.id)) { account.hasSecret = true; account.status = 'unknown'; delete account.quota; }
     store.transaction(() => {
       if (!reusedProvider || previousTopology) store.put('provider', provider!);

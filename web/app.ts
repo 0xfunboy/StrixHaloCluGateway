@@ -157,7 +157,7 @@ export class ControlRoom {
   private route(id?: string): ModelRoute | undefined { return this.data?.models.find(item => item.id === id); }
   private account(id?: string): Account | undefined { return this.data?.accounts.find(item => item.id === id); }
   private provider(id?: string): Provider | undefined { return this.data?.providers.find(item => item.id === id); }
-  private usableRoute(route: ModelRoute, writeRole = false): boolean { const kind = this.provider(route.providerId)?.kind; return route.enabled && !(route.capabilities.includes('embedding') && !route.capabilities.includes('chat')) && (kind !== 'antigravity' || writeRole) && (this.operator || !['codex', 'antigravity'].includes(kind ?? '')); }
+  private usableRoute(route: ModelRoute, _writeRole = false): boolean { const kind = this.provider(route.providerId)?.kind; return route.enabled && !(route.capabilities.includes('embedding') && !route.capabilities.includes('chat')) && (this.operator || !['codex', 'antigravity'].includes(kind ?? '')); }
 
   private get routing(): RoutingPreferences { return this.routingOverrides.get(this.projectId) ?? this.project?.routing ?? { strategy: 'auto', fallbackRouteIds: [] }; }
   private availability(routeId: string) { return this.data?.routeAvailability?.find(item => item.routeId === routeId); }
@@ -648,11 +648,25 @@ export class ControlRoom {
         const models = this.data!.models.filter(item => item.accountId === account.id); const tags = this.el('div', 'model-tags'); for (const model of models) tags.append(this.button(model.label, () => this.modelSettingsDialog(model), { className: 'model-tag', disabled: !this.operator, title: this.operator ? 'Configura capacità del modello' : model.model })); card.append(tags);
         const actions = this.el('div', 'card-actions'); actions.append(this.button('Trova modelli', async () => { const result = await this.api.request<{ models: ModelRoute[] }>('POST', `/api/accounts/${encodeURIComponent(account.id)}/discover`, {}); this.toast(`${result.models.length} modelli rilevati.`); await this.refresh(); }, { className: 'button small', icon: 'search', disabled: !this.canWrite || (['codex', 'antigravity'].includes(provider.kind) && !this.operator) }));
         if (provider.kind === 'codex') actions.append(this.button('Accedi a Codex', async () => { await this.api.request('POST', `/api/accounts/${encodeURIComponent(account.id)}/login`, {}); this.toast('Accesso avviato. Attendi le istruzioni del servizio ufficiale.'); }, { className: 'button small subtle', disabled: !this.operator }));
+        if (provider.kind === 'antigravity') actions.append(this.button('Login Antigravity', () => {
+          const modal = this.modal('Accesso ad Antigravity', 'Esegui il login ufficiale sul coordinator per autorizzare la CLI.');
+          modal.body.append(
+            this.el('p', '', 'Sul server o nel terminale del coordinator, con l’utente funboy, esegui:'),
+            this.el('pre', 'connect-command', 'agy acp --login'),
+            this.el('p', 'fine-print', 'Apri il link restituito nel browser, completa il login con il tuo account Google, e incolla il codice nel terminale. Al termine premi "Verifica modelli".'),
+            this.button('Verifica modelli', async () => {
+              modal.dialog.close();
+              const result = await this.api.request<{ models: ModelRoute[] }>('POST', `/api/accounts/${encodeURIComponent(account.id)}/discover`, {});
+              this.toast(`${result.models.length} modelli verificati.`);
+              await this.refresh();
+            }, { className: 'button primary full' })
+          );
+        }, { className: 'button small subtle', disabled: !this.operator }));
         card.append(actions);
       }
       if (!accounts.length) card.append(this.el('p', 'fine-print', 'Nessun account collegato.'));
       card.append(this.button('Aggiungi account', () => this.connectionDialog(provider), { className: 'text-button', disabled: !this.canWrite || provider.kind === 'antigravity' || (provider.kind === 'codex' && !this.operator) }));
-      if (provider.kind === 'antigravity') card.append(this.el('p', 'fine-print', 'Disponibile per il ruolo Sviluppatore, con login della CLI sul server. Orchestratore e revisore richiedono una modalità sola lettura verificata. Quote numeriche e isolamento multiaccount non sono dichiarati dal bridge.'));
+      if (provider.kind === 'antigravity') card.append(this.el('p', 'fine-print', 'CLI ufficiale Antigravity sul coordinator: disponibile per conversazione, orchestratore e task di sviluppo nel workspace autorizzato.'));
       grid.append(card);
     }
     if (!this.data!.providers.length) grid.append(this.el('p', 'empty', 'Collega il primo provider. I modelli del cluster si registrano dalla configurazione dell’operatore.'));
@@ -772,8 +786,25 @@ export class ControlRoom {
       const focusedRoute = list.contains(this.document.activeElement) ? (this.document.activeElement?.closest('[data-route-id]') as HTMLElement | null)?.dataset.routeId : undefined;
       const scrollTop = list.scrollTop;
       list.replaceChildren(); const query = search.value.toLocaleLowerCase();
-      const models = this.data?.models.filter(model => (!accountId || model.accountId === accountId) && this.usableRoute(model, task?.role === 'coder') && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(' ')}`.toLocaleLowerCase().includes(query)) ?? [];
-      for (const model of models) {
+      const allModels = this.data?.models.filter(model => (!accountId || model.accountId === accountId) && this.usableRoute(model, task?.role === 'coder') && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(' ')}`.toLocaleLowerCase().includes(query)) ?? [];
+
+      const rank = (model: ModelRoute) => {
+        const avail = this.availability(model.id);
+        const status = avail?.status ?? this.account(model.accountId)?.status ?? 'unknown';
+        if (status === 'available' || status === 'ready') return 0;
+        if (status === 'busy') return 1;
+        if (status === 'cooldown') return 2;
+        if (status === 'unknown') return 3;
+        return 4;
+      };
+
+      allModels.sort((a, b) => {
+        const diff = rank(a) - rank(b);
+        if (diff !== 0) return diff;
+        return a.label.localeCompare(b.label);
+      });
+
+      const createModelButton = (model: ModelRoute) => {
         const account = this.account(model.accountId), provider = this.provider(model.providerId), availability = this.availability(model.id);
         const selected = model.id === (task?.routeId ?? this.routeId), button = this.el('button', `model-option ${selected ? 'selected' : ''}`); button.type = 'button'; button.dataset.routeId = model.id;
         const check = this.el('span', 'check'); if (selected) check.append(this.icon('check'));
@@ -786,9 +817,26 @@ export class ControlRoom {
         if (availability && (availability.externalActiveRequests !== undefined || availability.externalQueuedRequests !== undefined)) status.append(this.el('small', '', `Motore: ${availability.externalActiveRequests ?? '—'} attive · ${availability.externalQueuedRequests ?? '—'} in coda`));
         if (account?.quota?.windows?.[0]?.usedPercent !== undefined) status.append(this.el('small', '', `${value(100 - account.quota.windows[0].usedPercent, '%')} quota`));
         button.append(check, info, status);
-        button.addEventListener('click', () => { void this.perform(button, async () => { if (task) await this.api.request('POST', `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id }); else this.routeId = model.id; dialog.close(); if (task) await this.refresh(); this.updateComposer(); this.renderActivity(); }); }); list.append(button);
+        button.addEventListener('click', () => { void this.perform(button, async () => { if (task) await this.api.request('POST', `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id }); else this.routeId = model.id; dialog.close(); if (task) await this.refresh(); this.updateComposer(); this.renderActivity(); }); });
+        return button;
+      };
+
+      const availableModels = allModels.filter(m => rank(m) < 3);
+      const unverifiedModels = allModels.filter(m => rank(m) >= 3);
+
+      if (query || !availableModels.length) {
+        for (const model of allModels) list.append(createModelButton(model));
+      } else {
+        for (const model of availableModels) list.append(createModelButton(model));
+        if (unverifiedModels.length) {
+          const details = this.el('details', 'unverified-models-section');
+          const summary = this.el('summary', 'fine-print', `Altri modelli non collegati o da verificare (${unverifiedModels.length})`);
+          details.append(summary);
+          for (const model of unverifiedModels) details.append(createModelButton(model));
+          list.append(details);
+        }
       }
-      if (!models.length) list.append(this.el('p', 'empty', 'Nessun modello collegato per questo ruolo. Aggiungine uno: accesso e discovery sono guidati.'));
+      if (!allModels.length) list.append(this.el('p', 'empty', 'Nessun modello collegato per questo ruolo. Aggiungine uno: accesso e discovery sono guidati.'));
       if (focusedRoute) Array.from(list.querySelectorAll<HTMLElement>('[data-route-id]')).find(element => element.dataset.routeId === focusedRoute)?.focus({ preventScroll: true });
       list.scrollTop = scrollTop;
     }; search.addEventListener('input', render); this.modelPickerRender = render; dialog.addEventListener('close', () => { if (this.modelPickerRender === render) this.modelPickerRender = undefined; }); render();
@@ -800,7 +848,7 @@ export class ControlRoom {
     const { dialog, body } = this.modal('Collega un modello', 'Scegli il servizio. Accesso, verifica e discovery nello stesso percorso.', 'connection-dialog');
     mountConnectionWizard({ body, dialog, api: this.api, data: this.data, existing,
       connected: async (result, routeId) => {
-        if (routeId && result.provider.kind === 'antigravity' && this.project) await this.api.request('PATCH', `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { coder: routeId } });
+        if (routeId && result.provider.kind === 'antigravity' && this.project) await this.api.request('PATCH', `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { primary: routeId, coder: routeId } });
         await this.refresh();
         if (routeId && this.route(routeId) && this.usableRoute(this.route(routeId)!)) this.routeId = routeId;
         this.updateComposer(); this.renderActivity(); this.toast(`${result.provider.label}: ${result.models.length} modelli nel catalogo.`);

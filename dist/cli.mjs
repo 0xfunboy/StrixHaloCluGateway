@@ -1152,7 +1152,6 @@ var RouteRouter = class {
     if (account.status === "error") return deny("CONNECTION", "Accesso alla connessione da verificare.");
     if (native && !["admin", "operator"].includes(user.role)) return deny("TRUSTED_EXECUTION", "La CLI richiede un operatore fidato.");
     if (native && options.nativeAllowed === false) return deny("NATIVE_TARGET", "Questa richiesta richiede un modello HTTP; la CLI necessita di un workspace locale autorizzato.");
-    if (provider.kind === "antigravity" && options.purpose && options.purpose !== "coder") return deny("CAPABILITY", "Antigravity \xE8 disponibile per attivit\xE0 di sviluppo nel workspace autorizzato.");
     const required = new Set(options.requiredCapabilities ?? []);
     if (options.purpose === "embedding") required.add("embedding");
     else if (options.purpose && !(route.capabilities.length === 0 && (!route.capabilitySource || route.capabilitySource === "unknown"))) required.add("chat");
@@ -3118,11 +3117,12 @@ var Catalog = class {
     this.quota(account, result2.quota);
     const known = this.store.all("model").filter((m) => m.accountId === accountId);
     const reported = new Set(result2.models.map((m) => m.id));
+    const isAuthenticated = !("authenticated" in result2) || result2.authenticated === true;
     const models = this.store.transaction(() => {
       for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
       return result2.models.map((m) => {
         const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
-        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: "present", enabled: provider.enabled });
+        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled && isAuthenticated });
       });
     });
     const current = this.store.require("account", accountId);

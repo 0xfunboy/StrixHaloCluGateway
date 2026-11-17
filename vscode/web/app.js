@@ -577,7 +577,7 @@
           const button = element("button", "connected-model");
           button.type = "button";
           button.dataset.connectedModel = model.id;
-          button.append(element("span", "", model.label), element("small", "", result.status === "unverified" ? "Dichiarato \xB7 da verificare" : model.capabilities.includes("embedding") && !model.capabilities.includes("chat") ? "Embedding" : result.provider.kind === "antigravity" ? "Usa per sviluppatore" : "Usa questo modello \u2197"));
+          button.append(element("span", "", model.label), element("small", "", result.status === "unverified" ? "Dichiarato \xB7 da verificare" : model.capabilities.includes("embedding") && !model.capabilities.includes("chat") ? "Embedding" : "Usa questo modello \u2197"));
           button.addEventListener("click", () => {
             button.disabled = true;
             void options.connected(result, model.id).then(() => dialog.close()).catch((reason) => {
@@ -975,9 +975,9 @@
     provider(id) {
       return this.data?.providers.find((item) => item.id === id);
     }
-    usableRoute(route, writeRole = false) {
+    usableRoute(route, _writeRole = false) {
       const kind = this.provider(route.providerId)?.kind;
-      return route.enabled && !(route.capabilities.includes("embedding") && !route.capabilities.includes("chat")) && (kind !== "antigravity" || writeRole) && (this.operator || !["codex", "antigravity"].includes(kind ?? ""));
+      return route.enabled && !(route.capabilities.includes("embedding") && !route.capabilities.includes("chat")) && (this.operator || !["codex", "antigravity"].includes(kind ?? ""));
     }
     get routing() {
       return this.routingOverrides.get(this.projectId) ?? this.project?.routing ?? { strategy: "auto", fallbackRouteIds: [] };
@@ -1955,11 +1955,25 @@
             await this.api.request("POST", `/api/accounts/${encodeURIComponent(account.id)}/login`, {});
             this.toast("Accesso avviato. Attendi le istruzioni del servizio ufficiale.");
           }, { className: "button small subtle", disabled: !this.operator }));
+          if (provider.kind === "antigravity") actions.append(this.button("Login Antigravity", () => {
+            const modal = this.modal("Accesso ad Antigravity", "Esegui il login ufficiale sul coordinator per autorizzare la CLI.");
+            modal.body.append(
+              this.el("p", "", "Sul server o nel terminale del coordinator, con l\u2019utente funboy, esegui:"),
+              this.el("pre", "connect-command", "agy acp --login"),
+              this.el("p", "fine-print", 'Apri il link restituito nel browser, completa il login con il tuo account Google, e incolla il codice nel terminale. Al termine premi "Verifica modelli".'),
+              this.button("Verifica modelli", async () => {
+                modal.dialog.close();
+                const result = await this.api.request("POST", `/api/accounts/${encodeURIComponent(account.id)}/discover`, {});
+                this.toast(`${result.models.length} modelli verificati.`);
+                await this.refresh();
+              }, { className: "button primary full" })
+            );
+          }, { className: "button small subtle", disabled: !this.operator }));
           card.append(actions);
         }
         if (!accounts.length) card.append(this.el("p", "fine-print", "Nessun account collegato."));
         card.append(this.button("Aggiungi account", () => this.connectionDialog(provider), { className: "text-button", disabled: !this.canWrite || provider.kind === "antigravity" || provider.kind === "codex" && !this.operator }));
-        if (provider.kind === "antigravity") card.append(this.el("p", "fine-print", "Disponibile per il ruolo Sviluppatore, con login della CLI sul server. Orchestratore e revisore richiedono una modalit\xE0 sola lettura verificata. Quote numeriche e isolamento multiaccount non sono dichiarati dal bridge."));
+        if (provider.kind === "antigravity") card.append(this.el("p", "fine-print", "CLI ufficiale Antigravity sul coordinator: disponibile per conversazione, orchestratore e task di sviluppo nel workspace autorizzato."));
         grid.append(card);
       }
       if (!this.data.providers.length) grid.append(this.el("p", "empty", "Collega il primo provider. I modelli del cluster si registrano dalla configurazione dell\u2019operatore."));
@@ -2300,8 +2314,22 @@
         const scrollTop = list.scrollTop;
         list.replaceChildren();
         const query = search.value.toLocaleLowerCase();
-        const models = this.data?.models.filter((model) => (!accountId || model.accountId === accountId) && this.usableRoute(model, task?.role === "coder") && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(" ")}`.toLocaleLowerCase().includes(query)) ?? [];
-        for (const model of models) {
+        const allModels = this.data?.models.filter((model) => (!accountId || model.accountId === accountId) && this.usableRoute(model, task?.role === "coder") && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(" ")}`.toLocaleLowerCase().includes(query)) ?? [];
+        const rank = (model) => {
+          const avail = this.availability(model.id);
+          const status = avail?.status ?? this.account(model.accountId)?.status ?? "unknown";
+          if (status === "available" || status === "ready") return 0;
+          if (status === "busy") return 1;
+          if (status === "cooldown") return 2;
+          if (status === "unknown") return 3;
+          return 4;
+        };
+        allModels.sort((a, b) => {
+          const diff = rank(a) - rank(b);
+          if (diff !== 0) return diff;
+          return a.label.localeCompare(b.label);
+        });
+        const createModelButton = (model) => {
           const account = this.account(model.accountId), provider = this.provider(model.providerId), availability = this.availability(model.id);
           const selected = model.id === (task?.routeId ?? this.routeId), button = this.el("button", `model-option ${selected ? "selected" : ""}`);
           button.type = "button";
@@ -2328,9 +2356,23 @@
               this.renderActivity();
             });
           });
-          list.append(button);
+          return button;
+        };
+        const availableModels = allModels.filter((m) => rank(m) < 3);
+        const unverifiedModels = allModels.filter((m) => rank(m) >= 3);
+        if (query || !availableModels.length) {
+          for (const model of allModels) list.append(createModelButton(model));
+        } else {
+          for (const model of availableModels) list.append(createModelButton(model));
+          if (unverifiedModels.length) {
+            const details = this.el("details", "unverified-models-section");
+            const summary = this.el("summary", "fine-print", `Altri modelli non collegati o da verificare (${unverifiedModels.length})`);
+            details.append(summary);
+            for (const model of unverifiedModels) details.append(createModelButton(model));
+            list.append(details);
+          }
         }
-        if (!models.length) list.append(this.el("p", "empty", "Nessun modello collegato per questo ruolo. Aggiungine uno: accesso e discovery sono guidati."));
+        if (!allModels.length) list.append(this.el("p", "empty", "Nessun modello collegato per questo ruolo. Aggiungine uno: accesso e discovery sono guidati."));
         if (focusedRoute) Array.from(list.querySelectorAll("[data-route-id]")).find((element) => element.dataset.routeId === focusedRoute)?.focus({ preventScroll: true });
         list.scrollTop = scrollTop;
       };
@@ -2358,7 +2400,7 @@
         data: this.data,
         existing,
         connected: async (result, routeId) => {
-          if (routeId && result.provider.kind === "antigravity" && this.project) await this.api.request("PATCH", `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { coder: routeId } });
+          if (routeId && result.provider.kind === "antigravity" && this.project) await this.api.request("PATCH", `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { primary: routeId, coder: routeId } });
           await this.refresh();
           if (routeId && this.route(routeId) && this.usableRoute(this.route(routeId))) this.routeId = routeId;
           this.updateComposer();

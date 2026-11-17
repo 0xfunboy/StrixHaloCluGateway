@@ -173,11 +173,12 @@ export class Catalog {
         const reported = new Set(result.models.map(m => m.id));
         // Keep route identities for history, but an authoritative successful
         // catalog must not leave removed models available to the scheduler.
+        const isAuthenticated = !('authenticated' in result) || result.authenticated === true;
         const models = this.store.transaction(() => {
             for (const old of known) if (!reported.has(old.model)) this.store.put<ModelRoute>('model', { ...old, discoveryStatus: 'missing', enabled: false });
             return result.models.map(m => {
                 const old = known.find(k => k.model === m.id), keepDeclaration = old?.capabilitySource === 'operator' && !m.capabilities.length;
-                return this.store.put<ModelRoute>('model', { id: old?.id ?? id('mdl'), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old!.capabilities : m.capabilities, capabilitySource: keepDeclaration ? 'operator' : m.capabilitySource, discoveryStatus: 'present', enabled: provider.enabled });
+                return this.store.put<ModelRoute>('model', { id: old?.id ?? id('mdl'), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old!.capabilities : m.capabilities, capabilitySource: keepDeclaration ? 'operator' : m.capabilitySource, discoveryStatus: isAuthenticated ? 'present' : 'unverified', enabled: provider.enabled && isAuthenticated });
             });
         });
         const current = this.store.require<Account>('account', accountId);

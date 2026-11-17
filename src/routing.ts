@@ -72,7 +72,6 @@ export class RouteRouter {
         if (account.status === 'error') return deny('CONNECTION', 'Accesso alla connessione da verificare.');
         if (native && !['admin', 'operator'].includes(user.role)) return deny('TRUSTED_EXECUTION', 'La CLI richiede un operatore fidato.');
         if (native && options.nativeAllowed === false) return deny('NATIVE_TARGET', 'Questa richiesta richiede un modello HTTP; la CLI necessita di un workspace locale autorizzato.');
-        if (provider.kind === 'antigravity' && options.purpose && options.purpose !== 'coder') return deny('CAPABILITY', 'Antigravity è disponibile per attività di sviluppo nel workspace autorizzato.');
         const required = new Set(options.requiredCapabilities ?? []);
         if (options.purpose === 'embedding') required.add('embedding');
         else if (options.purpose && !(route.capabilities.length === 0 && (!route.capabilitySource || route.capabilitySource === 'unknown'))) required.add('chat');
