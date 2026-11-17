@@ -189,7 +189,7 @@ var init_local_telemetry = __esm({
 
 // src/cli.ts
 import { existsSync as existsSync2, mkdirSync as mkdirSync3, realpathSync as realpathSync2, statSync as statSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import path9 from "node:path";
+import path10 from "node:path";
 import { pathToFileURL } from "node:url";
 
 // src/store.ts
@@ -444,80 +444,11 @@ var Store = class {
 
 // src/catalog.ts
 import { chmodSync as chmodSync2, mkdirSync as mkdirSync2 } from "node:fs";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/config.ts
 import { readFileSync as readFileSync2 } from "node:fs";
 import path2 from "node:path";
-var defaultConfig = () => ({ bind: "127.0.0.1", port: 8081, secureCookies: false, demo: false, telemetryIntervalMs: 1e4, nodes: [
-  { id: "strix01", label: "01-EVO-X3", kind: "strix", host: "01-EVO-X3", capabilities: ["coordinator", "inference", "execution"] },
-  { id: "strix02", label: "02-EVO-X3", kind: "strix", host: "02-evo-x3-tb", capabilities: ["inference"] },
-  { id: "aireward", label: "aireward-llm \xB7 RTX 3090", kind: "cuda", host: "192.168.178.47", capabilities: ["inference"] },
-  { id: "gemrouter", label: "GemRouter", kind: "cloud", capabilities: ["inference"] }
-], links: [{ id: "tb", from: "strix01", to: "strix02", label: "Thunderbolt \xB7 alias SSH configurato", address: "10.55.0.2", status: "configured" }, { id: "lan", from: "strix01", to: "aireward", label: "LAN \xB7 stato da verificare", address: "192.168.178.47", status: "configured" }], resourceGroups: [{ id: "strix01-memory", label: "Memoria Strix 01", nodeIds: ["strix01"], capacity: 1 }, { id: "strix02-memory", label: "Memoria Strix 02", nodeIds: ["strix02"], capacity: 1 }, { id: "cuda3090-memory", label: "Memoria RTX 3090", nodeIds: ["aireward"], capacity: 1 }], targets: [], providers: [] });
-function loadConfig(file) {
-  const raw = object(JSON.parse(readFileSync2(file, "utf8")));
-  const base = defaultConfig();
-  const cfg = { ...base, ...raw };
-  str(cfg.bind, "Bind", 200);
-  cfg.port = integer(cfg.port, 8081, 0, 65535);
-  cfg.telemetryIntervalMs = integer(cfg.telemetryIntervalMs, 1e4, 1e3, 3e5);
-  assert(typeof cfg.secureCookies === "boolean" && typeof cfg.demo === "boolean", 400, "CONFIG", "Flag configurazione non validi.");
-  if (cfg.publicOrigin) {
-    const url2 = new URL(endpoint(cfg.publicOrigin));
-    assert(url2.pathname === "/", 400, "CONFIG", "publicOrigin deve essere solo origine.");
-    cfg.publicOrigin = url2.origin;
-  }
-  for (const name of ["nodes", "links", "resourceGroups", "targets", "providers"])
-    assert(Array.isArray(cfg[name]) && cfg[name].length <= 200, 400, "CONFIG", `${name} non valido.`);
-  const unique = (rows) => {
-    const keys = rows.map((r) => str(r.id, "ID", 120));
-    assert(new Set(keys).size === keys.length && keys.every((k) => /^[a-zA-Z0-9_-]+$/.test(k)), 400, "CONFIG", "ID duplicati o non validi.");
-  };
-  unique(cfg.nodes);
-  unique(cfg.resourceGroups);
-  unique(cfg.targets);
-  unique(cfg.providers);
-  const nodes = new Set(cfg.nodes.map((n) => n.id));
-  const groups = new Set(cfg.resourceGroups.map((g) => g.id));
-  for (const g of cfg.resourceGroups) {
-    g.capacity = integer(g.capacity, 1, 1, 64);
-    assert(g.nodeIds.every((n) => nodes.has(n)), 400, "CONFIG", "Nodo risorsa sconosciuto.");
-  }
-  for (const t of cfg.targets) {
-    assert(["local", "ssh"].includes(t.kind) && path2.isAbsolute(t.workspaceRoot) && nodes.has(t.nodeId), 400, "CONFIG", "Target non valido.");
-    assert(Array.isArray(t.commands) && t.commands.length <= 100, 400, "CONFIG", "Ricette non valide.");
-    unique(t.commands);
-    for (const c of t.commands) {
-      assert(Array.isArray(c.argv) && c.argv.length > 0 && c.argv.length <= 100 && c.argv.every((a) => typeof a === "string" && !a.includes("\0") && a.length < 16384), 400, "CONFIG", "argv ricetta non valido.");
-    }
-    if (t.kind === "ssh")
-      str(t.sshHost, "SSH host", 200);
-  }
-  for (const p of cfg.providers) {
-    assert(["openai-compatible", "openai-responses", "ollama", "gemini", "codex", "antigravity"].includes(p.kind), 400, "CONFIG", "Provider non valido.");
-    if (p.baseUrl)
-      p.baseUrl = endpoint(p.baseUrl);
-    p.nodeIds = textList(p.nodeIds);
-    p.resourceGroupIds = textList(p.resourceGroupIds);
-    assert(p.nodeIds.every((n) => nodes.has(n)) && p.resourceGroupIds.every((g) => groups.has(g)), 400, "CONFIG", "Risorse provider non valide.");
-  }
-  for (const p of cfg.providers)
-    if (p.activation) {
-      const covered = cfg.resourceGroups.filter((g) => p.resourceGroupIds.includes(g.id) || g.nodeIds.some((n) => p.nodeIds.includes(n)));
-      assert(covered.length > 0 && covered.every((g) => g.capacity === 1), 400, "CONFIG", "Gli engine commutabili richiedono risorse esclusive capacity:1.");
-      if (p.activation.recipeId) {
-        const recipe2 = cfg.targets.find((t) => t.id === p.activation?.targetId)?.commands.find((c) => c.id === p.activation?.recipeId);
-        assert(recipe2, 400, "CONFIG", "Ricetta attivazione mancante.");
-        recipe2.controllerOnly = true;
-      }
-    }
-  return cfg;
-}
-function routeResources(model, config) {
-  const inferred = config.resourceGroups.filter((g) => g.nodeIds.some((id2) => model.nodeIds.includes(id2))).map((g) => g.id);
-  return [.../* @__PURE__ */ new Set([...model.resourceGroupIds, ...inferred])];
-}
 
 // src/adapters/vendor/providers/transport.ts
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -667,11 +598,6 @@ function pinnedFetch(input, init = {}, transport = {}) {
   });
 }
 
-// src/adapters/vendor/providers/http.ts
-var MAX_BODY_BYTES = 16 * 1024 * 1024;
-var MAX_TEXT_CHARS = 4 * 1024 * 1024;
-var MAX_ARGUMENT_CHARS = 2 * 1024 * 1024;
-
 // src/adapters/http-utils.ts
 var record = (value2) => value2 !== null && typeof value2 === "object" && !Array.isArray(value2) ? value2 : {};
 var count = (value2) => typeof value2 === "number" && Number.isFinite(value2) && value2 >= 0 ? value2 : void 0;
@@ -776,6 +702,701 @@ async function checkedJSON(connection, suffix, secret, signal, body) {
   return { data: await readJSON(response, signal), quota };
 }
 
+// src/scheduler.ts
+var Scheduler = class {
+  groups;
+  used = /* @__PURE__ */ new Map();
+  queue = [];
+  hidden = /* @__PURE__ */ new Set();
+  sequence = 0;
+  draining = false;
+  dirty = false;
+  constructor(groups) {
+    this.groups = /* @__PURE__ */ new Map();
+    for (const group of groups) {
+      if (this.groups.has(group.id)) throw new AppError(400, "RESOURCE", "Risorsa duplicata: " + group.id);
+      this.ensureGroup(group);
+    }
+  }
+  /** Private account semaphores must not appear in the public fleet snapshot. */
+  ensureGroup(group, hidden = false) {
+    if (!group.id || !Number.isSafeInteger(group.capacity) || group.capacity < 1 || group.capacity > 64)
+      throw new AppError(400, "RESOURCE", "Capacit\xE0 della risorsa non valida.");
+    const changed = this.groups.get(group.id)?.capacity !== group.capacity;
+    this.groups.set(group.id, { ...group, nodeIds: [...group.nodeIds] });
+    if (hidden) this.hidden.add(group.id);
+    if (changed && this.queue.length) this.drain();
+  }
+  snapshot() {
+    return Object.fromEntries([...this.used].filter(([key]) => !this.hidden.has(key)));
+  }
+  inspect(groupIds) {
+    const groups = new Set(groupIds), waiters = this.queue.filter((item) => item.groups.some((g) => groups.has(g)));
+    const busyResourceIds = groupIds.filter((g) => (this.used.get(g) ?? 0) >= (this.groups.get(g)?.capacity ?? 1));
+    return {
+      activeCount: Math.max(0, ...groupIds.map((g) => this.used.get(g) ?? 0)),
+      queueCount: waiters.length,
+      busyResourceIds,
+      ...waiters.length ? { oldestWaitMs: Math.max(0, Date.now() - Math.min(...waiters.map((item) => item.queuedAt))) } : {}
+    };
+  }
+  async acquire(groupIds, signal, options = {}) {
+    return (await this.acquireAny([{ id: "selected", groups: groupIds }], signal, options)).release;
+  }
+  acquireAny(input, signal, options = {}) {
+    signal.throwIfAborted();
+    if (!input.length || input.length > 64 || new Set(input.map((c) => c.id)).size !== input.length)
+      throw new AppError(400, "RESOURCE", "Elenco delle alternative non valido.");
+    if (options.maxWaitMs !== void 0 && (!Number.isSafeInteger(options.maxWaitMs) || options.maxWaitMs < 0 || options.maxWaitMs > 3e5))
+      throw new AppError(400, "RESOURCE", "Attesa massima non valida.");
+    if (options.priority && !["interactive", "normal", "background"].includes(options.priority))
+      throw new AppError(400, "RESOURCE", "Priorit\xE0 non valida.");
+    const choices = input.map((choice) => ({ id: choice.id, groups: [...new Set(choice.groups)].sort() }));
+    const groups = [...new Set(choices.flatMap((choice) => choice.groups))];
+    for (const key of groups)
+      if (!this.groups.has(key)) throw new AppError(400, "RESOURCE", "Risorsa non configurata: " + key);
+    return new Promise((resolve, reject) => {
+      const item = {
+        choices,
+        groups,
+        signal,
+        priority: options.priority ?? "normal",
+        queuedAt: Date.now(),
+        sequence: ++this.sequence,
+        bypasses: 0,
+        resolve,
+        reject,
+        onQueued: options.onQueued,
+        abort: () => this.reject(item, signal.reason instanceof Error ? signal.reason : new DOMException("Cancelled", "AbortError"))
+      };
+      signal.addEventListener("abort", item.abort, { once: true });
+      this.queue.push(item);
+      this.drain();
+      if (!this.queue.includes(item)) return;
+      const timeout2 = () => this.reject(item, new AppError(503, "QUEUE_TIMEOUT", "Risorse occupate: attesa massima raggiunta. Scegli una connessione disponibile o riprova."));
+      if (options.maxWaitMs === 0) timeout2();
+      else if (options.maxWaitMs !== void 0) item.timer = setTimeout(timeout2, options.maxWaitMs);
+    });
+  }
+  remove(item) {
+    const index = this.queue.indexOf(item);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    item.signal.removeEventListener("abort", item.abort);
+    clearTimeout(item.timer);
+    return true;
+  }
+  reject(item, error) {
+    if (!this.remove(item)) return;
+    item.reject(error);
+    this.drain();
+  }
+  ordered() {
+    const rank = { interactive: 0, normal: 1, background: 2 };
+    return [...this.queue].sort((a, b) => {
+      const protectedA = a.bypasses >= 3, protectedB = b.bypasses >= 3;
+      if (protectedA !== protectedB) return protectedA ? -1 : 1;
+      return (protectedA ? 0 : rank[a.priority] - rank[b.priority]) || a.sequence - b.sequence;
+    });
+  }
+  drain() {
+    if (this.draining) {
+      this.dirty = true;
+      return;
+    }
+    this.draining = true;
+    try {
+      do {
+        this.dirty = false;
+        const blocked = /* @__PURE__ */ new Set();
+        for (const item of this.ordered()) {
+          if (!this.queue.includes(item)) continue;
+          if (item.signal.aborted) {
+            this.reject(item, item.signal.reason instanceof Error ? item.signal.reason : new DOMException("Cancelled", "AbortError"));
+            continue;
+          }
+          const choice = item.choices.find((candidate) => candidate.groups.every((g) => !blocked.has(g) && (this.used.get(g) ?? 0) < this.groups.get(g).capacity));
+          if (!choice) {
+            for (const g of item.groups) blocked.add(g);
+            continue;
+          }
+          let newlyProtected = false;
+          for (const other of this.queue) {
+            if (other.sequence < item.sequence && other.priority !== item.priority && other.groups.some((g) => choice.groups.includes(g))) {
+              other.bypasses++;
+              newlyProtected ||= other.bypasses === 3;
+            }
+          }
+          this.remove(item);
+          for (const group of choice.groups) this.used.set(group, (this.used.get(group) ?? 0) + 1);
+          let released = false;
+          item.resolve({ choiceId: choice.id, waitMs: Math.max(0, Date.now() - item.queuedAt), release: () => {
+            if (released) return;
+            released = true;
+            for (const group of choice.groups) this.used.set(group, Math.max(0, (this.used.get(group) ?? 0) - 1));
+            this.drain();
+          } });
+          if (newlyProtected) {
+            this.dirty = true;
+            break;
+          }
+        }
+        const remaining = this.ordered();
+        for (const item of remaining) {
+          if (!this.queue.includes(item) || !item.onQueued) continue;
+          const inspection = this.inspect(item.groups);
+          try {
+            item.onQueued({ queuedAt: new Date(item.queuedAt).toISOString(), waitedMs: Math.max(0, Date.now() - item.queuedAt), position: remaining.slice(0, remaining.indexOf(item) + 1).filter((other) => other.groups.some((g) => item.groups.includes(g))).length, candidateIds: item.choices.map((c) => c.id), busyResourceIds: inspection.busyResourceIds });
+          } catch {
+          }
+        }
+      } while (this.dirty);
+    } finally {
+      this.draining = false;
+    }
+  }
+};
+
+// src/inference-load.ts
+var isCount = (value2) => Number.isSafeInteger(value2) && Number(value2) >= 0 && Number(value2) <= 1e6;
+function invalid() {
+  throw new Error("LOAD_SCHEMA");
+}
+function config(probe) {
+  const url2 = new URL(probe.url);
+  if (!["llama-slots", "json"].includes(probe.kind) || !["http:", "https:"].includes(url2.protocol) || url2.username || url2.password || url2.search || url2.hash) throw new Error("LOAD_CONFIG");
+  if (probe.capacity !== void 0 && (!isCount(probe.capacity) || probe.capacity < 1 || probe.capacity > 1024)) throw new Error("LOAD_CONFIG");
+  const timeoutMs = probe.timeoutMs ?? 1500, maxAgeMs = probe.maxAgeMs ?? 6e3;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 1e4 || !Number.isSafeInteger(maxAgeMs) || maxAgeMs < 100 || maxAgeMs > 6e4) throw new Error("LOAD_CONFIG");
+  return { url: url2, timeoutMs, maxAgeMs };
+}
+function validateLoadProbe(probe) {
+  config(probe);
+}
+function counters(payload, probe) {
+  if (probe.kind === "llama-slots") {
+    if (!Array.isArray(payload) || payload.length > 1024) invalid();
+    let activeRequests = 0;
+    const ids = /* @__PURE__ */ new Set();
+    for (const slot of payload) {
+      if (!slot || typeof slot !== "object" || Array.isArray(slot) || typeof slot.is_processing !== "boolean") invalid();
+      if (slot.id !== void 0) {
+        if (!isCount(slot.id) || ids.has(slot.id)) invalid();
+        ids.add(slot.id);
+      }
+      if (slot.is_processing) activeRequests++;
+    }
+    return { activeRequests, capacity: probe.capacity === void 0 ? payload.length : Math.min(payload.length, probe.capacity) };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) invalid();
+  const raw = payload;
+  if (!isCount(raw.activeRequests)) invalid();
+  if (raw.queuedRequests !== void 0 && !isCount(raw.queuedRequests)) invalid();
+  if (raw.capacity !== void 0 && (!isCount(raw.capacity) || raw.capacity > 1024)) invalid();
+  const reported = raw.capacity;
+  const capacity = probe.capacity === void 0 ? reported : reported === void 0 ? probe.capacity : Math.min(probe.capacity, reported);
+  return { activeRequests: raw.activeRequests, ...raw.queuedRequests !== void 0 ? { queuedRequests: raw.queuedRequests } : {}, ...capacity !== void 0 ? { capacity } : {} };
+}
+function currentLoad(observation, probe, now2 = Date.now()) {
+  if (!observation) return void 0;
+  if (observation.kind !== probe.kind) return { ...observation, status: "unknown", reason: "Il probe configurato \xE8 cambiato; serve una nuova osservazione." };
+  if (observation.status === "unknown" && !observation.observedAt) return observation;
+  const observedAt = observation.observedAt ? Date.parse(observation.observedAt) : NaN;
+  const age = now2 - observedAt;
+  const maximum = probe.maxAgeMs ?? 6e3;
+  if (!Number.isFinite(observedAt) || age < -1e3 || age > maximum || observation.expiresAt && Date.parse(observation.expiresAt) < now2)
+    return { ...observation, status: "stale", reason: "Il dato di carico \xE8 scaduto; attendo un nuovo campione dal motore." };
+  return observation;
+}
+async function sampleProviderLoad(target, signal) {
+  if (!target.loadProbe) throw new Error("LOAD_CONFIG");
+  const probe = target.loadProbe, lastAttemptAt = (/* @__PURE__ */ new Date()).toISOString();
+  const base = { providerId: target.id, kind: probe.kind, lastAttemptAt, source: "engine" };
+  let attempt;
+  try {
+    const validated = config(probe);
+    attempt = AbortSignal.any([signal, AbortSignal.timeout(validated.timeoutMs)]);
+    const response = await pinnedFetch(validated.url, { method: "GET", signal: attempt, headers: { accept: "application/json", "cache-control": "no-cache" } });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error("LOAD_HTTP_" + response.status);
+    }
+    const values = counters(await readJSON(response, attempt, 512 * 1024), probe);
+    const observedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const saturated = (values.queuedRequests ?? 0) > 0 || values.capacity !== void 0 && values.activeRequests >= values.capacity;
+    const uncertain = values.capacity === void 0 && values.activeRequests > 0 && !saturated;
+    return {
+      ...base,
+      ...values,
+      status: saturated ? "busy" : uncertain ? "unknown" : "available",
+      observedAt,
+      expiresAt: new Date(Date.parse(observedAt) + validated.maxAgeMs).toISOString(),
+      reason: saturated ? "Il motore segnala slot occupati o richieste in coda." : uncertain ? "Richieste attive osservate; capacit\xE0 del motore non dichiarata." : "Contatori del motore osservati: capacit\xE0 disponibile."
+    };
+  } catch (error) {
+    signal.throwIfAborted();
+    const code = error instanceof Error ? error.message : "";
+    const reason = attempt?.aborted ? "Il probe del motore ha superato il timeout." : /^LOAD_HTTP_\d{3}$/.test(code) ? "Il probe del motore ha risposto HTTP " + code.slice(-3) + "." : code === "LOAD_CONFIG" ? "Configurazione del probe non valida." : "Carico del motore non verificabile: probe non raggiungibile o risposta non valida.";
+    return { ...base, status: "unknown", reason };
+  }
+}
+var InferenceLoadMonitor = class {
+  observations;
+  refreshing;
+  sequence = 0;
+  releaseBarriers = /* @__PURE__ */ new Map();
+  observationSequence = /* @__PURE__ */ new WeakMap();
+  pending = /* @__PURE__ */ new Map();
+  slots = new Scheduler([{ id: "load-probes", label: "Load probes", nodeIds: [], capacity: 4 }]);
+  constructor(observations = /* @__PURE__ */ new Map()) {
+    this.observations = observations;
+  }
+  /** A sample started before a local release cannot distinguish our finished
+   * request from external work. Require a new read, never subtract a count. */
+  afterRelease(providerIds) {
+    if (!providerIds.length) return;
+    const barrier = ++this.sequence;
+    for (const id2 of providerIds) this.releaseBarriers.set(id2, barrier);
+  }
+  needsReconciliation(providerId) {
+    const barrier = this.releaseBarriers.get(providerId);
+    if (barrier === void 0) return false;
+    const observation = this.observations.get(providerId);
+    return !observation || (this.observationSequence.get(observation) ?? -1) <= barrier;
+  }
+  waitFor(promise, signal) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      promise.then((value2) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value2);
+      }, (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      });
+    });
+  }
+  read(target, signal, priority) {
+    const pending = this.pending.get(target.id);
+    if (pending) return this.waitFor(pending, signal);
+    const reading = (async () => {
+      const release = await this.slots.acquire(["load-probes"], signal, { priority });
+      try {
+        signal.throwIfAborted();
+        const sequence = ++this.sequence;
+        const observation = await sampleProviderLoad(target, signal);
+        this.observationSequence.set(observation, sequence);
+        this.observations.set(target.id, observation);
+        return observation;
+      } finally {
+        release();
+      }
+    })();
+    this.pending.set(target.id, reading);
+    void reading.finally(() => {
+      if (this.pending.get(target.id) === reading) this.pending.delete(target.id);
+    }).catch(() => {
+    });
+    return reading;
+  }
+  /** Only operator-configured related probes; no eviction of other observations.
+   * Caller supplies a deadline covering queueing and any pre-release read. */
+  async reconcile(providers, signal) {
+    const targets = [...new Map(providers.filter((provider) => provider.enabled !== false && provider.loadProbe).map((provider) => [provider.id, provider])).values()];
+    await Promise.all(targets.map(async (target) => {
+      while (this.needsReconciliation(target.id)) {
+        signal.throwIfAborted();
+        await this.read(target, signal, "interactive");
+      }
+    }));
+  }
+  refresh(providers, signal) {
+    if (this.refreshing) return this.refreshing;
+    const targets = providers.filter((provider) => provider.enabled !== false && provider.loadProbe).slice(0, 200);
+    const activeIds = new Set(targets.map((target) => target.id));
+    for (const id2 of this.observations.keys()) if (!activeIds.has(id2)) {
+      this.observations.delete(id2);
+      this.releaseBarriers.delete(id2);
+    }
+    this.refreshing = (async () => {
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < targets.length) {
+          signal.throwIfAborted();
+          const target = targets[cursor++];
+          await this.read(target, signal, "background");
+        }
+      };
+      await Promise.allSettled(Array.from({ length: Math.min(4, targets.length) }, worker));
+      return this.snapshot(providers);
+    })().finally(() => {
+      this.refreshing = void 0;
+    });
+    return this.refreshing;
+  }
+  snapshot(providers) {
+    return providers.filter((target) => target.enabled !== false && target.loadProbe).flatMap((target) => {
+      const observation = currentLoad(this.observations.get(target.id), target.loadProbe);
+      return observation ? [observation] : [];
+    });
+  }
+};
+
+// src/config.ts
+var defaultConfig = () => ({ bind: "127.0.0.1", port: 8081, secureCookies: false, demo: false, publicDashboard: true, telemetryIntervalMs: 1e4, nodes: [
+  { id: "strix01", label: "01-EVO-X3", kind: "strix", host: "01-EVO-X3", capabilities: ["coordinator", "inference", "execution"] },
+  { id: "strix02", label: "02-EVO-X3", kind: "strix", host: "02-evo-x3-tb", capabilities: ["inference"] },
+  { id: "aireward", label: "aireward-llm \xB7 RTX 3090", kind: "cuda", host: "192.168.178.47", capabilities: ["inference"] },
+  { id: "gemrouter", label: "GemRouter", kind: "cloud", capabilities: ["inference"] }
+], links: [{ id: "tb", from: "strix01", to: "strix02", label: "Thunderbolt \xB7 alias SSH configurato", address: "10.55.0.2", status: "configured" }, { id: "lan", from: "strix01", to: "aireward", label: "LAN \xB7 stato da verificare", address: "192.168.178.47", status: "configured" }], resourceGroups: [{ id: "strix01-memory", label: "Memoria Strix 01", nodeIds: ["strix01"], capacity: 1 }, { id: "strix02-memory", label: "Memoria Strix 02", nodeIds: ["strix02"], capacity: 1 }, { id: "cuda3090-memory", label: "Memoria RTX 3090", nodeIds: ["aireward"], capacity: 1 }], targets: [], providers: [] });
+function loadConfig(file) {
+  const raw = object(JSON.parse(readFileSync2(file, "utf8")));
+  const base = defaultConfig();
+  const cfg = { ...base, ...raw };
+  str(cfg.bind, "Bind", 200);
+  cfg.port = integer(cfg.port, 8081, 0, 65535);
+  cfg.telemetryIntervalMs = integer(cfg.telemetryIntervalMs, 1e4, 1e3, 3e5);
+  assert(typeof cfg.secureCookies === "boolean" && typeof cfg.demo === "boolean", 400, "CONFIG", "Flag configurazione non validi.");
+  assert(cfg.publicDashboard === void 0 || typeof cfg.publicDashboard === "boolean", 400, "CONFIG", "publicDashboard deve essere booleano.");
+  if (cfg.publicOrigin) {
+    const url2 = new URL(endpoint(cfg.publicOrigin));
+    assert(url2.pathname === "/", 400, "CONFIG", "publicOrigin deve essere solo origine.");
+    cfg.publicOrigin = url2.origin;
+  }
+  for (const name of ["nodes", "links", "resourceGroups", "targets", "providers"])
+    assert(Array.isArray(cfg[name]) && cfg[name].length <= 200, 400, "CONFIG", `${name} non valido.`);
+  const unique = (rows) => {
+    const keys = rows.map((r) => str(r.id, "ID", 120));
+    assert(new Set(keys).size === keys.length && keys.every((k) => /^[a-zA-Z0-9_-]+$/.test(k)), 400, "CONFIG", "ID duplicati o non validi.");
+  };
+  unique(cfg.nodes);
+  unique(cfg.resourceGroups);
+  unique(cfg.targets);
+  unique(cfg.providers);
+  const nodes = new Set(cfg.nodes.map((n) => n.id));
+  const groups = new Set(cfg.resourceGroups.map((g) => g.id));
+  for (const g of cfg.resourceGroups) {
+    g.capacity = integer(g.capacity, 1, 1, 64);
+    assert(g.nodeIds.every((n) => nodes.has(n)), 400, "CONFIG", "Nodo risorsa sconosciuto.");
+  }
+  for (const t of cfg.targets) {
+    assert(["local", "ssh"].includes(t.kind) && path2.isAbsolute(t.workspaceRoot) && nodes.has(t.nodeId), 400, "CONFIG", "Target non valido.");
+    assert(Array.isArray(t.commands) && t.commands.length <= 100, 400, "CONFIG", "Ricette non valide.");
+    unique(t.commands);
+    for (const c of t.commands) {
+      assert(Array.isArray(c.argv) && c.argv.length > 0 && c.argv.length <= 100 && c.argv.every((a) => typeof a === "string" && !a.includes("\0") && a.length < 16384), 400, "CONFIG", "argv ricetta non valido.");
+    }
+    if (t.kind === "ssh")
+      str(t.sshHost, "SSH host", 200);
+  }
+  for (const p of cfg.providers) {
+    if (p.loadProbe) validateLoadProbe(p.loadProbe);
+    if (p.maxConcurrent !== void 0) p.maxConcurrent = integer(p.maxConcurrent, 4, 1, 16);
+    assert(["openai-compatible", "openai-responses", "ollama", "gemini", "codex", "antigravity"].includes(p.kind), 400, "CONFIG", "Provider non valido.");
+    if (p.baseUrl)
+      p.baseUrl = endpoint(p.baseUrl);
+    p.nodeIds = textList(p.nodeIds);
+    p.resourceGroupIds = textList(p.resourceGroupIds);
+    assert(p.nodeIds.every((n) => nodes.has(n)) && p.resourceGroupIds.every((g) => groups.has(g)), 400, "CONFIG", "Risorse provider non valide.");
+  }
+  for (const p of cfg.providers)
+    if (p.activation) {
+      const covered = cfg.resourceGroups.filter((g) => p.resourceGroupIds.includes(g.id) || g.nodeIds.some((n) => p.nodeIds.includes(n)));
+      assert(covered.length > 0 && covered.every((g) => g.capacity === 1), 400, "CONFIG", "Gli engine commutabili richiedono risorse esclusive capacity:1.");
+      if (p.activation.recipeId) {
+        const recipe2 = cfg.targets.find((t) => t.id === p.activation?.targetId)?.commands.find((c) => c.id === p.activation?.recipeId);
+        assert(recipe2, 400, "CONFIG", "Ricetta attivazione mancante.");
+        recipe2.controllerOnly = true;
+      }
+    }
+  return cfg;
+}
+function routeResources(model, config2) {
+  const inferred = config2.resourceGroups.filter((g) => g.nodeIds.some((id2) => model.nodeIds.includes(id2))).map((g) => g.id);
+  return [.../* @__PURE__ */ new Set([...model.resourceGroupIds, ...inferred])];
+}
+
+// src/routing.ts
+var RouteRouter = class {
+  catalog;
+  constructor(catalog) {
+    this.catalog = catalog;
+  }
+  candidate(user, route, options = {}) {
+    const provider = this.catalog.store.require("provider", route.providerId);
+    const account = this.catalog.store.require("account", route.accountId);
+    const hardware = routeResources({
+      ...route,
+      nodeIds: [.../* @__PURE__ */ new Set([...route.nodeIds, ...provider.nodeIds])],
+      resourceGroupIds: [.../* @__PURE__ */ new Set([...route.resourceGroupIds, ...provider.resourceGroupIds])]
+    }, this.catalog.config);
+    const native = provider.kind === "codex" || provider.kind === "antigravity";
+    const accountGroup = "account:" + account.id;
+    const configured = provider.maxConcurrent ?? 4;
+    const capacity = native ? 1 : Number.isSafeInteger(configured) && configured >= 1 && configured <= 16 ? configured : 1;
+    this.catalog.scheduler.ensureGroup({ id: accountGroup, label: "Account \xB7 " + account.label, nodeIds: [], capacity }, true);
+    const candidate = { route, provider, account, groups: [.../* @__PURE__ */ new Set([...hardware, accountGroup])] };
+    const deny = (code, reason, status2 = "unavailable") => {
+      candidate.unavailable = { code, reason, status: status2 };
+      return candidate;
+    };
+    if (account.ownerId !== user.id && !account.shared) return deny("NOT_FOUND", "Modello non disponibile.");
+    if (!route.enabled || !provider.enabled) return deny("DISABLED", "Connessione disabilitata.", "disabled");
+    if (hardware.some((group) => !this.catalog.scheduler.groups.has(group))) return deny("RESOURCE", "Gruppo di risorse non configurato.");
+    if (account.quota?.cooldownUntil && Date.parse(account.quota.cooldownUntil) > Date.now()) return deny("QUOTA", "Account in attesa di ripristino quota.", "cooldown");
+    if (account.status === "error") return deny("CONNECTION", "Accesso alla connessione da verificare.");
+    if (native && !["admin", "operator"].includes(user.role)) return deny("TRUSTED_EXECUTION", "La CLI richiede un operatore fidato.");
+    if (native && options.nativeAllowed === false) return deny("NATIVE_TARGET", "Questa richiesta richiede un modello HTTP; la CLI necessita di un workspace locale autorizzato.");
+    if (provider.kind === "antigravity" && options.purpose && options.purpose !== "coder") return deny("CAPABILITY", "Antigravity \xE8 disponibile per attivit\xE0 di sviluppo nel workspace autorizzato.");
+    const required = new Set(options.requiredCapabilities ?? []);
+    if (options.purpose === "embedding") required.add("embedding");
+    else if (options.purpose && !(route.capabilities.length === 0 && (!route.capabilitySource || route.capabilitySource === "unknown"))) required.add("chat");
+    if ([...required].some((capability) => !route.capabilities.includes(capability))) return deny("CAPABILITY", "Capacit\xE0 necessarie non dichiarate per questo modello.");
+    if (options.minimumContextTokens !== void 0 && (route.contextWindow ?? 16384) < options.minimumContextTokens)
+      return deny("CONTEXT", "Finestra di contesto insufficiente per questa richiesta.");
+    const constraint = this.externalLoad(provider.id, hardware);
+    if (constraint) {
+      candidate.load = constraint.load;
+      return deny(constraint.code, constraint.reason, constraint.status);
+    }
+    return candidate;
+  }
+  externalLoad(providerId, hardware) {
+    const observations = this.catalog.loadObservations;
+    let unknown;
+    for (const configured of this.relatedLoadTargets(providerId, hardware)) {
+      const probe = configured.loadProbe;
+      if (!probe || configured.enabled === false) continue;
+      const relatedGroups = this.catalog.config.resourceGroups.filter((group) => configured.resourceGroupIds.includes(group.id) || group.nodeIds.some((node) => configured.nodeIds.includes(node))).map((group) => group.id);
+      const shared = hardware.filter((group) => relatedGroups.includes(group));
+      const load = currentLoad(observations?.get(configured.id), probe);
+      if (this.catalog.loadMonitor.needsReconciliation(configured.id)) {
+        unknown ??= { code: "LOAD_UNAVAILABLE", status: "unavailable", load, reason: "La precedente prenotazione \xE8 terminata; serve una lettura aggiornata del carico prima della nuova ammissione." };
+        continue;
+      }
+      const exclusive2 = (configured.id === providerId ? hardware : shared).some((group) => this.catalog.scheduler.groups.get(group)?.capacity === 1);
+      if (load && load.status !== "stale" && load.observedAt && (exclusive2 && (load.activeRequests ?? 0) > 0 || load.status === "busy"))
+        return { code: "EXTERNAL_BUSY", status: "busy", load, reason: configured.id === providerId ? "Il motore segnala richieste attive o in coda: uso esterno delle risorse rilevato." : "Un altro motore sulle stesse risorse segnala attivit\xE0: la commutazione \xE8 sospesa." };
+      if (!load || load.status === "unknown" || load.status === "stale") unknown ??= {
+        code: "LOAD_UNAVAILABLE",
+        status: "unavailable",
+        load,
+        reason: load?.status === "stale" ? "Il dato di carico del motore \xE8 scaduto; attendo una nuova verifica." : "Il carico del motore configurato non \xE8 verificabile; attendo il probe prima di usare o commutare le risorse."
+      };
+    }
+    return unknown;
+  }
+  relatedLoadTargets(providerId, hardware) {
+    return this.catalog.config.providers.filter((provider) => provider.enabled !== false && provider.loadProbe && (provider.id === providerId || this.catalog.config.resourceGroups.some((group) => hardware.includes(group.id) && (provider.resourceGroupIds.includes(group.id) || group.nodeIds.some((node) => provider.nodeIds.includes(node))))));
+  }
+  reconcile(candidates, signal, remainingMs) {
+    const targets = /* @__PURE__ */ new Map();
+    for (const candidate of candidates) {
+      if (candidate.unavailable && !["EXTERNAL_BUSY", "LOAD_UNAVAILABLE"].includes(candidate.unavailable.code)) continue;
+      for (const target of this.relatedLoadTargets(candidate.provider.id, candidate.groups))
+        if (this.catalog.loadMonitor.needsReconciliation(target.id)) targets.set(target.id, target);
+    }
+    if (!targets.size) return;
+    const unavailable = () => new AppError(503, "LOAD_UNAVAILABLE", "Impossibile verificare il carico dopo la precedente prenotazione entro il limite di attesa. Riprova o scegli un\u2019alternativa.");
+    if (remainingMs <= 0) return Promise.reject(unavailable());
+    const bounded2 = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, remainingMs))]);
+    return this.catalog.loadMonitor.reconcile([...targets.values()], bounded2).catch((error) => {
+      if (signal.aborted) throw error;
+      throw unavailable();
+    });
+  }
+  describe(candidate) {
+    const { route, account, groups, unavailable } = candidate;
+    const inspection = this.catalog.scheduler.inspect(groups);
+    const base = {
+      routeId: route.id,
+      status: "unknown",
+      activeCount: inspection.activeCount,
+      queueCount: inspection.queueCount,
+      resourceGroupIds: groups.filter((id2) => !id2.startsWith("account:")),
+      busyResourceIds: inspection.busyResourceIds.filter((id2) => !id2.startsWith("account:")),
+      busyResourceLabels: inspection.busyResourceIds.map((id2) => this.catalog.scheduler.groups.get(id2)?.label ?? id2),
+      ...inspection.oldestWaitMs !== void 0 ? { oldestWaitMs: inspection.oldestWaitMs } : {},
+      reason: "Capacit\xE0 del coordinator disponibile; accesso al provider non ancora verificato.",
+      observedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      source: "coordinator"
+    };
+    if (unavailable) return {
+      ...base,
+      status: unavailable.status,
+      reason: unavailable.reason,
+      source: unavailable.status === "cooldown" || ["EXTERNAL_BUSY", "LOAD_UNAVAILABLE"].includes(unavailable.code) ? "provider" : "configuration",
+      ...candidate.load ? { observedAt: candidate.load.observedAt ?? candidate.load.lastAttemptAt } : {},
+      ...candidate.load?.activeRequests !== void 0 ? { externalActiveRequests: candidate.load.activeRequests } : {},
+      ...candidate.load?.queuedRequests !== void 0 ? { externalQueuedRequests: candidate.load.queuedRequests } : {},
+      ...unavailable.code === "EXTERNAL_BUSY" ? {
+        busyResourceIds: groups.filter((group) => !group.startsWith("account:")),
+        busyResourceLabels: groups.filter((group) => !group.startsWith("account:")).map((group) => this.catalog.scheduler.groups.get(group)?.label ?? group)
+      } : {},
+      ...unavailable.status === "cooldown" && account.quota?.cooldownUntil ? { cooldownUntil: account.quota.cooldownUntil, observedAt: account.quota.observedAt } : {}
+    };
+    if (inspection.busyResourceIds.length || inspection.queueCount) return {
+      ...base,
+      status: "busy",
+      reason: inspection.busyResourceIds.length ? "Risorse o concorrenza account occupate da richieste in corso." : "Richieste precedenti in attesa sulle stesse risorse."
+    };
+    if (!route.capabilities.length && (!route.capabilitySource || route.capabilitySource === "unknown")) return { ...base, reason: "Capacit\xE0 del modello non dichiarate dal provider; la chat pu\xF2 essere provata senza dichiararle verificate." };
+    if (account.status === "ready") return { ...base, status: "available", reason: "Capacit\xE0 del coordinator disponibile. La risposta del provider viene verificata all\u2019invio." };
+    return base;
+  }
+  /** Synchronous, ACL-filtered coordinator observations. GPU% is never capacity. */
+  availability(user, options = {}) {
+    return this.catalog.models(user).map((route) => this.describe(this.candidate(user, route, options)));
+  }
+  async reserve(request) {
+    const { user, signal } = request;
+    signal.throwIfAborted();
+    const strategy = request.strategy ?? "pinned";
+    if (!["auto", "pinned"].includes(strategy)) throw new AppError(400, "ROUTING", "Strategia di routing non valida.");
+    if (request.minimumContextTokens !== void 0 && (!Number.isSafeInteger(request.minimumContextTokens) || request.minimumContextTokens < 0))
+      throw new AppError(400, "CONTEXT", "Dimensione del contesto non valida.");
+    if ((request.alternativeRouteIds?.length ?? 0) > 32) throw new AppError(400, "ROUTING", "Troppe alternative di routing.");
+    const maxWaitMs = request.maxWaitMs ?? (request.purpose === "chat" ? 8e3 : 3e4);
+    if (!Number.isSafeInteger(maxWaitMs) || maxWaitMs < 0 || maxWaitMs > 3e5) throw new AppError(400, "ROUTING", "Attesa massima non valida.");
+    const started = Date.now();
+    const ids = [.../* @__PURE__ */ new Set([request.preferredRouteId, ...strategy === "auto" ? request.alternativeRouteIds ?? [] : []])];
+    const options = { ...request, nativeAllowed: request.nativeAllowed ?? false };
+    let lastFailure;
+    const excluded = /* @__PURE__ */ new Set();
+    while (true) {
+      signal.throwIfAborted();
+      const visible = new Map(this.catalog.models(user).map((route) => [route.id, route]));
+      if (!visible.has(request.preferredRouteId)) throw new AppError(404, "NOT_FOUND", "Modello non disponibile.");
+      let candidates = ids.flatMap((id2) => {
+        const route = visible.get(id2);
+        return route && !excluded.has(id2) ? [this.candidate(user, route, options)] : [];
+      });
+      const immediate = candidates.some((candidate) => {
+        if (candidate.unavailable) return false;
+        const inspection = this.catalog.scheduler.inspect(candidate.groups);
+        return !inspection.busyResourceIds.length && !inspection.queueCount;
+      });
+      const reconciliation = immediate ? void 0 : this.reconcile(candidates, signal, maxWaitMs - (Date.now() - started));
+      if (reconciliation) {
+        await reconciliation;
+        signal.throwIfAborted();
+        candidates = candidates.map((candidate) => this.candidate(user, this.catalog.store.require("model", candidate.route.id), options));
+      }
+      const eligible = candidates.filter((candidate) => !candidate.unavailable);
+      if (!eligible.length) {
+        const issue = candidates.find((c) => c.route.id === request.preferredRouteId)?.unavailable ?? candidates[0]?.unavailable;
+        if (issue) throw new AppError(issue.code === "QUOTA" ? 429 : ["EXTERNAL_BUSY", "LOAD_UNAVAILABLE"].includes(issue.code) ? 503 : 409, issue.code, issue.reason);
+        throw lastFailure ?? new AppError(409, "NO_ROUTE", "Nessun modello autorizzato compatibile con questa richiesta.");
+      }
+      if (strategy === "auto") {
+        const rank = (candidate) => {
+          const available = this.describe(candidate);
+          return available.status === "available" ? 0 : available.status === "unknown" ? 1 : 2;
+        };
+        eligible.sort((a, b) => rank(a) - rank(b));
+      }
+      const lease = await this.catalog.scheduler.acquireAny(eligible.map((candidate) => ({ id: candidate.route.id, groups: candidate.groups })), signal, {
+        priority: request.priority ?? (request.purpose === "chat" ? "interactive" : "normal"),
+        maxWaitMs: Math.max(0, maxWaitMs - (Date.now() - started)),
+        onQueued: request.onQueued
+      });
+      try {
+        signal.throwIfAborted();
+        const current = this.catalog.store.require("model", lease.choiceId);
+        let candidate = this.candidate(user, current, options);
+        const reconciliation2 = this.reconcile([candidate], signal, maxWaitMs - (Date.now() - started));
+        if (reconciliation2) {
+          await reconciliation2;
+          signal.throwIfAborted();
+          candidate = this.candidate(user, this.catalog.store.require("model", lease.choiceId), options);
+        }
+        if (candidate.unavailable) throw new AppError(candidate.unavailable.code === "QUOTA" ? 429 : ["EXTERNAL_BUSY", "LOAD_UNAVAILABLE"].includes(candidate.unavailable.code) ? 503 : 409, candidate.unavailable.code, candidate.unavailable.reason);
+        const grantedGroups = eligible.find((item) => item.route.id === lease.choiceId).groups;
+        if (candidate.groups.length !== grantedGroups.length || candidate.groups.some((group) => !grantedGroups.includes(group))) {
+          lease.release();
+          if (Date.now() - started >= maxWaitMs) throw new AppError(503, "QUEUE_TIMEOUT", "Le risorse del modello sono cambiate durante l\u2019attesa. Riprova.");
+          continue;
+        }
+        const resolved = this.catalog.resolve(user, lease.choiceId);
+        const switched = lease.choiceId !== request.preferredRouteId;
+        let released = false;
+        return {
+          ...resolved,
+          release: () => {
+            if (released) return;
+            released = true;
+            try {
+              this.catalog.loadMonitor.afterRelease(this.relatedLoadTargets(candidate.provider.id, candidate.groups).map((provider) => provider.id));
+            } finally {
+              lease.release();
+            }
+          },
+          requestedRouteId: request.preferredRouteId,
+          chosenRouteId: lease.choiceId,
+          switched,
+          waitMs: Math.max(0, Date.now() - started),
+          reason: switched ? "Scelta un\u2019alternativa autorizzata compatibile con le risorse e le quote disponibili." : lease.waitMs > 0 ? "Modello selezionato prenotato dopo l\u2019attesa delle risorse." : "Modello selezionato prenotato."
+        };
+      } catch (error) {
+        lease.release();
+        if (signal.aborted) throw error;
+        if (strategy !== "auto" || !(error instanceof AppError) || !["QUOTA", "DISABLED", "CONNECTION", "CAPABILITY", "CONTEXT", "NOT_FOUND", "NATIVE_TARGET", "TRUSTED_EXECUTION", "EXTERNAL_BUSY", "LOAD_UNAVAILABLE"].includes(error.code)) throw error;
+        lastFailure = error;
+        excluded.add(lease.choiceId);
+        if (Date.now() - started >= maxWaitMs) throw error;
+      }
+    }
+  }
+};
+
+// src/adapters/ollama-info.ts
+async function enrichOllamaModels(connection, models, secret, signal) {
+  const pending = models.filter((model) => model.capabilitySource === "unknown" || !model.contextWindow);
+  const selected = pending.slice(0, 20);
+  let unavailable = 0;
+  for (let index = 0; index < selected.length; index += 4) {
+    signal.throwIfAborted();
+    await Promise.all(selected.slice(index, index + 4).map(async (model) => {
+      try {
+        const { data } = await checkedJSON(connection, "/api/show", secret, AbortSignal.any([signal, AbortSignal.timeout(1e3)]), { model: model.id, verbose: false });
+        const info = record(data), advertised = Array.isArray(info.capabilities) ? info.capabilities : void 0;
+        if (advertised?.length) {
+          const capabilities = [];
+          if (advertised.includes("completion") || advertised.includes("chat")) capabilities.push("chat");
+          if (advertised.includes("tools")) capabilities.push("tools");
+          if (advertised.includes("embedding")) capabilities.push("embedding");
+          if (advertised.includes("vision")) capabilities.push("vision");
+          model.capabilities = capabilities;
+          model.capabilitySource = "provider";
+        }
+        const metadata = record(info.model_info), architecture = metadata["general.architecture"];
+        const maximum = typeof architecture === "string" ? integer2(metadata[`${architecture}.context_length`]) : void 0;
+        const parameters = record(info.parameters);
+        const configured = integer2(parameters.num_ctx) ?? (typeof info.parameters === "string" ? Number(info.parameters.match(/^\s*num_ctx\s+(\d+)\s*$/m)?.[1] ?? 0) : 0);
+        if (Number.isSafeInteger(configured) && configured > 0 && configured <= 2e6) model.contextWindow = maximum && maximum > 0 ? Math.min(configured, maximum) : configured;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        unavailable++;
+      }
+    }));
+  }
+  signal.throwIfAborted();
+  const warnings = [];
+  if (unavailable) warnings.push(`Metadati Ollama non disponibili per ${unavailable} modelli. Le capacit\xE0 non osservate restano sconosciute.`);
+  if (pending.length > selected.length) warnings.push("La verifica metadati Ollama \xE8 limitata ai primi 20 modelli; gli altri mantengono le informazioni del catalogo.");
+  return warnings;
+}
+
+// src/adapters/vendor/providers/http.ts
+var MAX_BODY_BYTES = 16 * 1024 * 1024;
+var MAX_TEXT_CHARS = 4 * 1024 * 1024;
+var MAX_ARGUMENT_CHARS = 2 * 1024 * 1024;
+
 // src/adapters/inference.ts
 function profile(connection, model) {
   const kind = connection.kind === "cluster" || connection.kind === "gemrouter" ? "openai-compatible" : connection.kind;
@@ -795,7 +1416,7 @@ function profile(connection, model) {
     ...model.temperature !== void 0 ? { temperature: model.temperature } : {}
   };
 }
-async function discoverModels(connection, secret, providedSignal) {
+async function discoverModels(connection, secret, providedSignal, options = {}) {
   if (["codex", "antigravity"].includes(connection.kind)) throw new AdapterError("Use inspectNative for official CLI model discovery.");
   const signal = providedSignal ? AbortSignal.any([providedSignal, AbortSignal.timeout(3e4)]) : AbortSignal.timeout(3e4);
   const models = /* @__PURE__ */ new Map();
@@ -837,7 +1458,9 @@ async function discoverModels(connection, secret, providedSignal) {
     cursors.add(pageToken);
     if (page === 19) warnings.push("The model catalog exceeded the 20-page discovery limit.");
   }
-  return { models: [...models.values()], quota, warnings };
+  const discovered = [...models.values()];
+  if (connection.kind === "ollama" && options.metadata !== false) warnings.push(...await enrichOllamaModels(connection, discovered, secret, signal));
+  return { models: discovered, quota, warnings };
 }
 async function embed(request) {
   if (!["ollama", "cluster", "gemrouter", "openai-compatible", "openai-responses"].includes(request.connection.kind)) throw new AdapterError("This connection has no embedding adapter. Select an Ollama or OpenAI-compatible embedding model.");
@@ -868,7 +1491,7 @@ async function embed(request) {
 
 // src/adapters/native.ts
 import { lstat as lstat2, realpath as realpath2 } from "node:fs/promises";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // src/adapters/vendor/backends/codex-profile.ts
 function codexArgs(profile2, login = false) {
@@ -1389,6 +2012,85 @@ async function loginCodex(profile2, cwd, signal, requestTimeoutMs, turnTimeoutMs
   }
 }
 
+// src/adapters/antigravity-inspect.ts
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path4 from "node:path";
+async function inspectAntigravity(options) {
+  const timeoutMs = options.timeoutMs ?? 1e4;
+  const directory = await mkdtemp(path4.join(tmpdir(), "yed1z-acp-inspection-"));
+  const rpc = new JsonRpcProcess({
+    label: "Antigravity inspection",
+    command: options.connection.command || "agy",
+    args: options.connection.args ?? ["acp", "--sandbox"],
+    cwd: directory,
+    env: options.connection.env,
+    requestTimeoutMs: timeoutMs,
+    onNotification: () => {
+    },
+    onRequest: async () => {
+      throw new RpcMethodError("Model inspection does not authorize file, terminal or tool actions.");
+    }
+  });
+  const run = async () => {
+    const initialized = record2(await rpc.request("initialize", {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientInfo: { name: "yed1z", title: "yed1z Control Room", version: "0.4.0" }
+    }, { signal: options.signal }));
+    if (initialized.protocolVersion !== 1) throw new Error("Antigravity ACP version is unsupported. Update the official CLI or this adapter.");
+    const authMethods = (Array.isArray(initialized.authMethods) ? initialized.authMethods : []).slice(0, 16).map((value2) => record2(value2)).map((value2) => ({ id: cleanLabel(value2.id), label: cleanLabel(value2.name) })).filter((value2) => value2.id);
+    const capabilities = { modes: ["agent"], login: false, inspection: true, authMethods, approvalBoundary: "official-runtime" };
+    let session;
+    try {
+      session = record2(await rpc.request("session/new", { cwd: directory, mcpServers: [] }, { signal: options.signal }));
+    } catch (error) {
+      if (!(error instanceof RpcRemoteError) || error.code !== -32e3) throw error;
+      return {
+        models: [],
+        authenticated: false,
+        quota: unknownQuota(),
+        capabilities,
+        warnings: ["Accesso Antigravity richiesto. Sul coordinator, con lo stesso utente del servizio, esegui agy acp --login e poi Riprova."]
+      };
+    }
+    if (typeof session.sessionId !== "string" || !session.sessionId) throw new Error("Antigravity did not confirm an ACP session.");
+    const models = /* @__PURE__ */ new Map();
+    const add = (id2, name) => {
+      const key = cleanLabel(id2);
+      if (key && models.size < 500) models.set(key, { id: key, label: cleanLabel(name, key), capabilities: ["chat", "tools"], capabilitySource: "provider" });
+    };
+    const collect = (rows, depth = 0) => {
+      if (!Array.isArray(rows) || depth > 4) return;
+      for (const raw of rows.slice(0, 500)) {
+        const row = record2(raw);
+        if (typeof row.value === "string") add(row.value, row.name);
+        else collect(row.options, depth + 1);
+      }
+    };
+    const configs = (Array.isArray(session.configOptions) ? session.configOptions : []).map(record2);
+    for (const config2 of configs.filter((option) => option.category === "model" && option.type === "select")) collect(config2.options);
+    const legacy = record2(session.models);
+    if (!models.size) for (const raw of (Array.isArray(legacy.availableModels) ? legacy.availableModels : []).slice(0, 500)) {
+      const row = record2(raw);
+      add(row.modelId, row.name);
+    }
+    const warnings = [];
+    if (!models.size) {
+      models.set("current", { id: "current", label: "Modello corrente della CLI Antigravity", capabilities: ["chat", "tools"], capabilitySource: "unknown" });
+      warnings.push("La CLI \xE8 autenticata ma non espone un selettore modelli: viene mantenuto il modello corrente della CLI.");
+    }
+    warnings.push("Antigravity usa un solo profilo CLI del servizio. Quote numeriche e isolamento multiaccount non sono esposti da questo adapter.");
+    return { models: [...models.values()], authenticated: true, quota: unknownQuota(), capabilities, warnings };
+  };
+  try {
+    return await bounded(run(), options.signal, timeoutMs * 2, "Antigravity inspection", rpc.failure);
+  } finally {
+    rpc.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 // src/adapters/native.ts
 var queues = /* @__PURE__ */ new Map();
 async function exclusive(key, signal, action) {
@@ -1429,10 +2131,10 @@ async function accountKey(connection) {
   if (connection.kind !== "codex" && connection.kind !== "antigravity") throw new Error("This is not an official CLI connection.");
   if (connection.kind === "antigravity") return "antigravity-global-cli";
   const configured = connection.env?.CODEX_HOME;
-  if (!configured || !path4.isAbsolute(configured)) throw new Error("Every Codex account requires an isolated absolute CODEX_HOME configured on the server.");
+  if (!configured || !path5.isAbsolute(configured)) throw new Error("Every Codex account requires an isolated absolute CODEX_HOME configured on the server.");
   const info = await lstat2(configured);
   const real = await realpath2(configured);
-  if (!info.isDirectory() || info.isSymbolicLink() || real !== path4.resolve(configured) || process.platform !== "win32" && ((info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid())) throw new Error("Codex account directory must be owned by the service user, private (0700) and not a symlink.");
+  if (!info.isDirectory() || info.isSymbolicLink() || real !== path5.resolve(configured) || process.platform !== "win32" && ((info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid())) throw new Error("Codex account directory must be owned by the service user, private (0700) and not a symlink.");
   return `codex:${real}`;
 }
 function normalizeNativeQuota(value2) {
@@ -1455,19 +2157,7 @@ function normalizeNativeQuota(value2) {
 }
 async function inspectNative(options) {
   const key = await accountKey(options.connection);
-  if (options.connection.kind === "antigravity") {
-    return {
-      models: [
-        { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" },
-        { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" },
-        { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Antigravity)", contextWindow: 1048576, capabilities: ["chat", "tools"], capabilitySource: "provider" }
-      ],
-      quota: unknownQuota(),
-      warnings: ['Antigravity \xE8 collegato tramite la CLI agy. Per il login Google esegui "agy acp --login" nel terminale oppure usa GEMINI_API_KEY.'],
-      authenticated: true,
-      capabilities: { modes: ["agent", "chat"], login: true, approvalBoundary: "official-runtime" }
-    };
-  }
+  if (options.connection.kind === "antigravity") return exclusive(key, options.signal, () => inspectAntigravity(options));
   return exclusive(key, options.signal, async () => {
     const result2 = await inspectCodex(profile(options.connection, { id: "" }), options.cwd, options.signal, options.timeoutMs ?? 3e4);
     const models = (Array.isArray(result2.models) ? result2.models : []).map((value2) => {
@@ -1480,12 +2170,7 @@ async function inspectNative(options) {
 }
 async function loginNative(options) {
   if (options.connection.kind === "antigravity") {
-    options.onAuth({
-      verificationUrl: "https://aistudio.google.com/apikey",
-      userCode: 'Esegui "agy acp --login" sul server o imposta GEMINI_API_KEY',
-      loginId: "antigravity-auth"
-    });
-    return { authenticated: true, invalidateSessions: false };
+    throw new Error("Antigravity richiede il login ufficiale sul coordinator: agy acp --login. Dopo l\u2019accesso premi Riprova; il bridge verifica la sessione ACP senza copiare credenziali.");
   }
   if (options.connection.kind !== "codex") throw new Error("Guided device login is available only for the official Codex runtime.");
   const key = await accountKey(options.connection);
@@ -1681,7 +2366,7 @@ async function ensureHttpEngine(spec, signal, onStatus = () => {
 }
 
 // src/execution/workspace.ts
-import path5 from "node:path";
+import path6 from "node:path";
 import { constants } from "node:fs";
 import { createHash as createHash2 } from "node:crypto";
 import { lstat as lstat3, mkdir, open, readdir as readdir2, realpath as realpath3 } from "node:fs/promises";
@@ -1692,15 +2377,15 @@ function protectedPath(relative) {
   return relative.split(/[\\/]/).some((part) => EXCLUDED.has(part) || /^\.env(?:\.|$)/i.test(part) && !/^\.env\.(?:example|sample|template)$/i.test(part) || /^(?:id_rsa|id_ed25519|credentials|auth\.json|secrets?\.(?:json|ya?ml|toml))$/i.test(part) || /\.(?:pem|p12|pfx|key)$/i.test(part));
 }
 function relativePath(value2, label3 = "path") {
-  if (typeof value2 !== "string" || !value2 || value2.length > 4096 || value2.includes("\0") || path5.isAbsolute(value2) || value2.includes("\\") || value2.split("/").includes("..") || protectedPath(value2)) {
+  if (typeof value2 !== "string" || !value2 || value2.length > 4096 || value2.includes("\0") || path6.isAbsolute(value2) || value2.includes("\\") || value2.split("/").includes("..") || protectedPath(value2)) {
     throw new Error(`Invalid ${label3}: it must stay inside the configured workspace and cannot include protected credentials.`);
   }
   return value2;
 }
 async function workspaceRoot(configuredRoot, workspace = ".") {
-  if (!path5.isAbsolute(configuredRoot)) throw new Error("The operator must configure an absolute workspace root.");
+  if (!path6.isAbsolute(configuredRoot)) throw new Error("The operator must configure an absolute workspace root.");
   relativePath(workspace, "workspace");
-  const root = await realpath3(configuredRoot), target = path5.resolve(root, workspace);
+  const root = await realpath3(configuredRoot), target = path6.resolve(root, workspace);
   const check = new Workspace(root, new AbortController().signal);
   await check.resolve(workspace);
   if (!(await lstat3(target)).isDirectory()) throw new Error("Configured workspace is not a directory.");
@@ -1716,11 +2401,11 @@ var Workspace = class {
   async resolve(relative, missing = false) {
     this.signal.throwIfAborted();
     relativePath(relative);
-    const root = await realpath3(this.root), target = path5.resolve(root, relative);
-    if (target !== root && !target.startsWith(root + path5.sep)) throw new Error("Path escapes the workspace.");
+    const root = await realpath3(this.root), target = path6.resolve(root, relative);
+    if (target !== root && !target.startsWith(root + path6.sep)) throw new Error("Path escapes the workspace.");
     let cursor = root;
-    for (const part of path5.relative(root, target).split(path5.sep).filter(Boolean)) {
-      cursor = path5.join(cursor, part);
+    for (const part of path6.relative(root, target).split(path6.sep).filter(Boolean)) {
+      cursor = path6.join(cursor, part);
       try {
         if ((await lstat3(cursor)).isSymbolicLink()) throw new Error("Symlinks are not allowed in workspace tools.");
       } catch (error) {
@@ -1756,7 +2441,7 @@ var Workspace = class {
           truncated = true;
           break;
         }
-        const absolute = path5.join(folder, entry.name), relative = path5.relative(this.root, absolute).split(path5.sep).join("/");
+        const absolute = path6.join(folder, entry.name), relative = path6.relative(this.root, absolute).split(path6.sep).join("/");
         if (entry.isSymbolicLink() || protectedPath(relative)) continue;
         if (entry.isDirectory() && !entry.name.startsWith(".")) await visit(absolute, depth + 1);
         else if (entry.isFile()) files.push(relative);
@@ -1775,7 +2460,7 @@ var Workspace = class {
       if (error.code !== "ENOENT") throw error;
     }
     if (before !== expectedBefore) throw new Error("File changed during approval. Read it again before writing.");
-    await mkdir(path5.dirname(target), { recursive: true });
+    await mkdir(path6.dirname(target), { recursive: true });
     await this.resolve(relative, true);
     const flags = constants.O_RDWR | (constants.O_NOFOLLOW ?? 0) | (before === void 0 ? constants.O_CREAT | constants.O_EXCL : 0);
     const handle = await open(target, flags, 384);
@@ -1801,7 +2486,7 @@ var Workspace = class {
 
 // src/execution/local.ts
 import { lstat as lstat4, mkdir as mkdir2, realpath as realpath4 } from "node:fs/promises";
-import path6 from "node:path";
+import path7 from "node:path";
 
 // src/execution/process.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -1932,7 +2617,7 @@ async function executeLocal(request) {
     return result(request, startedAt, JSON.stringify(data), data);
   }
   if (op.kind === "prepare") {
-    if (!path6.isAbsolute(request.target.workspaceRoot)) throw new Error("Configured workspace root must be absolute.");
+    if (!path7.isAbsolute(request.target.workspaceRoot)) throw new Error("Configured workspace root must be absolute.");
     const base = await realpath4(request.target.workspaceRoot);
     if (!(await lstat4(base)).isDirectory()) throw new Error("Configured workspace root must already be a directory.");
     const relative = request.workspace ?? ".", guard = new Workspace(base, request.signal), destination = await guard.resolve(relative, true);
@@ -2282,16 +2967,18 @@ var Catalog = class {
   config;
   scheduler;
   telemetry = /* @__PURE__ */ new Map();
+  loadObservations = /* @__PURE__ */ new Map();
+  loadMonitor = new InferenceLoadMonitor(this.loadObservations);
   refreshing;
-  constructor(store, config, scheduler) {
+  constructor(store, config2, scheduler) {
     this.store = store;
-    this.config = config;
+    this.config = config2;
     this.scheduler = scheduler;
   }
   seed(user) {
     for (const seed of this.config.providers) {
       const previous = this.store.get("provider", seed.id);
-      const { models, secretEnv, activation, ...rest } = seed;
+      const { models, secretEnv, activation, loadProbe, ...rest } = seed;
       const p = { ...rest, ownerId: previous?.ownerId ?? user.id, createdAt: previous?.createdAt ?? now() };
       this.store.put("provider", p);
       const secret = secretEnv ? process.env[secretEnv] : void 0;
@@ -2302,10 +2989,10 @@ var Catalog = class {
         this.store.put("account", a);
       }
       for (const route of this.store.all("model").filter((m) => m.providerId === p.id))
-        this.store.put("model", { ...route, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, enabled: p.enabled });
+        this.store.put("model", { ...route, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, enabled: p.enabled && route.discoveryStatus !== "missing" });
       for (const m of models ?? []) {
         const old = this.store.all("model").find((r) => r.accountId === a.id && r.model === m.model);
-        this.store.put("model", { id: old?.id ?? id("mdl"), providerId: p.id, accountId: a.id, label: old?.label ?? m.label, model: m.model, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, contextWindow: old?.contextWindow ?? m.contextWindow, capabilities: old?.capabilities ?? m.capabilities ?? ["chat"], enabled: p.enabled });
+        this.store.put("model", { id: old?.id ?? id("mdl"), providerId: p.id, accountId: a.id, label: old?.label ?? m.label, model: m.model, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, contextWindow: old?.contextWindow ?? m.contextWindow, capabilities: old?.capabilities ?? m.capabilities ?? ["chat"], capabilitySource: old?.capabilitySource ?? "operator", discoveryStatus: old?.discoveryStatus, enabled: p.enabled && old?.discoveryStatus !== "missing" });
       }
     }
   }
@@ -2326,7 +3013,7 @@ var Catalog = class {
   connection(p, a) {
     const connection = { id: p.id, label: p.label, kind: p.kind, baseUrl: p.baseUrl, accountId: a.id, command: p.command, args: p.args, env: p.env ? { ...p.env } : void 0 };
     if (p.kind === "codex") {
-      const dir = path7.join(this.store.directory, "accounts", a.id);
+      const dir = path8.join(this.store.directory, "accounts", a.id);
       mkdirSync2(dir, { recursive: true, mode: 448 });
       chmodSync2(dir, 448);
       connection.env = { ...connection.env, CODEX_HOME: dir };
@@ -2388,10 +3075,16 @@ var Catalog = class {
         this.quota(account, { ...details?.quota ?? { source: "provider-headers", observedAt: now() }, state: "limited" });
         throw new AppError(429, "QUOTA", "Limite quota raggiunto sul provider.");
       }
+      if (details?.status === 401 || details?.status === 403) {
+        const current2 = this.store.require("account", accountId);
+        current2.status = "error";
+        this.store.put("account", current2);
+        throw Object.assign(new AppError(502, "UPSTREAM", `Autenticazione rifiutata da ${provider.label} (HTTP ${details.status}). Controlla la credenziale di questo account.`), { upstreamStatus: details.status });
+      }
       const configuredProvider = this.config.providers.find((p) => p.id === provider.id);
       const staticModels = configuredProvider?.models;
       const existingModels = this.store.all("model").filter((m) => m.accountId === accountId);
-      if (staticModels && staticModels.length || existingModels.length) {
+      if (configuredProvider?.activation && (staticModels && staticModels.length || existingModels.length)) {
         const recovered = (staticModels ?? []).map((m) => {
           const old = existingModels.find((k) => k.model === m.model);
           return this.store.put("model", {
@@ -2405,17 +3098,18 @@ var Catalog = class {
             contextWindow: old?.contextWindow ?? m.contextWindow,
             maxOutputTokens: old?.maxOutputTokens,
             capabilities: old?.capabilities ?? m.capabilities ?? ["chat"],
-            enabled: true
+            enabled: provider.enabled
           });
         });
         const current2 = this.store.require("account", accountId);
-        current2.status = "ready";
+        current2.status = "unknown";
         this.store.put("account", current2);
         return {
           models: recovered.length ? recovered : existingModels,
           account: current2,
+          standby: true,
           warnings: [
-            `Il server per "${provider.label}" (${provider.baseUrl || "locale"}) \xE8 in standby. I modelli cluster sono configurati e pronti all'uso; il motore si attiver\xE0 alla prima richiesta.`
+            `Modelli configurati per ${provider.label}; motore non verificato. L'attivazione configurata sar\xE0 tentata quando le risorse saranno libere.`
           ]
         };
       }
@@ -2423,9 +3117,13 @@ var Catalog = class {
     }
     this.quota(account, result2.quota);
     const known = this.store.all("model").filter((m) => m.accountId === accountId);
-    const models = result2.models.map((m) => {
-      const old = known.find((k) => k.model === m.id);
-      return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: m.capabilities, enabled: true });
+    const reported = new Set(result2.models.map((m) => m.id));
+    const models = this.store.transaction(() => {
+      for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
+      return result2.models.map((m) => {
+        const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
+        return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: "present", enabled: provider.enabled });
+      });
     });
     const current = this.store.require("account", accountId);
     current.status = result2.quota.state === "limited" ? "cooldown" : "authenticated" in result2 && result2.authenticated !== true ? "unknown" : "ready";
@@ -2439,16 +3137,24 @@ var Catalog = class {
     a.status = "ready";
     this.store.put("account", a);
   }
+  succeeded(account, observation) {
+    if (observation) this.quota(account, observation);
+    const current = this.store.require("account", account.id);
+    if (!current.quota?.cooldownUntil || Date.parse(current.quota.cooldownUntil) <= Date.now()) {
+      current.status = "ready";
+      this.store.put("account", current);
+    }
+  }
   embedder(user, routeId) {
     return async (texts, signal) => {
-      const { route, connection, secret } = this.resolve(user, routeId);
-      assert(route.capabilities.includes("embedding"), 409, "CAPABILITY", "Seleziona un modello embeddings.");
-      const release = await this.scheduler.acquire(routeResources(route, this.config), signal);
+      const lease = await new RouteRouter(this).reserve({ user, preferredRouteId: routeId, purpose: "embedding", strategy: "pinned", priority: "background", maxWaitMs: 5e3, signal });
       try {
-        await this.activate(route.providerId, signal);
-        return (await embed({ connection, model: route.model, secret, texts, signal })).vectors;
+        await this.activate(lease.provider.id, signal);
+        const result2 = await embed({ connection: lease.connection, model: lease.route.model, secret: lease.secret, texts, signal });
+        this.succeeded(lease.account);
+        return result2.vectors;
       } finally {
-        release();
+        lease.release();
       }
     };
   }
@@ -2517,65 +3223,10 @@ var Catalog = class {
   }
 };
 
-// src/scheduler.ts
-var Scheduler = class {
-  groups;
-  used = /* @__PURE__ */ new Map();
-  queue = [];
-  constructor(groups) {
-    this.groups = new Map(groups.map((g) => [g.id, g]));
-  }
-  snapshot() {
-    return Object.fromEntries(this.used);
-  }
-  acquire(groupIds, signal) {
-    signal.throwIfAborted();
-    const groups = [...new Set(groupIds)].sort();
-    for (const key of groups)
-      if (!this.groups.has(key))
-        throw new AppError(400, "RESOURCE", "Risorsa non configurata: " + key);
-    return new Promise((resolve, reject) => {
-      const item = { groups, signal, resolve, reject, abort: () => {
-        this.queue = this.queue.filter((x) => x !== item);
-        reject(new DOMException("Cancelled", "AbortError"));
-        this.drain();
-      } };
-      signal.addEventListener("abort", item.abort, { once: true });
-      this.queue.push(item);
-      this.drain();
-    });
-  }
-  drain() {
-    const blocked = /* @__PURE__ */ new Set();
-    for (const item of [...this.queue]) {
-      if (item.signal.aborted)
-        continue;
-      if (item.groups.some((g) => blocked.has(g) || (this.used.get(g) ?? 0) >= this.groups.get(g).capacity)) {
-        for (const g of item.groups)
-          blocked.add(g);
-        continue;
-      }
-      this.queue = this.queue.filter((x) => x !== item);
-      item.signal.removeEventListener("abort", item.abort);
-      for (const g of item.groups)
-        this.used.set(g, (this.used.get(g) ?? 0) + 1);
-      let released = false;
-      item.resolve(() => {
-        if (released)
-          return;
-        released = true;
-        for (const g of item.groups)
-          this.used.set(g, Math.max(0, (this.used.get(g) ?? 0) - 1));
-        this.drain();
-      });
-    }
-  }
-};
-
 // src/migration.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 import { lstatSync, realpathSync, statSync } from "node:fs";
-import path8 from "node:path";
+import path9 from "node:path";
 var MAX_BODY = 12 * 1024 * 1024;
 var MAX_MESSAGES = 4096;
 var MAX_CONVERSATIONS = 512;
@@ -2680,10 +3331,10 @@ function importLegacy(options) {
   const actualOwner = store.require("user", options.owner.id);
   assert(actualOwner.role !== "viewer", 403, "FORBIDDEN", "Importazione non consentita al profilo lettore.");
   store.projectFor(actualOwner, projectId);
-  const requested = path8.resolve(str(options.databasePath, "Database legacy", 8e3));
+  const requested = path9.resolve(str(options.databasePath, "Database legacy", 8e3));
   const info = lstatSync(requested);
   assert(info.isFile() && !info.isSymbolicLink(), 400, "LEGACY_DATABASE", "Seleziona un database legacy regolare, non un collegamento.");
-  const sourcePath = realpathSync(requested), destinationPath = realpathSync(path8.join(store.directory, "control.sqlite"));
+  const sourcePath = realpathSync(requested), destinationPath = realpathSync(path9.join(store.directory, "control.sqlite"));
   const destination = statSync(destinationPath);
   assert(!(info.dev === destination.dev && info.ino === destination.ino), 400, "LEGACY_DATABASE", "Il database sorgente deve essere distinto dal database di destinazione.");
   const source = new DatabaseSync2(sourcePath, { readOnly: true, allowExtension: false });
@@ -2774,9 +3425,9 @@ function argumentsMap(argv) {
 async function main() {
   process.umask(63);
   const command = process.argv[2] ?? "help", args = argumentsMap(process.argv.slice(3));
-  const directory = path9.resolve(args.get("state") ?? process.env.YED1Z_STATE_DIR ?? "state");
+  const directory = path10.resolve(args.get("state") ?? process.env.YED1Z_STATE_DIR ?? "state");
   if (command === "help") {
-    process.stdout.write(`yed1z Control Room 0.3.0
+    process.stdout.write(`yed1z Control Room 0.4.0
 
 node dist/cli.mjs init --name funboy [--workspace /path/to/projects] [--config examples/strix-cluster.json] [--state ./state]
 node dist/cli.mjs user-add --name cooper --role operator
@@ -2790,18 +3441,18 @@ Le operazioni CLI sullo stato richiedono il coordinator fermo. Non modificano se
   }
   mkdirSync3(directory, { recursive: true, mode: 448 });
   if (command === "init") {
-    const file = path9.join(directory, "config.json");
-    let config;
+    const file = path10.join(directory, "config.json");
+    let config2;
     if (existsSync2(file))
-      config = loadConfig(file);
+      config2 = loadConfig(file);
     else {
-      config = args.has("config") ? loadConfig(path9.resolve(args.get("config"))) : defaultConfig();
+      config2 = args.has("config") ? loadConfig(path10.resolve(args.get("config"))) : defaultConfig();
       if (args.has("workspace")) {
-        const root = path9.resolve(args.get("workspace"));
+        const root = path10.resolve(args.get("workspace"));
         assert(statSync2(root).isDirectory(), 400, "WORKSPACE", "La directory workspace deve esistere.");
-        config.targets.push({ id: "coordinator", kind: "local", nodeId: "strix01", workspaceRoot: root, commands: [{ id: "npm-test", label: "Test npm", argv: ["npm", "test"], verification: true, timeoutMs: 12e4 }, { id: "npm-build", label: "Build npm", argv: ["npm", "run", "build"], verification: true, timeoutMs: 12e4 }] });
+        config2.targets.push({ id: "coordinator", kind: "local", nodeId: "strix01", workspaceRoot: root, commands: [{ id: "npm-test", label: "Test npm", argv: ["npm", "test"], verification: true, timeoutMs: 12e4 }, { id: "npm-build", label: "Build npm", argv: ["npm", "run", "build"], verification: true, timeoutMs: 12e4 }] });
       }
-      writeFileSync2(file, JSON.stringify(config, null, 2) + "\n", { flag: "wx", mode: 384 });
+      writeFileSync2(file, JSON.stringify(config2, null, 2) + "\n", { flag: "wx", mode: 384 });
     }
     const store2 = new Store(directory);
     try {
@@ -2815,19 +3466,19 @@ Chiave di accesso (mostrata una volta): ${created.token}
       } else
         process.stdout.write(`Amministratore gi\xE0 presente: ${owner.name}. Chiave e dati preservati.
 `);
-      const catalog = new Catalog(store2, config, new Scheduler(config.resourceGroups));
+      const catalog = new Catalog(store2, config2, new Scheduler(config2.resourceGroups));
       catalog.seed(owner);
       if (!store2.all("project").length) {
         const p = { id: id("prj"), ownerId: owner.id, memberIds: [], name: "Il mio progetto", description: "Definisci obiettivo, criteri di verifica e destinazione del rilascio.", routes: {}, verifyRecipeIds: [], createdAt: now(), updatedAt: now() };
-        if (config.targets[0]) {
-          p.targetId = config.targets[0].id;
+        if (config2.targets[0]) {
+          p.targetId = config2.targets[0].id;
           p.workspace = ".";
         }
         store2.put("project", p);
       }
       process.stdout.write(`Configurazione: ${file}
 Avvio: YED1Z_STATE_DIR=${directory} node dist/server.mjs
-URL locale: http://${config.bind}:${config.port}
+URL locale: http://${config2.bind}:${config2.port}
 `);
     } finally {
       store2.close();
@@ -2845,7 +3496,7 @@ Ruolo: ${role}
 Chiave (una sola visualizzazione): ${created.token}
 `);
     } else if (command === "backup") {
-      const destination = path9.resolve(args.get("out") ?? "control-backup.sqlite");
+      const destination = path10.resolve(args.get("out") ?? "control-backup.sqlite");
       assert(!existsSync2(destination), 409, "EXISTS", "Destinazione gi\xE0 esistente.");
       await store.backup(destination);
       process.stdout.write(`Backup DB: ${destination}
@@ -2854,7 +3505,7 @@ Conserva separatamente master.key, accounts/, artifacts/ e config.json con perme
     } else if (command === "import") {
       assert(args.get("database") && args.get("legacy-user") && args.get("user") && args.get("project"), 400, "ARGUMENT", "Servono --database --legacy-user --user --project.");
       const owner = store.require("user", args.get("user"));
-      const result2 = importLegacy({ store, databasePath: path9.resolve(args.get("database")), owner, projectId: args.get("project"), legacyOwner: args.get("legacy-user") });
+      const result2 = importLegacy({ store, databasePath: path10.resolve(args.get("database")), owner, projectId: args.get("project"), legacyOwner: args.get("legacy-user") });
       process.stdout.write(JSON.stringify(result2, null, 2) + "\n");
     } else
       throw new Error("Comando sconosciuto. Usa help.");

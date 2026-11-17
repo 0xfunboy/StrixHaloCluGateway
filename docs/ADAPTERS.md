@@ -100,7 +100,11 @@ il supervisor lo consegna all'utente proprietario senza scriverlo in cronologia,
 log o memoria. Il risultato finale richiede la conferma di un account ChatGPT.
 Finestre di quota ufficiali restano separate: non sono un singolo saldo fungibile.
 
-**Antigravity:** ACP della CLI ufficiale `agy acp --sandbox`. La sessione deve
+**Antigravity:** ACP della CLI ufficiale `agy acp --sandbox`. La discovery 0.4
+esegue realmente initialize/session e usa soltanto il catalogo o il modello
+corrente dichiarato dal runtime; non costruisce una lista di nomi Gemini.
+Quando il login manca, indica `agy acp --login` da eseguire con l'utente del
+servizio e richiede una nuova verifica. La sessione deve
 essere autenticata con il flusso ufficiale sul server. Modalità sola lettura,
 OAuth guidato, quote numeriche e isolamento multi-account non sono verificati;
 non sono dichiarati disponibili. Le operazioni sono serializzate e il piano di
@@ -162,7 +166,7 @@ Topologia ricavata dai sorgenti del gateway fornito, da convalidare sull'impiant
 | Risorsa | Attivazione esistente | Readiness diretto |
 |---|---|---|
 | DeepSeek Strix | ricetta operatore `/home/funboy/.local/bin/cluster-model deepseek` | engine sul coordinator, porta 18231 |
-| Qwen Strix | ricetta operatore `/home/funboy/.local/bin/cluster-model qwen` | engine sul coordinator, porta 18562 |
+| Qwen Strix | ricetta operatore `/home/funboy/.local/bin/cluster-model qwen` | engine sul nodo 01, porta 18562; associazione del template corretta sui sorgenti allegati, da verificare live |
 | Qwen CUDA | `POST http://192.168.178.47:8090/switch`, body `{ "model": "qwen" }` | engine sulla 3090, porta 8080 |
 | DeepSeek CUDA | stesso endpoint, body `{ "model": "deepseek" }` | engine sulla 3090, porta 8085 |
 

@@ -43,6 +43,8 @@ class FixtureApi implements ClientApi {
   fault?: (method: string, path: string, body: any) => Error | undefined;
   configureCount = 0;
   saved?: { name: string; content: string };
+  connectionGate?: Promise<void>;
+  detectionGate?: Promise<void>;
   async request<T>(method: string, path: string, body?: any): Promise<T> {
     this.calls.push({ method, path, body });
     const fault = this.fault?.(method, path, body); if (fault) throw fault;
@@ -57,6 +59,13 @@ class FixtureApi implements ClientApi {
     if (path === '/api/tasks/t2/resume') { Object.assign(this.state.runs[0]!.tasks[1]!, { status: 'queued', control: undefined }); return structuredClone(this.state.runs[0]) as T; }
     if (path === '/api/artifacts' && method === 'POST') { const artifact: Artifact = { id: 'doc2', projectId: body.projectId, ownerId: 'u1', name: body.name, mime: 'text/plain', bytes: body.content.length, sha256: 'b'.repeat(64), createdAt: now, kind: 'attachment' }; this.state.artifacts.push(artifact); return structuredClone(artifact) as T; }
     if (path === '/api/artifacts/doc1') return { ...this.state.artifacts[0], content: '# Metodo\nUsare le verifiche.' } as T;
+    if (path === '/api/connections') {
+      await this.connectionGate;
+      const provider = { ...this.state.providers[0], id: body.providerId ?? 'provider-new', kind: body.preset === 'codex' ? 'codex' : body.preset === 'antigravity' ? 'antigravity' : 'openai-compatible', label: body.label || 'Collegamento' };
+      const account = { ...this.state.accounts[0], id: body.accountId ?? 'account-new', providerId: provider.id, label: body.accountLabel || 'Principale' };
+      return { provider, account, models: body.preset === 'codex' ? [] : [this.state.models[0]], status: body.preset === 'codex' ? 'login-required' : 'ready', message: 'Connessione verificata', warnings: [], reused: { provider: false, account: false }, ...(body.preset === 'codex' ? { nextAction: { kind: 'login', label: 'Accedi', accountId: account.id } } : {}) } as T;
+    }
+    if (path === '/api/connections/detect') { await this.detectionGate; return { candidates: [{ preset: 'ollama', label: 'Ollama rilevato', baseUrl: 'http://127.0.0.1:11434', modelCount: 2, status: 'available', message: 'Rilevato' }], scope: 'Indirizzi del coordinator' } as T; }
     if (path === '/api/providers') { const provider = { ...body, id: 'provider-new', ownerId: 'u1', enabled: true, createdAt: now }; this.state.providers.push(provider); return provider as T; }
     if (path === '/api/accounts') { const account = { ...body, id: 'account-new', ownerId: 'u1', status: 'unknown', hasSecret: false }; this.state.accounts.push(account); return account as T; }
     if (path.endsWith('/discover')) return { models: [this.state.models[0]], account: this.state.accounts[0] } as T;
@@ -159,10 +168,10 @@ test('discovery native usa richiesta di segreto host senza campo API key nella w
   click('[data-view="connections"]'); buttonText('Collega un account').click(); const dialog = root.querySelector('dialog')!;
   const service = dialog.querySelector('select')!; service.value = 'existing:cluster'; service.dispatchEvent(new dom.window.Event('change'));
   const label = Array.from(dialog.querySelectorAll<HTMLInputElement>('input')).find(item => item.placeholder.startsWith('Personale'))!; label.value = 'Secondo account';
-  const checkbox = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).find(item => item.parentElement!.textContent!.includes('richiesta sicura'))!; checkbox.checked = true;
+  const checkbox = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).find(item => item.parentElement!.textContent!.includes('finestra protetta'))!; checkbox.checked = true;
   assert.equal(dialog.querySelector('input[type="password"]'), null);
   dialog.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
-  const request = api.calls.find(call => call.path === '/api/accounts')!; assert.equal(request.body.requestSecret, true); assert.equal(request.body.secret, undefined); assert.ok(api.calls.find(call => call.path === '/api/accounts/account-new/discover'));
+  const request = api.calls.find(call => call.path === '/api/connections')!; assert.equal(request.body.requestSecret, true); assert.equal(request.body.secret, undefined); assert.equal(request.body.providerId, 'cluster'); assert.equal(api.calls.some(call => call.path === '/api/accounts'), false); assert.match(root.querySelector('.connection-result')!.textContent!, /modelli collegati/);
 });
 
 test('preset Codex avvia l’accesso ufficiale senza richiedere endpoint o chiave API', async t => {
@@ -171,7 +180,7 @@ test('preset Codex avvia l’accesso ufficiale senza richiedere endpoint o chiav
   const endpoint = dialog.querySelector<HTMLInputElement>('input[type="url"]')!; assert.equal(endpoint.required, false); assert.equal(endpoint.parentElement!.hidden, true);
   const label = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="text"]')).find(item => item.placeholder.startsWith('Personale'))!; label.value = 'Codex personale';
   dialog.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
-  const provider = api.calls.find(item => item.path === '/api/providers')!; assert.equal(provider.body.kind, 'codex'); assert.equal('baseUrl' in provider.body, false); assert.equal('command' in provider.body, false);
+  const provider = api.calls.find(item => item.path === '/api/connections')!; assert.equal(provider.body.preset, 'codex'); assert.equal('baseUrl' in provider.body, false); assert.equal('secret' in provider.body, false); assert.equal('command' in provider.body, false);
   assert.ok(api.calls.some(item => item.path === '/api/accounts/account-new/login')); assert.equal(api.calls.some(item => item.path.endsWith('/discover')), false);
 });
 
@@ -200,6 +209,7 @@ test('stream con offset ignora delta già compresi nello snapshot e conserva il 
   const api = new FixtureApi(); api.state.conversations[0]!.messages[1]!.text = 'Risposta'; const { root } = await setup(t, api);
   api.emit({ type: 'message.delta', data: { messageId: 'm2', delta: 'posta', offset: 3 } });
   api.emit({ type: 'message.delta', data: { messageId: 'm2', delta: ' completa', offset: 8 } });
+  await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(root.querySelector('[data-message-id="m2"] .message-body')!.textContent, 'Risposta completa');
 });
 
@@ -209,8 +219,10 @@ test('grafo usa le dipendenze effettive e il dettaglio agente riceve output live
   assert.equal(root.querySelectorAll('.graph-edge').length, 1); assert.equal(root.querySelectorAll('.graph-task').length, 2);
   click('[data-task-id="t2"]');
   api.emit({ type: 'task.delta', taskId: 't2', data: { delta: 'Sto verificando', offset: 0 } });
+  await new Promise(resolve => setTimeout(resolve, 30));
   assert.match(root.querySelector('#task-detail')!.textContent!, /Sto verificando/);
   api.emit({ type: 'task.delta', taskId: 't2', data: { delta: ' il codice.', offset: 15 } });
+  await new Promise(resolve => setTimeout(resolve, 30));
   assert.match(root.querySelector('#task-detail')!.textContent!, /Sto verificando il codice/);
 });
 
@@ -285,4 +297,157 @@ test('transport browser include cookie, vieta redirect e non azzera il replay cu
   const received: number[] = []; const close = api.subscribe(event => received.push(event.id));
   for (const id of [2, 0, 1, 3]) eventSource.onmessage({ data: JSON.stringify({ id, type: 'telemetry' }) });
   assert.deepEqual(received, [2, 0, 3]); close(); dom.window.close();
+});
+
+test('Auto risponde ai saluti senza modello e senza sospendere la missione aperta', async t => {
+  const api = new FixtureApi(); api.state.runs.push(runFixture()); api.state.models = []; api.state.projects[0]!.routes = {};
+  const { root, dom, flush } = await setup(t, api);
+  assert.equal(root.querySelector<HTMLSelectElement>('#mode-select')!.value, 'auto');
+  const input = root.querySelector<HTMLTextAreaElement>('#message-input')!; input.value = 'Come stai?'; input.dispatchEvent(new dom.window.Event('input'));
+  assert.equal(root.querySelector<HTMLButtonElement>('#send')!.disabled, false);
+  assert.match(root.querySelector('#composer-status')!.textContent!, /nessuna inferenza/i);
+  root.querySelector('form#composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  const request = api.calls.find(call => call.path.endsWith('/messages'))!; assert.ok(request); assert.equal(request.body.mode, 'auto');
+  assert.equal(api.calls.some(call => call.path.endsWith('/steer')), false); assert.equal(api.calls.some(call => call.path.endsWith('/pause')), false);
+});
+
+test('il picker mostra occupazione reale e inoltra soltanto le alternative autorizzate', async t => {
+  const api = new FixtureApi(); api.state.routeAvailability = [
+    { routeId: 'qwen', status: 'busy', activeCount: 1, queueCount: 2, resourceGroupIds: ['dual'], busyResourceIds: ['dual'], busyResourceLabels: ['Dual Strix'], reason: 'Dual Strix occupato da una richiesta.', observedAt: now, source: 'coordinator' },
+    { routeId: 'remote', status: 'available', activeCount: 0, queueCount: 0, resourceGroupIds: [], busyResourceIds: [], busyResourceLabels: [], reason: 'Slot libero nel coordinator.', observedAt: now, source: 'coordinator' }
+  ];
+  const { root, click, dom, flush } = await setup(t, api); click('#model-picker');
+  const dialog = root.querySelector('dialog')!;
+  assert.match(dialog.querySelector('[data-route-id="qwen"]')!.textContent!, /Occupato/); assert.match(dialog.textContent!, /2 in coda/);
+  assert.equal(dialog.querySelectorAll('.fallback-choices input:checked').length, 0);
+  const alternate = dialog.querySelector<HTMLInputElement>('.fallback-choices input[value="remote"]')!; alternate.checked = true; alternate.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  (dialog.querySelector('[data-route-id="qwen"]') as HTMLButtonElement).click(); await flush();
+  const input = root.querySelector<HTMLTextAreaElement>('#message-input')!; input.value = 'Spiegami come funziona il contesto.'; input.dispatchEvent(new dom.window.Event('input')); root.querySelector('form#composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  const request = api.calls.find(call => call.path.endsWith('/messages'))!;
+  assert.deepEqual(request.body.routing.fallbackRouteIds, ['remote']); assert.equal(request.body.routing.strategy, 'auto');
+});
+
+test('il flusso HUD distingue attesa e attività, gli impulsi arrivano dagli eventi e possono essere disattivati', async t => {
+  const api = new FixtureApi(); const run = runFixture('queued'); api.state.runs.push(run);
+  const { root, click } = await setup(t, api);
+  assert.equal(root.querySelectorAll('#activity-strip .activity-node.live').length, 0);
+  assert.match(root.querySelector('#activity-strip')!.textContent!, /In attesa di risorse/);
+  api.emit({ type: 'task.delta', taskId: 't2', data: { delta: 'test', offset: 0 } });
+  assert.equal(root.querySelector('#activity-strip [data-activity-node="models"]')!.classList.contains('packet'), true);
+  click('#fx-toggle'); assert.equal(root.dataset.motion, 'off');
+  api.emit({ type: 'context.warning', taskId: 't2', message: 'Ricerca lessicale' });
+  assert.equal(root.querySelector('#activity-strip [data-activity-node="knowledge"]')!.classList.contains('packet'), false);
+});
+
+test('le risposte deterministiche sono etichettate come servizio e non come inferenza del modello', async t => {
+  const api = new FixtureApi(); const message = api.state.conversations[0]!.messages[1]!; message.source = 'service'; message.routeId = undefined; message.metrics = undefined;
+  const { root } = await setup(t, api);
+  const response = root.querySelector('[data-message-id="m2"]')!;
+  assert.match(response.textContent!, /Servizio yed1z/); assert.match(response.textContent!, /Nessuna inferenza/);
+  assert.equal(response.querySelector('.message-model'), null); assert.equal(response.querySelector('.response-metrics'), null);
+});
+
+test('la cronologia lunga carica progressivamente i messaggi senza alterare il contesto inviato', async t => {
+  const api = new FixtureApi(); api.state.conversations[0]!.messages = Array.from({ length: 95 }, (_, index) => ({ id: `long-${index}`, role: index % 2 ? 'assistant' : 'user', text: `Messaggio ${index}`, createdAt: now }));
+  const { root, buttonText } = await setup(t, api);
+  assert.equal(root.querySelectorAll('.message').length, 80); assert.equal(root.querySelector('[data-message-id="long-0"]'), null);
+  buttonText('Mostra 15 messaggi precedenti').click(); assert.equal(root.querySelectorAll('.message').length, 95);
+  assert.equal(api.state.conversations[0]!.messages.length, 95);
+});
+
+test('il wizard nasconde configurazione superflua e conserva l’identità del tentativo per il retry', async t => {
+  const { root, click, api, dom, flush } = await setup(t); click('#quick-connect');
+  const dialog = root.querySelector('dialog')!; (dialog.querySelector('[data-preset="openai"]') as HTMLButtonElement).click();
+  assert.equal(dialog.querySelector<HTMLInputElement>('input[type="url"]')!.parentElement!.hidden, true);
+  assert.equal(dialog.querySelector<HTMLInputElement>('input[placeholder^="Personale"]')!.required, false);
+  const form = dialog.querySelector('form')!; form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  const calls = api.calls.filter(call => call.path === '/api/connections'); assert.equal(calls.length, 2); assert.equal(calls[0].body.requestId, calls[1].body.requestId); assert.equal(calls[1].body.accountId, 'account-new');
+  assert.equal(api.calls.some(call => call.path === '/api/providers' || call.path === '/api/accounts'), false);
+});
+
+test('la modalità ospite atterra realmente sulla dashboard e il login non lascia una vista nascosta', async t => {
+  const api = new FixtureApi(); api.state.user = { ...api.state.user, id: 'guest', role: 'viewer' }; api.state.projects = []; api.state.conversations = []; api.state.models = []; api.state.providers = []; api.state.accounts = [];
+  const { root, app } = await setup(t, api);
+  assert.equal((root.querySelector('#control-view') as HTMLElement).hidden, true); assert.equal((root.querySelector('#page-view') as HTMLElement).hidden, false);
+  assert.match(root.querySelector('#page-title')!.textContent!, /Dashboard cluster/); assert.equal(root.querySelectorAll('.node-card').length, 3);
+  api.state = fixture(); await app.refresh();
+  assert.equal((root.querySelector('#control-view') as HTMLElement).hidden, false); assert.equal(root.querySelector<HTMLSelectElement>('#mode-select')!.value, 'auto');
+});
+
+test('gli aggiornamenti di occupazione preservano form e focus e separano coordinator e motore', async t => {
+  const { root, api, click, dom } = await setup(t);
+  click('#project-settings');
+  const projectInput = root.querySelector<HTMLInputElement>('dialog input[type="text"]')!; projectInput.value = 'Nome ancora in modifica'; projectInput.focus();
+  const observation = { routeAvailability: [{ routeId: 'qwen', status: 'busy', activeCount: 0, queueCount: 0, externalActiveRequests: 2, externalQueuedRequests: 3, resourceGroupIds: ['dual'], busyResourceIds: ['dual'], busyResourceLabels: ['Dual Strix'], reason: 'Il motore osserva richieste esterne.', observedAt: now, source: 'provider' }], providerLoads: [], resourceUsage: { dual: 1 } };
+  api.emit({ type: 'routing.updated', data: observation });
+  assert.equal(root.querySelector('dialog input[type="text"]'), projectInput); assert.equal(projectInput.value, 'Nome ancora in modifica'); assert.equal(dom.window.document.activeElement, projectInput);
+  (root.querySelector('dialog') as HTMLDialogElement).close(); click('#model-picker');
+  let route = root.querySelector<HTMLButtonElement>('[data-route-id="qwen"]')!; route.focus();
+  api.emit({ type: 'routing.updated', data: observation }); route = root.querySelector<HTMLButtonElement>('[data-route-id="qwen"]')!;
+  assert.equal(dom.window.document.activeElement, route); assert.match(route.textContent!, /Motore: 2 attive · 3 in coda/);
+  (root.querySelector('dialog') as HTMLDialogElement).close(); click('[data-view="infrastructure"]');
+  const cells = Array.from(root.querySelectorAll('#route-availability tbody td')).map(cell => cell.textContent);
+  assert.equal(cells[2], '0 / 0'); assert.equal(cells[3], '2 / 3'); assert.match(root.querySelector('.pool-usage')!.textContent!, /1\/1/);
+  const calls = api.calls.length;
+  api.emit({ type: 'telemetry', data: { ...observation, telemetry: [{ ...api.state.telemetry[0], gpuPercent: 73 }] } });
+  assert.match(root.querySelector('#fleet-ribbon')!.textContent!, /73% GPU/); assert.equal(api.calls.length, calls);
+});
+
+test('un ospite può annullare il login e riprendere il monitor live, una sessione privata scaduta richiede accesso', async t => {
+  const api = new FixtureApi(); api.state.user = { ...api.state.user, id: 'guest', role: 'viewer' };
+  const { root, click, dom, flush } = await setup(t, api);
+  click('#guest-login-btn'); assert.ok(root.querySelector('dialog')); assert.equal(api.listener, undefined);
+  root.querySelector('dialog')!.dispatchEvent(new dom.window.Event('cancel', { cancelable: true })); await flush();
+  assert.equal(root.querySelector('dialog'), null); assert.equal(root.querySelector<HTMLElement>('#page-view')!.hidden, false); assert.ok(api.listener);
+  assert.equal(api.calls.some(call => call.path === '/api/login'), false);
+
+  const privateApi = new FixtureApi(); const privateUi = await setup(t, privateApi);
+  privateApi.fault = (_method, path) => path === '/api/bootstrap' ? new ApiError('Sessione scaduta', 401, 'SESSION') : undefined;
+  await privateUi.app.refresh();
+  privateUi.root.querySelector('dialog')!.dispatchEvent(new privateUi.dom.window.Event('cancel', { cancelable: true }));
+  assert.ok(privateUi.root.querySelector('dialog[open]')); assert.doesNotMatch(privateUi.root.querySelector('dialog')!.textContent!, /Torna al monitor pubblico/);
+});
+
+test('la navigazione stretta esclude i controlli nascosti e ripristina il focus alla chiusura', async t => {
+  const { root, click, dom } = await setup(t);
+  Object.defineProperty(dom.window, 'innerWidth', { value: 320, configurable: true }); dom.window.dispatchEvent(new dom.window.Event('resize'));
+  const sidebar = root.querySelector<HTMLElement>('.sidebar')!; const menu = root.querySelector<HTMLButtonElement>('#mobile-menu')!;
+  assert.equal(sidebar.inert, true); assert.equal(sidebar.getAttribute('aria-hidden'), 'true'); assert.equal(menu.getAttribute('aria-expanded'), 'false');
+  click('#mobile-menu'); assert.equal(sidebar.inert, false); assert.equal(menu.getAttribute('aria-expanded'), 'true'); assert.ok(sidebar.contains(dom.window.document.activeElement));
+  dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(sidebar.inert, true); assert.equal(dom.window.document.activeElement, menu);
+  for (const selector of ['#quick-connect', '#project-settings', '#show-team']) assert.ok(root.querySelector(selector)!.getAttribute('aria-label'));
+  Object.defineProperty(dom.window, 'innerWidth', { value: 1280, configurable: true }); dom.window.dispatchEvent(new dom.window.Event('resize'));
+  assert.equal(sidebar.inert, false); assert.equal(sidebar.getAttribute('aria-hidden'), 'false');
+});
+
+test('il wizard blocca cambi durante connect e ignora risposte tardive dopo chiusura o cambio preset', async t => {
+  const api = new FixtureApi(); let complete!: () => void; api.connectionGate = new Promise<void>(resolve => { complete = resolve; });
+  const { root, click, dom, flush, buttonText } = await setup(t, api); click('#quick-connect');
+  buttonText('Rileva servizi locali e configurati').click(); await flush();
+  const dialog = root.querySelector<HTMLDialogElement>('dialog')!; const candidate = dialog.querySelector<HTMLButtonElement>('.detected-service')!;
+  dialog.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+  assert.equal(candidate.disabled, true); assert.equal(dialog.querySelector<HTMLButtonElement>('[data-preset="ollama"]')!.disabled, true); assert.equal(dialog.querySelector<HTMLInputElement>('input[type="url"]')!.disabled, true);
+  candidate.click(); assert.equal(dialog.querySelector('select')!.value, 'codex'); dialog.close(); complete(); await flush();
+  assert.equal(root.querySelector('dialog'), null); assert.equal(api.calls.some(call => call.path.endsWith('/login')), false);
+
+  let finishDetection!: () => void; api.detectionGate = new Promise<void>(resolve => { finishDetection = resolve; }); click('#quick-connect');
+  buttonText('Rileva servizi locali e configurati').click(); click('[data-preset="openai"]'); finishDetection(); await flush();
+  assert.equal(root.querySelector('.detected-service'), null); assert.equal(root.querySelector('dialog select')!.value, 'openai');
+});
+
+test('il wizard conserva hardware esistente e invia solo modifiche esplicite anche nei retry', async t => {
+  const { root, click, dom, flush, api } = await setup(t); click('#quick-connect'); click('[data-preset="custom"]');
+  const dialog = root.querySelector<HTMLDialogElement>('dialog')!; const form = dialog.querySelector('form')!;
+  dialog.querySelector<HTMLInputElement>('input[type="url"]')!.value = 'http://cluster.test/v1';
+  const node = dialog.querySelector<HTMLInputElement>('.resource-checkboxes input[value="strix01"]')!;
+  node.checked = true; node.dispatchEvent(new dom.window.Event('change', { bubbles: true })); form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  assert.deepEqual(api.calls.filter(call => call.path === '/api/connections').at(-1)!.body.nodeIds, ['strix01']);
+  node.checked = false; node.dispatchEvent(new dom.window.Event('change', { bubbles: true })); form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  assert.deepEqual(api.calls.filter(call => call.path === '/api/connections').at(-1)!.body.nodeIds, []);
+  click('[data-preset="openai"]'); assert.equal(dialog.querySelectorAll('.resource-checkboxes input:checked').length, 0);
+  const service = dialog.querySelector('select')!; service.value = 'existing:cluster'; service.dispatchEvent(new dom.window.Event('change')); form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  const existing = api.calls.filter(call => call.path === '/api/connections').at(-1)!.body;
+  assert.equal('nodeIds' in existing, false); assert.equal('resourceGroupIds' in existing, false); assert.equal(existing.providerId, 'cluster');
 });

@@ -50,6 +50,7 @@ async function realUi(t: test.TestContext, role: 'admin' | 'member' = 'member') 
   t.after(async () => { client.dispose(); dom.window.close(); await app.close(); await rm(directory, { recursive: true, force: true }); });
   const button = (text: string, parent: ParentNode = root) => { const result = Array.from(parent.querySelectorAll('button')).find(element => element.textContent?.trim() === text) as HTMLButtonElement | undefined; assert.ok(result, text); return result; };
   const submit = (form: HTMLFormElement) => form.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+  if (!root.querySelector('dialog')) root.querySelector<HTMLButtonElement>('#guest-login-btn')!.click();
   const login = root.querySelector<HTMLInputElement>('dialog input[type="password"]')!; assert.ok(login); login.value = identity.token; submit(root.querySelector('dialog form')!); await eventually(() => !root.querySelector('dialog'), 'Login UI failed'); await client.ready;
   return { app, root, dom, client, button, submit, identity, requests, origin };
 }
@@ -86,7 +87,8 @@ test('web reale: preset GemRouter crea provider/account e scopre modelli tramite
   dialog.querySelector<HTMLInputElement>('input[type="url"]')!.value = `http://127.0.0.1:${address.port}/v1`;
   const label = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="text"]')).find(item => item.placeholder.startsWith('Personale'))!; label.value = 'Account fixture';
   dialog.querySelector<HTMLInputElement>('input[type="password"]')!.value = 'fixture-upstream-key'; f.submit(dialog.querySelector('form')!);
-  await eventually(() => !f.root.querySelector('dialog'), 'Provider form failed: ' + f.root.querySelector('.form-error')?.textContent);
+  await eventually(() => !!f.root.querySelector('[data-connected-model]'), 'Provider form failed: ' + f.root.querySelector('.form-error')?.textContent);
+  f.button('Fatto, torna al progetto').click(); await eventually(() => !f.root.querySelector('dialog'), 'Provider setup completion failed');
   assert.equal(authorization, 'Bearer fixture-upstream-key'); const provider = f.app.store.all<Provider>('provider').find(item => item.tag === 'gemrouter')!; assert.ok(provider);
   const account = f.app.store.all<Account>('account').find(item => item.providerId === provider.id)!; assert.equal(account.label, 'Account fixture'); assert.equal(account.hasSecret, true);
   const model = f.app.store.all<ModelRoute>('model').find(item => item.providerId === provider.id)!; assert.equal(model.model, 'gemini-fixture'); assert.equal(model.capabilities.includes('tools'), true);

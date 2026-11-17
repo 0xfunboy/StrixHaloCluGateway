@@ -19,7 +19,7 @@ async function main(): Promise<void> {
     const command = process.argv[2] ?? 'help', args = argumentsMap(process.argv.slice(3));
     const directory = path.resolve(args.get('state') ?? process.env.YED1Z_STATE_DIR ?? 'state');
     if (command === 'help') {
-        process.stdout.write(`yed1z Control Room 0.3.0\n\nnode dist/cli.mjs init --name funboy [--workspace /path/to/projects] [--config examples/strix-cluster.json] [--state ./state]\nnode dist/cli.mjs user-add --name cooper --role operator\nnode dist/cli.mjs import --database /old/portal.sqlite --legacy-user funboy --user USER_ID --project PROJECT_ID\nnode dist/cli.mjs backup --out /backup/control.sqlite\n\nAvvia: node dist/server.mjs\nLe operazioni CLI sullo stato richiedono il coordinator fermo. Non modificano servizi systemd.\n`);
+        process.stdout.write(`yed1z Control Room 0.4.0\n\nnode dist/cli.mjs init --name funboy [--workspace /path/to/projects] [--config examples/strix-cluster.json] [--state ./state]\nnode dist/cli.mjs user-add --name cooper --role operator\nnode dist/cli.mjs import --database /old/portal.sqlite --legacy-user funboy --user USER_ID --project PROJECT_ID\nnode dist/cli.mjs backup --out /backup/control.sqlite\n\nAvvia: node dist/server.mjs\nLe operazioni CLI sullo stato richiedono il coordinator fermo. Non modificano servizi systemd.\n`);
         return;
     }
     mkdirSync(directory, { recursive: true, mode: 0o700 });

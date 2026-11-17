@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { enrichOllamaModels } from './ollama-info.ts';
 import { createHttpCompleter, HttpProviderError } from './vendor/providers/http.ts';
 import type { Profile } from './vendor/core/types.ts';
 import { completeOllama } from './ollama.ts';
@@ -57,7 +58,7 @@ export async function complete(request: InferenceRequest): Promise<InferenceResu
   }
 }
 
-export async function discoverModels(connection: AdapterConnection, secret?: string, providedSignal?: AbortSignal): Promise<DiscoveryResult> {
+export async function discoverModels(connection: AdapterConnection, secret?: string, providedSignal?: AbortSignal, options: { metadata?: boolean } = {}): Promise<DiscoveryResult> {
   if (['codex', 'antigravity'].includes(connection.kind)) throw new AdapterError('Use inspectNative for official CLI model discovery.');
   const signal = providedSignal ? AbortSignal.any([providedSignal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
   const models = new Map<string, DiscoveredModel>(); let quota = unknownQuota(); const warnings: string[] = [];
@@ -88,7 +89,9 @@ export async function discoverModels(connection: AdapterConnection, secret?: str
     if (!pageToken || cursors.has(pageToken)) break;
     cursors.add(pageToken); if (page === 19) warnings.push('The model catalog exceeded the 20-page discovery limit.');
   }
-  return { models: [...models.values()], quota, warnings };
+  const discovered = [...models.values()];
+  if (connection.kind === 'ollama' && options.metadata !== false) warnings.push(...await enrichOllamaModels(connection, discovered, secret, signal));
+  return { models: discovered, quota, warnings };
 }
 
 /** Dense vectors come only from a configured embedding model, never hashes of text. */

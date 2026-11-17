@@ -1,5 +1,11 @@
 # Gap audit: dalla 0.2 a yed1z Control Room 0.3
 
+> Documento storico della base 0.3. Le correzioni della 0.4 sui sorgenti installati
+> sono in [`../CHANGELOG.md`](../CHANGELOG.md), [`UX.md`](UX.md),
+> [`CONNECTIONS.md`](CONNECTIONS.md) e [`ROUTING.md`](ROUTING.md).
+> Il piano di collaudo corrente e le priorità successive sono in
+> [`../HANDOFF.md`](../HANDOFF.md).
+
 ## Obiettivo e criterio di valutazione
 
 L'obiettivo richiesto è un prodotto in cui l'utente dialoga con il proprio

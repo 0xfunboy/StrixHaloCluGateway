@@ -8,11 +8,17 @@ import { Store } from './store.ts';
 import { Scheduler } from './scheduler.ts';
 import { Catalog } from './catalog.ts';
 import { Knowledge } from './knowledge.ts';
+import { Connections } from './connections.ts';
+import type { ConnectionInput } from './connection-types.ts';
+import { routingPreferences } from './request-policy.ts';
+import { RouteRouter } from './routing.ts';
+import { publicBootstrap, publicTelemetry, guestUser } from './public-dashboard.ts';
+import type { RoutingPreferences, RequestedMode } from './contracts.ts';
 import { Orchestrator, type Completion } from './orchestrator.ts';
 import { complete } from './adapters/index.ts';
 import { execute } from './execution/index.ts';
 import { AppError, assert, endpoint, id, integer, now, object, safeError, str, textList } from './util.ts';
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 const closed = new Set(['succeeded', 'failed', 'cancelled']);
 function json(res: ServerResponse, status: number, data: unknown): void { if (res.writableEnded)
     return; res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); }
@@ -35,12 +41,14 @@ export class Application {
     store: Store;
     catalog: Catalog;
     knowledge: Knowledge;
+    connections: Connections;
     scheduler: Scheduler;
     orchestrator: Orchestrator;
     server: Server;
     staticDir: string;
     shutdown = new AbortController();
     timer?: NodeJS.Timeout;
+    loadTimer?: NodeJS.Timeout;
     streams = new Map<string, Set<ServerResponse>>();
     failures = new Map<string, {
         count: number;
@@ -58,6 +66,7 @@ export class Application {
         this.scheduler = new Scheduler(this.config.resourceGroups);
         this.catalog = new Catalog(this.store, this.config, this.scheduler);
         this.knowledge = new Knowledge(this.store);
+        this.connections = new Connections(this.catalog);
         this.orchestrator = new Orchestrator({ store: this.store, config: this.config, catalog: this.catalog, knowledge: this.knowledge, scheduler: this.scheduler, complete: options.complete });
         this.staticDir = options.staticDir ?? path.resolve('dist/web');
         this.server = createServer((req, res) => { this.handle(req, res).catch(error => { if (res.headersSent) {
@@ -95,18 +104,17 @@ export class Application {
         const session = bearer ? undefined : cookie(req);
         const user = bearer ? this.store.authenticate(bearer, 'key') : session ? this.store.authenticate(session, 'session') : undefined;
         if (!user) {
-            return {
-                user: { id: 'guest', name: 'Ospite', role: 'viewer', createdAt: '2026-01-01T00:00:00.000Z' },
-                session: undefined,
-                isGuest: true
-            };
+            assert(!req.headers.authorization && !session, 401, 'UNAUTHORIZED', 'Chiave o sessione non valida. Accedi di nuovo.');
+            assert(this.config.publicDashboard !== false, 401, 'UNAUTHORIZED', 'Accedi con una chiave personale.');
+            return { user: { ...guestUser }, isGuest: true };
         }
         return { user, session, isGuest: false };
     }
     csrf(req: IncomingMessage, session?: string): void { if (!session || ['GET', 'HEAD'].includes(req.method ?? ''))
         return; const origin = req.headers.origin; const expected = this.config.publicOrigin ?? `http://${req.headers.host}`; assert(origin === expected, 403, 'ORIGIN', 'Origine della richiesta non autorizzata.'); }
     bootstrap(user: User): Bootstrap {
-        const isGuest = user.id === 'guest';
+        if (user.id === 'guest') return publicBootstrap(VERSION, this.config, this.catalog, this.store);
+        const isGuest = false;
         const projects = isGuest ? [] : this.store.all<Project>('project').filter(p => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === 'admin');
         const ids = new Set(projects.map(p => p.id));
         const accounts = isGuest ? [] : this.catalog.accounts(user), providerIds = new Set(accounts.map(a => a.providerId));
@@ -114,21 +122,15 @@ export class Application {
         const models = isGuest ? this.store.all<ModelRoute>('model').filter(m => m.enabled) : this.catalog.models(user);
         return { version: VERSION, user, projects, conversations: isGuest ? [] : this.store.all<Conversation>('conversation').filter(c => c.ownerId === user.id && ids.has(c.projectId)), providers, accounts, models, nodes: this.config.nodes.map(n => { const { telemetry, ...visible } = n; return visible; }), links: this.config.links, resourceGroups: this.config.resourceGroups, telemetry: [...this.catalog.telemetry.values()], runs: isGuest ? [] : this.store.all<Run>('run').filter(r => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200), approvals: isGuest ? [] : this.store.all<Bootstrap['approvals'][number]>('approval').filter(a => a.ownerId === user.id), memories: isGuest ? [] : this.store.all<Memory>('memory').filter(m => ids.has(m.projectId) && (m.ownerId === user.id || m.scope === 'project')), artifacts: isGuest ? [] : this.store.all<Artifact>('artifact').filter(a => a.ownerId === user.id && ids.has(a.projectId)), evidence: isGuest ? [] : this.store.all<Evidence & {
                 ownerId: string;
-            }>('evidence').filter(e => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1000), targets: this.config.targets.map(t => ({ id: t.id, label: t.id, nodeId: t.nodeId, kind: t.kind, commands: t.commands.filter(c => c.verification === true).map(c => ({ id: c.id, label: c.label })), deployments: (t.deployments ?? []).map(d => ({ id: d.id, label: d.label })) })), resourceUsage: this.scheduler.snapshot(), demo: this.config.demo };
+            }>('evidence').filter(e => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1000), targets: this.config.targets.map(t => ({ id: t.id, label: t.id, nodeId: t.nodeId, kind: t.kind, commands: t.commands.filter(c => c.verification === true).map(c => ({ id: c.id, label: c.label })), deployments: (t.deployments ?? []).map(d => ({ id: d.id, label: d.label })) })), resourceUsage: this.scheduler.snapshot(), routeAvailability: new RouteRouter(this.catalog).availability(user), providerLoads: this.catalog.loadMonitor.snapshot(this.config.providers).filter(load => providerIds.has(load.providerId)), demo: this.config.demo };
     }
     publicDashboard(): Record<string, unknown> {
-        const nodes = this.config.nodes.map(n => { const { telemetry, ...visible } = n; return visible; });
-        const models = this.store.all<ModelRoute>('model').filter(m => m.enabled);
+        const state = publicBootstrap(VERSION, this.config, this.catalog, this.store);
         return {
-            version: VERSION,
-            clusterId: 'HYBRID_TRINITY_GFX1151_GA102',
-            backplane: '40Gbps USB4 + 1Gbps LAN MESH',
-            nodes,
-            links: this.config.links,
-            resourceGroups: this.config.resourceGroups,
-            telemetry: [...this.catalog.telemetry.values()],
-            models,
-            stats: this.store.get('stats', 'daily') ?? { totals: { total_tokens: 1558876 } }
+            version: VERSION, clusterId: 'yed1z', nodes: state.nodes, links: state.links,
+            resourceGroups: state.resourceGroups, telemetry: state.telemetry, models: state.models,
+            resourceUsage: state.resourceUsage,
+            stats: { totals: { total_tokens: null }, source: 'unavailable' }
         };
     }
     changed(user: User, projectId?: string): void { this.store.emit({ ownerId: user.id, projectId, type: 'state.changed' }); }
@@ -140,11 +142,13 @@ export class Application {
             return;
         }
         if (pathname === '/api/dashboard' && method === 'GET') {
+            if (this.config.publicDashboard === false) this.user(req);
             json(res, 200, this.publicDashboard());
             return;
         }
         if (pathname === '/api/telemetry' && method === 'GET') {
-            json(res, 200, { telemetry: [...this.catalog.telemetry.values()] });
+            if (this.config.publicDashboard === false) this.user(req);
+            json(res, 200, { telemetry: publicTelemetry([...this.catalog.telemetry.values()]) });
             return;
         }
         if (!pathname.startsWith('/api/') && !pathname.startsWith('/v1/')) {
@@ -255,11 +259,11 @@ export class Application {
         }
         if (segments[1] === 'conversations' && segments[3] === 'messages' && method === 'POST') {
             const b = await body(req);
-            assert(b.mode === 'chat' || b.mode === 'mission', 400, 'MODE', 'Modalità non valida.');
+            assert(b.mode === undefined || b.mode === 'auto' || b.mode === 'chat' || b.mode === 'mission', 400, 'MODE', 'Modalità non valida.');
             const p = b.permissions === undefined ? {} : object(b.permissions);
             for (const field of ['write', 'commands', 'deploy'])
                 assert(p[field] === undefined || typeof p[field] === 'boolean', 400, 'INVALID', 'Permesso non valido.');
-            const run = this.orchestrator.start(user, key, { text: str(b.text, 'Messaggio', 100000), routeId: str(b.routeId, 'Modello'), mode: b.mode, attachmentIds: b.attachmentIds === undefined ? [] : textList(b.attachmentIds, 12), permissions: p, maxIterations: integer(b.maxIterations, 3, 1, 6), maxParallel: integer(b.maxParallel, 3, 1, 6) });
+            const run = this.orchestrator.start(user, key, { text: str(b.text, 'Messaggio', 100000), routeId: b.routeId ? str(b.routeId, 'Modello') : undefined, mode: (b.mode ?? 'auto') as RequestedMode, routing: b.routing === undefined ? undefined : routingPreferences(user, this.catalog, b.routing), attachmentIds: b.attachmentIds === undefined ? [] : textList(b.attachmentIds, 12), permissions: p, maxIterations: integer(b.maxIterations, 3, 1, 6), maxParallel: integer(b.maxParallel, 3, 1, 6) });
             json(res, 202, run);
             return;
         }
@@ -302,6 +306,18 @@ export class Application {
             this.changed(user);
             return;
         }
+        if (pathname === '/api/connections/options' && method === 'GET') {
+            json(res, 200, this.connections.options(user)); return;
+        }
+        if (pathname === '/api/connections/detect' && method === 'POST') {
+            await body(req);
+            json(res, 200, await this.connections.detect(user, AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(8000)]))); return;
+        }
+        if (pathname === '/api/connections' && method === 'POST') {
+            const input = await body(req);
+            const result = await this.connections.connect(user, input as ConnectionInput, AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(15000)]));
+            this.changed(user); json(res, 200, result); return;
+        }
         if (pathname === '/api/providers' && method === 'POST') {
             operator(user);
             const b = await body(req);
@@ -338,7 +354,11 @@ export class Application {
             this.store.own<Account>(user, 'account', key);
             const operationId = id('login');
             const emit = (data: Record<string, unknown>) => this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'account.login', createdAt: now(), data: { operationId, accountId: key, ...data } });
-            void this.catalog.login(user, key, event => emit({ ...event, status: 'pending' }), AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(300000)])).then(() => { emit({ status: 'complete' }); this.changed(user); }).catch(e => emit({ status: 'error', message: safeError(e) }));
+            operator(user);
+            void this.catalog.login(user, key, event => emit({ ...event, status: 'pending' }), AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(300000)])).then(async () => {
+                const result = await this.catalog.discover(user, key, AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(30000)]));
+                emit({ status: 'complete', discovered: true, models: result.models, warnings: result.warnings }); this.changed(user);
+            }).catch(e => emit({ status: 'error', message: safeError(e) }));
             json(res, 202, { operationId });
             return;
         }
@@ -354,6 +374,7 @@ export class Application {
             if (b.capabilities !== undefined) {
                 m.capabilities = textList(b.capabilities);
                 assert(m.capabilities.every(x => ['chat', 'tools', 'embedding', 'vision'].includes(x)), 400, 'CAPABILITY', 'Capacità non valida.');
+                m.capabilitySource = 'operator';
             }
             if (b.resourceGroupIds !== undefined) {
                 m.resourceGroupIds = textList(b.resourceGroupIds);
@@ -454,6 +475,7 @@ export class Application {
             p.memberIds = textList(b.memberIds);
             assert(p.memberIds.every(key => !!this.store.get<User>('user', key)), 400, 'USER', 'Utente sconosciuto.');
         }
+        if (b.routing !== undefined) p.routing = routingPreferences(user, this.catalog, b.routing);
         if (b.routes !== undefined) {
             const routes = object(b.routes);
             for (const key of ['primary', 'coder', 'reviewer', 'researcher', 'embedding'] as const)
@@ -497,7 +519,8 @@ export class Application {
             set = new Set();
             this.streams.set(user.id, set);
         }
-        assert(set.size < 8, 429, 'STREAMS', 'Troppe connessioni eventi.');
+        const limit = user.id === 'guest' ? 128 : 8;
+        assert(set.size < limit, 429, 'STREAMS', user.id === 'guest' ? 'La dashboard pubblica ha raggiunto il limite complessivo di connessioni live.' : 'Troppe connessioni eventi per questo account.');
         set.add(res);
         res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
         res.write(': connected\n\n');
@@ -545,7 +568,7 @@ export class Application {
             route = matches[0];
         }
         assert(route, 404, 'MODEL', 'Modello non trovato.');
-        const resolved = this.catalog.resolve(user, route.id);
+        let resolved = this.catalog.resolve(user, route.id);
         assert(!['codex', 'antigravity'].includes(resolved.provider.kind), 409, 'CAPABILITY', 'Usa le conversazioni dell’harness per le CLI native.');
         assert(Array.isArray(b.messages) && b.messages.length <= 200, 400, 'MESSAGES', 'Messaggi non validi.');
         const messages = b.messages.map(raw => {
@@ -565,7 +588,10 @@ export class Application {
         const controller = new AbortController();
         res.once('close', () => controller.abort());
         const signal = AbortSignal.any([controller.signal, this.shutdown.signal, AbortSignal.timeout(10 * 60000)]);
-        const release = await this.scheduler.acquire(routeResources(route, this.config), signal), requestId = id('chatcmpl');
+        const lease = await new RouteRouter(this.catalog).reserve({ user, preferredRouteId: route.id, strategy: 'pinned', purpose: 'chat', nativeAllowed: false, priority: 'interactive', maxWaitMs: 8000, signal });
+        resolved = lease; route = lease.route;
+        const release = lease.release, requestId = id('chatcmpl');
+        res.setHeader('X-Yed1z-Queue-Ms', String(lease.waitMs));
         let streamed = false;
         const begin = () => { if (!streamed) {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
@@ -576,7 +602,7 @@ export class Application {
             await this.catalog.activate(route.providerId, signal);
             const result = await this.orchestrator.completion({ connection: resolved.connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: integer(b.max_completion_tokens ?? b.max_tokens, route.maxOutputTokens ?? 4096, 128, 32000) }, secret: resolved.secret, messages, tools, signal, onText: text => { if (b.stream === true)
                     chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }); } });
-            this.catalog.quota(resolved.account, result.quota);
+            this.catalog.succeeded(resolved.account, result.quota);
             const toolCalls = result.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }));
             const usage = result.usage ? { prompt_tokens: result.usage.inputTokens, completion_tokens: result.usage.outputTokens, total_tokens: result.usage.inputTokens + result.usage.outputTokens } : undefined;
             const finish = toolCalls.length ? 'tool_calls' : result.finishReason ?? 'stop';
@@ -611,11 +637,49 @@ export class Application {
             release();
         }
     }
-    async listen(): Promise<number> { await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.config.port, this.config.bind, () => resolve()); }); this.timer = setInterval(() => { void this.catalog.refresh(this.shutdown.signal).then(telemetry => { for (const user of this.store.all<User>('user'))
-        this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'telemetry', data: { telemetry }, createdAt: now() }); }).catch(() => { }); }, this.config.telemetryIntervalMs); this.timer.unref(); void this.catalog.refresh(this.shutdown.signal).catch(() => { }); return (this.server.address() as {
-        port: number;
-    }).port; }
-    async close(): Promise<void> { clearInterval(this.timer); this.shutdown.abort(); for (const set of this.streams.values())
+    broadcastTelemetry(): void {
+        const router = new RouteRouter(this.catalog), telemetry = [...this.catalog.telemetry.values()];
+        for (const user of this.store.all<User>('user')) {
+            const allowed = new Set(this.catalog.accounts(user).map(a => a.providerId));
+            this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'telemetry', data: {
+                telemetry, resourceUsage: this.scheduler.snapshot(), routeAvailability: router.availability(user),
+                providerLoads: this.catalog.loadMonitor.snapshot(this.config.providers).filter(p => allowed.has(p.providerId))
+            }, createdAt: now() });
+        }
+        if (this.config.publicDashboard !== false) this.store.events.emit('event', { id: 0, ownerId: 'guest', type: 'telemetry', data: { telemetry: publicTelemetry(telemetry), resourceUsage: this.scheduler.snapshot() }, createdAt: now() });
+    }
+    broadcastRouting(): void {
+        const router = new RouteRouter(this.catalog), resourceUsage = this.scheduler.snapshot();
+        const loads = this.catalog.loadMonitor.snapshot(this.config.providers);
+        for (const user of this.store.all<User>('user')) {
+            if (!this.streams.has(user.id)) continue;
+            const allowed = new Set(this.catalog.accounts(user).map(a => a.providerId));
+            this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'routing.updated', data: {
+                resourceUsage, routeAvailability: router.availability(user), providerLoads: loads.filter(p => allowed.has(p.providerId))
+            }, createdAt: now() });
+        }
+        if (this.config.publicDashboard !== false && this.streams.has('guest')) this.store.events.emit('event', { id: 0, ownerId: 'guest', type: 'routing.updated', data: { resourceUsage }, createdAt: now() });
+    }
+    async listen(): Promise<number> {
+        await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.config.port, this.config.bind, () => resolve()); });
+        this.timer = setInterval(() => { void this.catalog.refresh(this.shutdown.signal).then(() => this.broadcastTelemetry()).catch(() => {}); }, this.config.telemetryIntervalMs);
+        this.timer.unref();
+        void this.catalog.refresh(this.shutdown.signal).then(() => this.broadcastTelemetry()).catch(() => {});
+        const hasLoadProbes = this.config.providers.some(p => p.loadProbe);
+        if (hasLoadProbes) {
+            await this.catalog.loadMonitor.refresh(this.config.providers, this.shutdown.signal);
+        }
+        // Availability changes between hardware samples and even without an
+        // external engine probe. Do not fabricate another telemetry sample or
+        // persist heartbeat events into the conversation/activity history.
+        this.loadTimer = setInterval(() => {
+            this.broadcastRouting();
+            if (hasLoadProbes) void this.catalog.loadMonitor.refresh(this.config.providers, this.shutdown.signal).catch(() => {});
+        }, 2000);
+        this.loadTimer.unref();
+        return (this.server.address() as { port: number }).port;
+    }
+    async close(): Promise<void> { clearInterval(this.timer); clearInterval(this.loadTimer); this.shutdown.abort(); for (const set of this.streams.values())
         for (const stream of set)
             stream.end(); await this.orchestrator.close(); await new Promise<void>(resolve => this.server.close(() => resolve())); this.store.close(); }
 }

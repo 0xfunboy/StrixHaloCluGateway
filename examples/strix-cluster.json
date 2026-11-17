@@ -3,6 +3,7 @@
   "port": 8081,
   "publicOrigin": "https://yed1z.ai",
   "secureCookies": true,
+  "publicDashboard": true,
   "demo": false,
   "telemetryIntervalMs": 10000,
   "nodes": [
@@ -48,9 +49,9 @@
       "activation":{"targetId":"coordinator","recipeId":"strix-deepseek","modelsUrl":"http://127.0.0.1:18231/v1/models","expectedModel":"deepseek-v4.1-flash","timeoutMs":300000}
     },
     {
-      "id":"strix-qwen","label":"Qwen · Dual Strix","kind":"openai-compatible","tag":"cluster","baseUrl":"http://127.0.0.1:18562/v1","enabled":true,
-      "nodeIds":["strix01","strix02"],"resourceGroupIds":["strix01-memory","strix02-memory"],
-      "models":[{"model":"qwen38-uncensored-gufo","label":"Qwen · Gufo Dual Strix","contextWindow":187392,"capabilities":["chat","tools"]}],
+      "id":"strix-qwen","label":"Qwen · Strix 01","kind":"openai-compatible","tag":"cluster","baseUrl":"http://127.0.0.1:18562/v1","enabled":true,
+      "nodeIds":["strix01"],"resourceGroupIds":["strix01-memory"],
+      "models":[{"model":"qwen38-uncensored-gufo","label":"Qwen · Gufo Strix 01","contextWindow":187392,"capabilities":["chat","tools"]}],
       "activation":{"targetId":"coordinator","recipeId":"strix-qwen","modelsUrl":"http://127.0.0.1:18562/v1/models","expectedModel":"qwen38-uncensored-gufo","timeoutMs":300000}
     },
     {

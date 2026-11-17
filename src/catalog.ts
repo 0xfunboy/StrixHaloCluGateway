@@ -4,6 +4,9 @@ import type { Account, Metrics, ModelRoute, Provider, Quota, Telemetry, User } f
 import { routeResources, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { Scheduler } from './scheduler.ts';
+import { RouteRouter } from './routing.ts';
+import { InferenceLoadMonitor } from './inference-load.ts';
+import type { ProviderLoadObservation } from './load-types.ts';
 import { discoverModels, embed, inspectNative, loginNative, sampleTelemetry } from './adapters/index.ts';
 import { normalizeTelemetry } from './adapters/telemetry.ts';
 import type { AdapterConnection, InferenceResult, QuotaObservation } from './adapters/types.ts';
@@ -15,12 +18,14 @@ export class Catalog {
     config: Config;
     scheduler: Scheduler;
     telemetry = new Map<string, Telemetry>();
+    loadObservations = new Map<string, ProviderLoadObservation>();
+    loadMonitor = new InferenceLoadMonitor(this.loadObservations);
     refreshing?: Promise<Telemetry[]>;
     constructor(store: Store, config: Config, scheduler: Scheduler) { this.store = store; this.config = config; this.scheduler = scheduler; }
     seed(user: User): void {
         for (const seed of this.config.providers) {
             const previous = this.store.get<Provider>('provider', seed.id);
-            const { models, secretEnv, activation, ...rest } = seed;
+            const { models, secretEnv, activation, loadProbe, ...rest } = seed;
             const p: Provider = { ...rest, ownerId: previous?.ownerId ?? user.id, createdAt: previous?.createdAt ?? now() };
             this.store.put('provider', p);
             const secret = secretEnv ? process.env[secretEnv] : undefined;
@@ -31,10 +36,10 @@ export class Catalog {
                 this.store.put('account', a);
             }
             for (const route of this.store.all<ModelRoute>('model').filter(m => m.providerId === p.id))
-                this.store.put('model', { ...route, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, enabled: p.enabled });
+                this.store.put('model', { ...route, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, enabled: p.enabled && route.discoveryStatus !== 'missing' });
             for (const m of models ?? []) {
                 const old = this.store.all<ModelRoute>('model').find(r => r.accountId === a.id && r.model === m.model);
-                this.store.put<ModelRoute>('model', { id: old?.id ?? id('mdl'), providerId: p.id, accountId: a.id, label: old?.label ?? m.label, model: m.model, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, contextWindow: old?.contextWindow ?? m.contextWindow, capabilities: old?.capabilities ?? m.capabilities ?? ['chat'], enabled: p.enabled });
+                this.store.put<ModelRoute>('model', { id: old?.id ?? id('mdl'), providerId: p.id, accountId: a.id, label: old?.label ?? m.label, model: m.model, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, contextWindow: old?.contextWindow ?? m.contextWindow, capabilities: old?.capabilities ?? m.capabilities ?? ['chat'], capabilitySource: old?.capabilitySource ?? 'operator', discoveryStatus: old?.discoveryStatus, enabled: p.enabled && old?.discoveryStatus !== 'missing' });
             }
         }
     }
@@ -103,6 +108,7 @@ export class Catalog {
         models: ModelRoute[];
         account: Account;
         warnings: string[];
+        standby?: boolean;
     }> {
         const account = this.store.own<Account>(user, 'account', accountId), provider = this.store.require<Provider>('provider', account.providerId), connection = this.connection(provider, account);
         if (['codex', 'antigravity'].includes(provider.kind))
@@ -120,11 +126,18 @@ export class Catalog {
                 this.quota(account, { ...(details?.quota ?? { source: 'provider-headers', observedAt: now() }), state: 'limited' });
                 throw new AppError(429, 'QUOTA', 'Limite quota raggiunto sul provider.');
             }
-            // Check if this provider has pre-configured models in config or previously registered routes
+            if (details?.status === 401 || details?.status === 403) {
+                const current = this.store.require<Account>('account', accountId);
+                current.status = 'error';
+                this.store.put('account', current);
+                throw Object.assign(new AppError(502, 'UPSTREAM', `Autenticazione rifiutata da ${provider.label} (HTTP ${details.status}). Controlla la credenziale di questo account.`), { upstreamStatus: details.status });
+            }
+            // Standby is a configured lifecycle state, not evidence that a failed
+            // endpoint or an old cached model has authenticated successfully.
             const configuredProvider = this.config.providers.find(p => p.id === provider.id);
             const staticModels = configuredProvider?.models;
             const existingModels = this.store.all<ModelRoute>('model').filter(m => m.accountId === accountId);
-            if ((staticModels && staticModels.length) || existingModels.length) {
+            if (configuredProvider?.activation && ((staticModels && staticModels.length) || existingModels.length)) {
                 const recovered = (staticModels ?? []).map(m => {
                     const old = existingModels.find(k => k.model === m.model);
                     return this.store.put<ModelRoute>('model', {
@@ -138,17 +151,18 @@ export class Catalog {
                         contextWindow: old?.contextWindow ?? m.contextWindow,
                         maxOutputTokens: old?.maxOutputTokens,
                         capabilities: old?.capabilities ?? m.capabilities ?? ['chat'],
-                        enabled: true
+                        enabled: provider.enabled
                     });
                 });
                 const current = this.store.require<Account>('account', accountId);
-                current.status = 'ready';
+                current.status = 'unknown';
                 this.store.put('account', current);
                 return {
                     models: recovered.length ? recovered : existingModels,
                     account: current,
+                    standby: true,
                     warnings: [
-                        `Il server per "${provider.label}" (${provider.baseUrl || 'locale'}) è in standby. I modelli cluster sono configurati e pronti all'uso; il motore si attiverà alla prima richiesta.`
+                        `Modelli configurati per ${provider.label}; motore non verificato. L'attivazione configurata sarà tentata quando le risorse saranno libere.`
                     ]
                 };
             }
@@ -156,20 +170,41 @@ export class Catalog {
         }
         this.quota(account, result.quota);
         const known = this.store.all<ModelRoute>('model').filter(m => m.accountId === accountId);
-        const models = result.models.map(m => { const old = known.find(k => k.model === m.id); return this.store.put<ModelRoute>('model', { id: old?.id ?? id('mdl'), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: m.capabilities, enabled: true }); });
+        const reported = new Set(result.models.map(m => m.id));
+        // Keep route identities for history, but an authoritative successful
+        // catalog must not leave removed models available to the scheduler.
+        const models = this.store.transaction(() => {
+            for (const old of known) if (!reported.has(old.model)) this.store.put<ModelRoute>('model', { ...old, discoveryStatus: 'missing', enabled: false });
+            return result.models.map(m => {
+                const old = known.find(k => k.model === m.id), keepDeclaration = old?.capabilitySource === 'operator' && !m.capabilities.length;
+                return this.store.put<ModelRoute>('model', { id: old?.id ?? id('mdl'), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old!.capabilities : m.capabilities, capabilitySource: keepDeclaration ? 'operator' : m.capabilitySource, discoveryStatus: 'present', enabled: provider.enabled });
+            });
+        });
         const current = this.store.require<Account>('account', accountId);
         current.status = result.quota.state === 'limited' ? 'cooldown' : ('authenticated' in result && result.authenticated !== true) ? 'unknown' : 'ready';
         this.store.put('account', current);
         return { models, account: current, warnings: result.warnings };
     }
     async login(user: User, accountId: string, onAuth: (event: Record<string, unknown>) => void, signal: AbortSignal): Promise<void> { assert(['admin', 'operator'].includes(user.role), 403, 'TRUSTED_EXECUTION', 'CLI riservate a operatori fidati.'); const a = this.store.own<Account>(user, 'account', accountId), p = this.store.require<Provider>('provider', a.providerId); await loginNative({ connection: this.connection(p, a), cwd: this.store.directory, signal, onAuth: e => onAuth({ verificationUri: e.verificationUrl, userCode: e.userCode }) }); a.status = 'ready'; this.store.put('account', a); }
-    embedder(user: User, routeId: string): (texts: string[], signal: AbortSignal) => Promise<number[][]> { return async (texts, signal) => { const { route, connection, secret } = this.resolve(user, routeId); assert(route.capabilities.includes('embedding'), 409, 'CAPABILITY', 'Seleziona un modello embeddings.'); const release = await this.scheduler.acquire(routeResources(route, this.config), signal); try {
-        await this.activate(route.providerId, signal);
-        return (await embed({ connection, model: route.model, secret, texts, signal })).vectors;
+    succeeded(account: Account, observation?: QuotaObservation): void {
+        if (observation) this.quota(account, observation);
+        const current = this.store.require<Account>('account', account.id);
+        if (!current.quota?.cooldownUntil || Date.parse(current.quota.cooldownUntil) <= Date.now()) {
+            current.status = 'ready';
+            this.store.put('account', current);
+        }
     }
-    finally {
-        release();
-    } }; }
+    embedder(user: User, routeId: string): (texts: string[], signal: AbortSignal) => Promise<number[][]> {
+        return async (texts, signal) => {
+            const lease = await new RouteRouter(this).reserve({ user, preferredRouteId: routeId, purpose: 'embedding', strategy: 'pinned', priority: 'background', maxWaitMs: 5000, signal });
+            try {
+                await this.activate(lease.provider.id, signal);
+                const result = await embed({ connection: lease.connection, model: lease.route.model, secret: lease.secret, texts, signal });
+                this.succeeded(lease.account);
+                return result.vectors;
+            } finally { lease.release(); }
+        };
+    }
     async activate(providerId: string, signal: AbortSignal, onStatus: (text: string) => void = () => { }): Promise<void> {
         const spec = this.config.providers.find(p => p.id === providerId)?.activation;
         if (!spec)

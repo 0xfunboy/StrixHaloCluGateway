@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { realpath } from 'node:fs/promises';
-import type { AgentTask, Approval, ChatMessage, Conversation, Evidence, Metrics, Project, Run, User } from './contracts.ts';
+import type { AgentTask, Approval, ChatMessage, Conversation, Evidence, Metrics, Project, Run, User, RequestedMode, RoutingPreferences } from './contracts.ts';
 import type { Config } from './config.ts';
 import { routeResources } from './config.ts';
 import { Catalog, resultMetrics } from './catalog.ts';
@@ -8,6 +8,9 @@ import { Store } from './store.ts';
 import { Knowledge } from './knowledge.ts';
 import { compileContext, estimateTokens } from './context.ts';
 import { Scheduler } from './scheduler.ts';
+import { RouteRouter, type RouteReservation } from './routing.ts';
+import { classifyRequest, type ServiceIntent } from './intent.ts';
+import { routingPreferences } from './request-policy.ts';
 import { complete, runNativeAgent } from './adapters/index.ts';
 import { ensureHttpEngine, isEngineReady, waitEngineReady } from './adapters/lifecycle.ts';
 import type { InferenceRequest, InferenceResult, Message, QuotaObservation } from './adapters/types.ts';
@@ -52,42 +55,77 @@ export class Orchestrator {
     save(run: Run): void { run.updatedAt = now(); this.store.put('run', run); this.emit(run, 'run.updated', run.phase, { status: run.status }); }
     start(user: User, conversationId: string, input: {
         text: string;
-        routeId: string;
-        mode: 'chat' | 'mission';
+        routeId?: string;
+        mode?: RequestedMode;
+        routing?: RoutingPreferences;
         attachmentIds?: string[];
         permissions?: Partial<Run['permissions']>;
         maxIterations?: number;
         maxParallel?: number;
     }): Run {
         assert(user.role !== 'viewer', 403, 'FORBIDDEN', 'Il profilo lettore non può avviare task.');
-        assert(this.active.size < 32 && [...this.active.values()].filter(a=>a.run.ownerId===user.id).length < 4,429,'CONCURRENCY','Sono già attive quattro richieste per questo utente o il coordinator ha raggiunto il limite.');
-        const conversation = this.store.own<Conversation>(user, 'conversation', conversationId), project = this.store.projectFor(user, conversation.projectId);
-        assert(!this.store.all<Run>('run').some(r => r.conversationId === conversationId && !terminal.has(r.status)), 409, 'ACTIVE_RUN', 'La conversazione ha già un task aperto. Riprendilo o annullalo.');
-        this.catalog.resolve(user, input.routeId);
+        const conversation = this.store.own<Conversation>(user, 'conversation', conversationId);
+        const project = this.store.projectFor(user, conversation.projectId);
+        const intent = classifyRequest(input.text, { mode: input.mode, attachmentCount: input.attachmentIds?.length });
         for (const key of input.attachmentIds ?? []) {
-            const a = this.store.own<{
-                id: string;
-                ownerId: string;
-                projectId: string;
-            }>(user, 'artifact', key);
-            assert(a.projectId === project.id, 400, 'PROJECT', 'Allegato di un altro progetto.');
+            const artifact = this.store.own<{ id: string; ownerId: string; projectId: string }>(user, 'artifact', key);
+            assert(artifact.projectId === project.id, 400, 'PROJECT', 'Allegato di un altro progetto.');
         }
-        if (input.mode === 'mission') {
+        const routeId = input.routeId || conversation.routeId || project.routes.primary || '';
+        const routing = intent.kind === 'service' ? undefined : routingPreferences(user, this.catalog, input.routing, project.routing);
+        if (intent.kind !== 'service') {
+            assert(this.active.size < 32 && [...this.active.values()].filter(a => a.run.ownerId === user.id).length < 4, 429, 'CONCURRENCY', 'Sono già attive quattro richieste per questo utente o il coordinator ha raggiunto il limite.');
+            assert(!this.store.all<Run>('run').some(r => r.conversationId === conversationId && !terminal.has(r.status)), 409, 'ACTIVE_RUN', 'La conversazione ha già un task aperto. Usa le istruzioni della missione o apri una nuova conversazione.');
+            assert(routeId, 409, 'MODEL_REQUIRED', 'Collega un modello per questa domanda. Saluti e stato del servizio sono già disponibili.');
+            assert(this.catalog.models(user).some(m => m.id === routeId), 404, 'NOT_FOUND', 'Modello non disponibile.');
+            if (routing?.strategy === 'pinned' || !routing?.fallbackRouteIds.length) this.catalog.resolve(user, routeId);
+        }
+        if (intent.mode === 'mission') {
             assert(['admin', 'operator'].includes(user.role), 403, 'TRUSTED_EXECUTION', 'Le missioni eseguono codice del progetto: è richiesto un operatore fidato.');
             assert(project.targetId, 409, 'WORKSPACE', 'Configura il target di esecuzione del progetto.');
             assert(project.verifyRecipeIds.length > 0, 409, 'VERIFICATION', 'Configura almeno una ricetta di verifica eseguibile prima di avviare una missione.');
         }
-        if (input.permissions?.deploy)
-            assert(['admin', 'operator'].includes(user.role), 403, 'FORBIDDEN', 'Il rilascio richiede il ruolo operatore.');
-        const run: Run = { id: id('run'), projectId: project.id, conversationId, ownerId: user.id, goal: input.text, mode: input.mode, status: 'queued', phase: 'In coda', routeId: input.routeId, tasks: [], iteration: 0, maxIterations: input.maxIterations ?? 3, maxParallel: input.maxParallel ?? 3, budget: { maxModelCalls: 48, maxOutputTokens: 64000, callsUsed: 0, outputTokensUsed: 0 }, permissions: { write: input.permissions?.write === true, commands: input.permissions?.commands === true, deploy: input.permissions?.deploy === true }, createdAt: now(), updatedAt: now() };
-        conversation.routeId = input.routeId;
+        if (input.permissions?.deploy) assert(['admin', 'operator'].includes(user.role), 403, 'FORBIDDEN', 'Il rilascio richiede il ruolo operatore.');
+        const run: Run = {
+            id: id('run'), projectId: project.id, conversationId, ownerId: user.id, goal: input.text,
+            mode: intent.mode, requestedMode: input.mode ?? 'auto', intent: intent.kind, routing,
+            status: 'queued', phase: intent.reason, routeId: routeId || 'service', tasks: [], iteration: 0,
+            maxIterations: input.maxIterations ?? 3, maxParallel: input.maxParallel ?? 3,
+            budget: { maxModelCalls: intent.mode === 'chat' ? 1 : 48, maxOutputTokens: intent.mode === 'chat' ? 4096 : 64000, callsUsed: 0, outputTokensUsed: 0 },
+            permissions: { write: input.permissions?.write === true, commands: input.permissions?.commands === true, deploy: input.permissions?.deploy === true },
+            createdAt: now(), updatedAt: now()
+        };
+        if (routeId && intent.kind !== 'service') conversation.routeId = routeId;
         conversation.updatedAt = now();
-        if (conversation.messages.length === 0)
-            conversation.title = input.text.slice(0, 70);
-        conversation.messages.push({ id: id('msg'), role: 'user', text: input.text, createdAt: now(), routeId: input.routeId, runId: run.id, attachmentIds: input.attachmentIds, status: 'complete' });
+        if (conversation.messages.length === 0) conversation.title = input.text.slice(0, 70);
+        conversation.messages.push({ id: id('msg'), role: 'user', text: input.text, createdAt: now(), ...(routeId ? { routeId } : {}), runId: run.id, attachmentIds: input.attachmentIds, status: 'complete' });
+        if (intent.service) {
+            const answer = this.serviceAnswer(user, project, intent.service);
+            conversation.messages.push({ id: id('msg'), role: 'assistant', text: answer, createdAt: now(), runId: run.id, source: 'service', status: 'complete' });
+            run.status = 'succeeded'; run.phase = 'Risposta diretta del servizio'; run.summary = answer;
+            this.store.transaction(() => { this.store.put('conversation', conversation); this.store.put('run', run); });
+            this.emit(run, 'service.reply', 'Risposta immediata senza inferenza.', { intent: intent.service });
+            this.save(run);
+            return structuredClone(run);
+        }
         this.store.transaction(() => { this.store.put('conversation', conversation); this.store.put('run', run); });
+        this.emit(run, 'request.classified', intent.reason, { mode: run.mode, requestedMode: run.requestedMode, intent: run.intent });
         this.launch(user, run);
         return structuredClone(run);
+    }
+    serviceAnswer(user: User, project: Project, intent: ServiceIntent): string {
+        if (intent === 'greeting') return `Ciao ${user.name}, ci sono. Dimmi cosa vuoi sapere o quale risultato vuoi ottenere.`;
+        if (intent === 'thanks') return 'Prego. La conversazione e il contesto restano nel progetto, pronti per il prossimo passo.';
+        if (intent === 'presence') return 'Sì, il coordinator è online e pronto. Puoi farmi una domanda o assegnare un lavoro alla squadra.';
+        if (intent === 'help') return 'Puoi parlare con il tuo orchestratore, confrontare modelli e account, consultare conoscenza e allegati, oppure assegnare una missione di sviluppo. In modalità Auto le domande ricevono una risposta diretta; richieste come “implementa questa funzione” avviano la squadra con i permessi e le verifiche del progetto.';
+        if (intent === 'models') {
+            const models = this.catalog.models(user).filter(m => m.enabled), availability = new Map(new RouteRouter(this.catalog).availability(user, { purpose: 'chat' }).map(a => [a.routeId, a]));
+            if (!models.length) return 'Non hai ancora modelli collegati. Apri Connessioni, scegli il fornitore e collega l’account: il catalogo verrà trovato automaticamente quando il provider lo espone.';
+            return 'Modelli visibili al tuo account:\n\n' + models.slice(0, 24).map(m => `- **${m.label}**: ${availability.get(m.id)?.reason ?? 'stato da verificare'}`).join('\n') + (models.length > 24 ? `\n\nAltri ${models.length - 24} modelli sono nel selettore.` : '');
+        }
+        const runs = this.store.all<Run>('run').filter(r => r.ownerId === user.id && r.projectId === project.id && !terminal.has(r.status));
+        if (!runs.length) return `Nessuna missione aperta per te in **${project.name}**. Il progetto è pronto per una domanda o un nuovo obiettivo.`;
+        return `In **${project.name}** hai ${runs.length} attività aperte:\n\n` + runs.slice(0, 8).map(r => `- **${r.goal.slice(0, 100)}**: ${r.phase}. ${r.tasks.filter(t => t.status === 'succeeded').length}/${r.tasks.length} attività completate.`).join('\n');
     }
     launch(user: User, run: Run): void {
         assert(!this.active.has(run.id), 409, 'ACTIVE_RUN', 'Task già attivo.');
@@ -99,9 +137,9 @@ export class Orchestrator {
             const code = String((error as {
                 code?: string;
             }).code);
-            const uncertain = ['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN'].includes(code);
+            const uncertain = ['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN', 'INFERENCE_INTERRUPTED'].includes(code);
             run.status = uncertain ? 'interrupted' : requested === 'cancel' ? 'cancelled' : requested === 'pause' || ['TASK_PAUSED', 'TASK_CANCELLED'].includes(code) ? 'paused' : controller.signal.aborted ? 'interrupted' : 'failed';
-            run.phase = uncertain ? 'Esito di esecuzione incerto: verificare il workspace. '+safeError(error) : requested === 'pause' ? 'In pausa: controlla le evidenze prima di riprendere' : requested === 'cancel' ? 'Annullato' : safeError(error);
+            run.phase = uncertain ? (code === 'INFERENCE_INTERRUPTED' ? safeError(error) : 'Esito di esecuzione incerto: verificare il workspace. '+safeError(error)) : requested === 'pause' ? 'In pausa: controlla le evidenze prima di riprendere' : requested === 'cancel' ? 'Annullato' : safeError(error);
             run.error = run.phase;
             for (const task of run.tasks)
                 if (task.status === 'running') {
@@ -123,7 +161,8 @@ export class Orchestrator {
     async drive(user: User, run: Run, signal: AbortSignal): Promise<void> {
         const project = this.store.projectFor(user, run.projectId);
         let releaseWorkspace: (() => void) | undefined;
-        const deadline = setTimeout(() => this.active.get(run.id)?.controller.abort(new Error('Missione oltre il limite di 60 minuti.')), 60 * 60000);
+        const deadlineMs = run.mode === 'chat' ? 120000 : 60 * 60000;
+        const deadline = setTimeout(() => this.active.get(run.id)?.controller.abort(new Error(run.mode === 'chat' ? 'Risposta oltre il limite di due minuti. Le parti ricevute sono conservate.' : 'Missione oltre il limite di 60 minuti.')), deadlineMs);
         deadline.unref();
         try {
             if (run.mode === 'mission') {
@@ -146,12 +185,12 @@ export class Orchestrator {
         const task = this.task(run, 'Orchestratore', 'primary', run.goal, run.routeId, []);
         run.tasks.push(task);
         this.save(run);
-        const message: ChatMessage = { id: id('msg'), role: 'assistant', text: '', createdAt: now(), routeId: run.routeId, runId: run.id, status: 'streaming' };
+        const message: ChatMessage = { id: id('msg'), role: 'assistant', text: '', createdAt: now(), routeId: run.routeId, runId: run.id, source: 'model', status: 'streaming' };
         const conversation = this.store.require<Conversation>('conversation', run.conversationId);
         conversation.messages.push(message);
         this.store.put('conversation', conversation);
         let lastSave = 0;
-        const result = await this.agent(user, project, run, task, true, signal, delta => { const offset = message.text.length; message.text += delta; this.ephemeral(run, 'message.delta', { messageId: message.id, delta, offset }, task.id); if (Date.now() - lastSave > 500) {
+        const result = await this.agent(user, project, run, task, true, signal, delta => { message.routeId = task.routeId; const offset = message.text.length; message.text += delta; this.ephemeral(run, 'message.delta', { messageId: message.id, delta, offset }, task.id); if (Date.now() - lastSave > 500) {
             lastSave = Date.now();
             const current = this.store.require<Conversation>('conversation', run.conversationId);
             const existing = current.messages.find(m => m.id === message.id)!;
@@ -159,6 +198,7 @@ export class Orchestrator {
             this.store.put('conversation', current);
         } });
         message.text = result.text;
+        message.routeId = task.routeId;
         message.metrics = result.metrics;
         message.status = 'complete';
         const final = this.store.require<Conversation>('conversation', run.conversationId);
@@ -224,7 +264,7 @@ export class Orchestrator {
                 const batch = writer ? [writer] : ready.slice(0, run.maxParallel);
                 const results = await Promise.allSettled(batch.map(t => this.agent(user, project, run, t, t.role !== 'coder', signal)));
                 const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected' && r.reason?.code !== 'TASK_PAUSED');
-                const uncertain = failures.find(f => ['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN'].includes(String(f.reason?.code)));
+                const uncertain = failures.find(f => ['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN', 'INFERENCE_INTERRUPTED'].includes(String(f.reason?.code)));
                 if (uncertain) throw uncertain.reason;
                 const cancelled = failures.find(f => f.reason?.code === 'TASK_CANCELLED');
                 if (cancelled)
@@ -337,7 +377,7 @@ export class Orchestrator {
             } });
         }
         catch (error) {
-            if (['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN'].includes(String((error as {code?:string}).code))) {
+            if (['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN', 'INFERENCE_INTERRUPTED'].includes(String((error as {code?:string}).code))) {
                 task.control = undefined;
                 throw error;
             }
@@ -364,22 +404,66 @@ export class Orchestrator {
         task.startedAt = now();
         this.store.put('run', run);
         this.emit(run, 'task.updated', task.label, { status: task.status }, task.id);
+        let reservation: RouteReservation | undefined;
+        const releaseReservation = () => { reservation?.release(); reservation = undefined; };
+        const router = new RouteRouter(this.catalog);
+        let queueMs = 0, loadMs = 0;
+        let partialOutput = '', mutatingToolCompleted = false, checkpointAt = 0;
+        const checkpointText = (delta: string) => {
+            partialOutput += delta; task.output = partialOutput;
+            if (Date.now() - checkpointAt > 500) { checkpointAt = Date.now(); this.store.put('run', run); }
+        };
         try {
-            const resolved = this.catalog.resolve(user, task.routeId), { route, provider, account, connection, secret } = resolved;
+            const contextStarted = Date.now();
+            this.emit(run, 'context.started', 'Ricerca del contesto pertinente', undefined, task.id);
             const conversation = this.store.require<Conversation>('conversation', run.conversationId);
             const attachmentIds = [...new Set(conversation.messages.filter(m => m.runId === run.id && m.role === 'user').flatMap(m => m.attachmentIds ?? []))];
             let retrieved = await this.knowledge.retrieve(user, project.id, task.instruction, { limit: 8 });
             if (project.routes.embedding) {
                 try {
-                    retrieved = await this.knowledge.retrieve(user, project.id, task.instruction, { embed: this.catalog.embedder(user, project.routes.embedding), modelKey: project.routes.embedding, signal, limit: 8 });
+                    retrieved = await this.knowledge.retrieve(user, project.id, task.instruction, { embed: this.catalog.embedder(user, project.routes.embedding), modelKey: project.routes.embedding, signal: AbortSignal.any([signal, AbortSignal.timeout(run.mode === 'chat' ? 600 : 5000)]), limit: 8 });
                 }
                 catch (error) {
                     this.emit(run, 'context.warning', 'Ricerca vettoriale non disponibile; usata ricerca testuale.', { error: safeError(error) }, task.id);
                 }
             }
+            signal.throwIfAborted();
+            const retrievalMs = Date.now() - contextStarted;
+            const localTarget = project.targetId ? this.config.targets.find(t => t.id === project.targetId) : undefined;
+            const selectRoute = async (preferredRouteId: string, allowFallback: boolean) => {
+                const result = await router.reserve({
+                    user, preferredRouteId,
+                    alternativeRouteIds: allowFallback ? run.routing?.fallbackRouteIds : [],
+                    strategy: allowFallback ? run.routing?.strategy ?? 'pinned' : 'pinned',
+                    purpose: run.mode === 'chat' ? 'chat' : (task.role === 'coder' || task.role === 'researcher' || task.role === 'reviewer' ? task.role : 'primary'),
+                    nativeAllowed: localTarget?.kind === 'local' && ['admin', 'operator'].includes(user.role),
+                    minimumContextTokens: estimateTokens(task.instruction) + 1500,
+                    priority: run.mode === 'chat' ? 'interactive' : 'normal',
+                    maxWaitMs: run.routing?.maxWaitMs ?? (run.mode === 'chat' ? 8000 : 30000), signal,
+                    onQueued: wait => {
+                        task.status = 'queued';
+                        run.phase = `Attesa modello · posizione ${wait.position}. Puoi interrompere o scegliere un’alternativa.`;
+                        this.store.put('run', run);
+                        this.emit(run, 'route.queued', run.phase, { ...wait }, task.id);
+                    }
+                });
+                queueMs += result.waitMs;
+                task.status = 'running';
+                task.routeId = result.route.id;
+                if (allowFallback) task.routing = { requestedRouteId: result.requestedRouteId, chosenRouteId: result.chosenRouteId, switched: result.switched, waitMs: result.waitMs, reason: result.reason };
+                run.phase = run.mode === 'chat' ? 'Risposta diretta dell’orchestratore' : task.label;
+                this.store.put('run', run);
+                this.emit(run, 'route.selected', result.reason, { ...task.routing }, task.id);
+                return result;
+            };
+            reservation = await selectRoute(task.routeId, true);
+            const { route, provider, account, connection, secret } = reservation;
+            const compileStarted = Date.now();
             const previousEvidence = task.evidenceIds.map(key => this.store.get<Evidence>('evidence', key)).filter((e): e is Evidence => !!e).slice(-5).map(e => `${e.title} ok=${e.ok}\n${e.output.slice(0, 2000)}`).join('\n');
-            const compiled = compileContext({ project, goal: task.role === 'primary' ? task.instruction : `USER OBJECTIVE:\n${run.goal}\nASSIGNED TASK:\n${task.instruction}`, history: conversation.messages.filter(m => m.runId !== run.id), memories: this.knowledge.visibleMemory(user, project.id), retrieved, dependencies: [...run.tasks.filter(t => task.dependencies.includes(t.id)), ...(previousEvidence ? [{ ...task, id: task.id + '_checkpoint', label: 'Evidenze precedenti del task', output: previousEvidence }] : [])], instructions: SYSTEM + `\nYour role: ${task.role}. ${readOnly ? 'Read-only task; do not propose tool side effects.' : 'Use the configured workspace tools to implement and verify. Commands must use configured recipe IDs.'}`, contextWindow: route.contextWindow, maxOutputTokens: route.maxOutputTokens, attachmentText: attachmentIds.map(key => { const a = this.knowledge.artifact(user, key); return { id: key, name: a.artifact.name, content: a.content }; }) });
+            const compiled = compileContext({ project, goal: task.role === 'primary' ? task.instruction : `USER OBJECTIVE:\n${run.goal}\nASSIGNED TASK:\n${task.instruction}`, history: conversation.messages.filter(m => m.runId !== run.id), memories: this.knowledge.visibleMemory(user, project.id), retrieved, dependencies: [...run.tasks.filter(t => task.dependencies.includes(t.id)), ...(previousEvidence ? [{ ...task, id: task.id + '_checkpoint', label: 'Evidenze precedenti del task', output: previousEvidence }] : [])], instructions: SYSTEM + (run.mode === 'chat' ? '\nThis is a direct conversation. Answer the question without planning a team or claiming execution. Be brief for simple questions and expand when requested.' : '') + `\nYour role: ${task.role}. ${readOnly ? 'Read-only task; do not propose tool side effects.' : 'Use the configured workspace tools to implement and verify. Commands must use configured recipe IDs.'}`, contextWindow: route.contextWindow, maxOutputTokens: run.mode === 'chat' ? Math.min(route.maxOutputTokens ?? 4096, 4096) : route.maxOutputTokens, attachmentText: attachmentIds.map(key => { const a = this.knowledge.artifact(user, key); return { id: key, name: a.artifact.name, content: a.content }; }) });
             task.context = compiled.report;
+            const contextMs = retrievalMs + Date.now() - compileStarted;
+            this.emit(run, 'context.ready', 'Contesto pronto', { includedSources: compiled.report.sources.filter(s => s.included).length, estimatedTokens: compiled.report.estimatedTokens, contextMs }, task.id);
             if (['codex', 'antigravity'].includes(provider.kind)) {
                 assert(['admin', 'operator'].includes(user.role), 403, 'TRUSTED_EXECUTION', 'Le CLI native richiedono un operatore fidato e un profilo dedicato.');
                 const target = this.target(project);
@@ -389,8 +473,8 @@ export class Orchestrator {
                 const cwd = await realpath(path.resolve(root, project.workspace ?? '.'));
                 assert(cwd === root || cwd.startsWith(root + path.sep), 403, 'WORKSPACE', 'Workspace fuori dal target.');
                 this.reserveCall(run);
-                const release = await this.scheduler.acquire(routeResources(route, this.config), signal);
                 let text = '';
+                this.emit(run, 'inference.started', provider.label, { routeId: route.id }, task.id);
                 try {
                     const result = await runNativeAgent({ connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: route.maxOutputTokens }, cwd, prompt: compiled.messages.map(m => `[${m.role.toUpperCase()}]\n${m.content}`).join('\n\n'), readOnly, signal, approve: a => {
                         if (readOnly && (a.kind === 'write' || a.kind === 'command')) return Promise.resolve(false);
@@ -400,14 +484,15 @@ export class Orchestrator {
                         return this.approval(run, task, 'native', a.title, a.detail, signal);
                     }, onEvent: event => { if (event.type === 'text' && event.text) {
                             text += event.text;
+                            checkpointText(event.text);
                             onText?.(event.text);
                             this.ephemeral(run, 'task.delta', { delta: event.text }, task.id);
                         }
                         else if (event.type !== 'quota')
                             this.emit(run, 'task.status', event.text ?? event.detail, { name: event.name }, task.id); } });
-                    this.catalog.quota(account, result.quota);
+                    this.catalog.succeeded(account, result.quota);
                     run.budget.outputTokensUsed += result.usage?.outputTokens ?? estimateTokens(result.text);
-                    const metrics: Metrics = { inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens, source: result.usage ? 'official-runtime' : 'unknown' };
+                    const metrics: Metrics = { queueMs, contextMs, inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens, source: result.usage ? 'official-runtime' : 'unknown' };
                     task.output = result.text;
                     task.metrics = metrics;
                     task.status = 'succeeded';
@@ -421,7 +506,7 @@ export class Orchestrator {
                     throw error;
                 }
                 finally {
-                    release();
+                    releaseReservation();
                 }
             }
             const target = project.targetId ? this.target(project) : undefined;
@@ -435,14 +520,17 @@ export class Orchestrator {
             let completeUsage = true;
             for (let round = 0; round < 10; round++) {
                 signal.throwIfAborted();
-                this.reserveCall(run);
-                const release = await this.scheduler.acquire(routeResources(route, this.config), signal);
+                if (!reservation) reservation = await selectRoute(route.id, false);
                 let result: InferenceResult;
                 try {
+                    const activationStarted = Date.now();
                     await this.activate(provider.id, signal, run, task);
-                    const maximum = this.reserveOutput(run, route.maxOutputTokens ?? 4096);
+                    loadMs += Date.now() - activationStarted;
+                    this.reserveCall(run);
+                    this.emit(run, 'inference.started', provider.label, { routeId: route.id, queueMs, loadMs }, task.id);
+                    const maximum = this.reserveOutput(run, run.mode === 'chat' ? Math.min(route.maxOutputTokens ?? 4096, 4096) : route.maxOutputTokens ?? 4096);
                     try {
-                        result = await this.completion({ connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: maximum }, secret, messages, tools, signal, onText: delta => { onText?.(delta); this.ephemeral(run, 'task.delta', { delta }, task.id); } });
+                        result = await this.completion({ connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: maximum }, secret, messages, tools, signal, timeoutMs: run.mode === 'chat' ? 90000 : undefined, onText: delta => { checkpointText(delta); onText?.(delta); this.ephemeral(run, 'task.delta', { delta }, task.id); } });
                     }
                     finally {
                         this.outputReservations.set(run.id, Math.max(0, (this.outputReservations.get(run.id) ?? 0) - maximum));
@@ -457,10 +545,11 @@ export class Orchestrator {
                     throw error;
                 }
                 finally {
-                    release();
+                    releaseReservation();
                 }
-                this.catalog.quota(account, result.quota);
-                last = resultMetrics(result);
+                this.catalog.succeeded(account, result.quota);
+                last = { ...resultMetrics(result), queueMs, contextMs, loadMs };
+                this.emit(run, 'inference.completed', 'Risposta del modello ricevuta', { routeId: route.id, durationMs: last.durationMs }, task.id);
                 if (result.usage) {
                     totals.inputTokens += result.usage.inputTokens;
                     totals.outputTokens += result.usage.outputTokens;
@@ -497,6 +586,7 @@ export class Orchestrator {
                             throw error;
                         resultTool = { ok: false, output: safeError(error), evidence: [] };
                     }
+                    if (call.name === 'write_file' || call.name === 'run_command') mutatingToolCompleted = true;
                     this.evidence(run, task, 'tool', call.name, resultTool.ok, resultTool.output, { execution: resultTool.evidence, changedFiles: resultTool.changedFiles });
                     messages.push({ role: 'tool', content: JSON.stringify({ ok: resultTool.ok, output: resultTool.output, changedFiles: resultTool.changedFiles }), toolCallId: call.id });
                 }
@@ -504,14 +594,20 @@ export class Orchestrator {
             }
             throw new AppError(409, 'TOOL_LIMIT', 'Limite di 10 iterazioni tool raggiunto; task incompleto.');
         }
-        catch (error) {
-            task.status = signal.aborted ? 'blocked' : 'failed';
+        catch (caught) {
+            let error = caught;
+            const code = String((caught as { code?: string })?.code);
+            if (!signal.aborted && (partialOutput.length > 0 || mutatingToolCompleted) && !['REMOTE_UNCERTAIN', 'NATIVE_UNCERTAIN', 'INFERENCE_INTERRUPTED', 'TASK_PAUSED', 'TASK_CANCELLED'].includes(code)) {
+                error = new AppError(409, 'INFERENCE_INTERRUPTED', 'Attività interrotta dopo output o operazioni sul workspace. Risultati ed evidenze conservati; nessuna ripetizione automatica. Verifica prima di riprendere. ' + safeError(caught));
+            }
+            task.status = signal.aborted || String((error as { code?: string })?.code) === 'INFERENCE_INTERRUPTED' ? 'blocked' : 'failed';
             task.error = safeError(error);
             task.endedAt = now();
             this.store.put('run', run);
             this.emit(run, 'task.updated', task.error, { status: task.status }, task.id);
             throw error;
         }
+        finally { releaseReservation(); }
     }
     reserveCall(run: Run): void { assert(run.budget.callsUsed < run.budget.maxModelCalls && run.budget.outputTokensUsed < run.budget.maxOutputTokens, 409, 'BUDGET', 'Budget della missione esaurito.'); run.budget.callsUsed++; this.store.put('run', run); }
     waitForTask(runId: string, signal: AbortSignal): Promise<void> { signal.throwIfAborted(); return new Promise((resolve, reject) => { const list = this.taskWakeups.get(runId) ?? new Set<() => void>(); const done = () => { signal.removeEventListener('abort', abort); list.delete(done); if (!list.size)

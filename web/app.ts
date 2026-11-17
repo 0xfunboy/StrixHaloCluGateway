@@ -1,6 +1,10 @@
 import type { Account, AgentTask, Approval, Artifact, Bootstrap, ChatMessage, ContextReport, Conversation, Memory, ModelRoute, Project, Provider, Run, RunEvent, Telemetry } from '../src/contracts.ts';
 import { ApiError, createApi, type ClientApi } from './api.ts';
 import { renderMarkdown } from './markdown.ts';
+import { activityView, type ActivityDestination } from './activity.ts';
+import { mountConnectionWizard } from './connections.ts';
+import { classifyRequest } from '../src/intent.ts';
+import type { RequestedMode, RoutingPreferences } from '../src/contracts.ts';
 
 type View = 'control' | 'infrastructure' | 'knowledge' | 'connections' | 'releases';
 type ElementTag = keyof HTMLElementTagNameMap;
@@ -43,26 +47,35 @@ export class ControlRoom {
   private searchResults?: Array<{ memory: Memory; score: number; method: string }>;
   private autonomy = { write: false, commands: false, deploy: false, maxIterations: 3, maxParallel: 3 };
   private accountLoginDialog?: HTMLDialogElement;
+  private routingOverrides = new Map<string, RoutingPreferences>();
+  private streamFrame?: number;
+  private packetTimer?: ReturnType<typeof setTimeout>;
+  private motionEnabled = true;
+  private messageLimit = 80;
+  private modelPickerRender?: () => void;
 
   constructor(root: HTMLElement, api: ClientApi) {
     this.root = root; this.api = api;
     this.document = root.ownerDocument; this.win = this.document.defaultView!;
     root.innerHTML = `<a class="skip-link" href="#message-input">All'orchestratore</a>
       <div class="shell" id="shell"><aside class="sidebar" aria-label="Progetti e conversazioni">
-      <div class="brand-row"><a href="#control" class="brand" aria-label="yed1z Control Room">yed1z<span class="brand-dot">.</span></a><span class="brand-tag">CONTROL<br>ROOM</span></div>
+      <div class="brand-row"><a href="#control" class="brand" aria-label="yed1z Control Room">yed1z<span class="brand-dot">.</span></a><span class="brand-tag">QUANTUM<br>// HALO</span></div>
       <div class="project-label"><span class="eyebrow">IL TUO PROGETTO</span><button id="new-project" class="icon-button" title="Nuovo progetto" aria-label="Nuovo progetto"></button></div>
       <label class="sr-only" for="project-select">Progetto attivo</label><select id="project-select" class="project-switch"><option value="">Scegli un progetto</option></select>
-      <nav class="nav" aria-label="Sezioni"><button class="nav-item active" data-view="control" aria-current="page">Control room</button><button class="nav-item" data-view="infrastructure">Infrastruttura</button><button class="nav-item" data-view="knowledge">Conoscenza</button><button class="nav-item" data-view="connections">Modelli e account</button><button class="nav-item" data-view="releases">Consegne e rilasci</button></nav>
+      <nav class="nav" aria-label="Sezioni"><button class="nav-item active" data-view="control" aria-current="page">Chat e squadra</button><button class="nav-item" data-view="infrastructure">Dashboard cluster</button><button class="nav-item" data-view="knowledge">Conoscenza</button><button class="nav-item" data-view="connections">Modelli e account</button><button class="nav-item" data-view="releases">Consegne e rilasci</button></nav>
       <div class="sidebar-line"></div><div class="history-heading"><span class="eyebrow">CONVERSAZIONI</span><button id="new-conversation" class="icon-button" title="Nuova conversazione" aria-label="Nuova conversazione"></button></div>
       <label class="sr-only" for="history-search">Cerca una conversazione</label><input id="history-search" class="history-search" type="search" placeholder="Cerca nelle tue conversazioni…" autocomplete="off"><div class="history" id="history"></div>
       <div class="sidebar-footer"><div class="avatar" id="user-avatar">y</div><div class="user-copy"><strong id="user-name">Il tuo spazio</strong><small id="user-role">Connessione…</small></div><button class="icon-button" id="user-action" aria-label="Esci" title="Esci"></button></div></aside>
       <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="Chiudi navigazione"></button>
-      <main class="workspace"><header class="topbar"><div class="row"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Apri navigazione"></button><div><div class="breadcrumb" id="breadcrumb">yed1z / il tuo workspace</div><h1 id="page-title">Control room</h1></div></div><div class="topbar-actions"><span class="connection-state" id="connection-state"><i class="status-dot"></i>COLLEGAMENTO</span><button class="button primary" id="guest-login-btn" hidden style="font-weight:700">Accedi</button><button class="button subtle" id="project-settings"><span>Progetto</span></button><button class="button subtle mobile-team-button" id="show-team"><span>Squadra</span></button></div></header>
+      <main class="workspace"><header class="topbar"><div class="row"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Apri navigazione"></button><div><div class="breadcrumb" id="breadcrumb">DISTRIBUTED AGENT WORKSTATION</div><h1 id="page-title">Chat e squadra</h1></div></div><div class="topbar-actions"><button class="button subtle fx-toggle" id="fx-toggle" aria-label="Disattiva animazioni" aria-pressed="true">FX ON</button><button class="button subtle" id="quick-connect"><span>Collega modello</span></button><span class="connection-state" id="connection-state"><i class="status-dot"></i>COLLEGAMENTO</span><button class="button primary" id="guest-login-btn" hidden style="font-weight:700">Accedi</button><button class="button subtle" id="project-settings"><span>Progetto</span></button><button class="button subtle mobile-team-button" id="show-team"><span>Squadra</span></button></div></header>
       <section class="fleet-ribbon" id="fleet-ribbon" aria-label="Stato dell'infrastruttura"></section><div class="banner" id="banner" role="status" hidden><span></span><button class="icon-button" id="close-banner" aria-label="Chiudi avviso"></button></div>
       <div class="content" id="content"><section class="control-room" id="control-view" aria-label="Control room"><section class="conversation" aria-label="Orchestratore e conversazione"><header class="conversation-heading"><div><h2><i class="role-orb"></i>Il tuo orchestratore</h2><p id="conversation-subtitle">Un obiettivo. Una squadra. Tutto sotto controllo.</p></div><div class="conversation-actions"><button id="export-conversation" class="icon-button export-button" aria-label="Esporta conversazione" title="Esporta conversazione"></button><button id="context-info" class="icon-button" aria-label="Contesto dell'ultima attività" title="Contesto dell'ultima attività"></button></div></header>
-      <div id="messages" class="messages" role="log" aria-label="Messaggi" aria-live="off"></div><div class="composer-wrap"><form id="composer" class="composer"><div id="attachments-preview" class="attachments-preview" hidden></div><label class="sr-only" for="message-input">Parla con il tuo orchestratore</label><textarea id="message-input" rows="3" maxlength="100000" placeholder="Descrivi il risultato che vuoi ottenere. Al resto lavoriamo insieme." required></textarea><div class="composer-tools"><button id="attach-file" class="icon-button" type="button" aria-label="Allega un documento" title="Allega un documento"></button><button id="model-picker" class="model-button" type="button" aria-haspopup="dialog"><span id="model-label">Scegli modello e account</span></button><label class="sr-only" for="mode-select">Modalità</label><select id="mode-select"><option value="mission">Squadra</option><option value="chat">Chat</option></select><button id="mission-settings" class="icon-button" type="button" aria-label="Autonomia e limiti" title="Autonomia e limiti"></button><button id="send" class="send" type="submit" aria-label="Invia all'orchestratore"></button><button id="stop" class="send stop" type="button" aria-label="Interrompi attività" hidden></button></div></form><div class="composer-caption"><span id="composer-status">Il contesto resta nel progetto.</span><span class="keyboard-hint">Invio ↵ · A capo ⇧↵</span></div></div></section>
+      <div id="activity-strip" class="activity-strip"></div><div id="messages" class="messages" role="log" aria-label="Messaggi" aria-live="off"></div><div class="composer-wrap"><form id="composer" class="composer"><div id="attachments-preview" class="attachments-preview" hidden></div><label class="sr-only" for="message-input">Parla con il tuo orchestratore</label><textarea id="message-input" rows="3" maxlength="100000" placeholder="Descrivi il risultato che vuoi ottenere. Al resto lavoriamo insieme." required></textarea><div class="composer-tools"><button id="attach-file" class="icon-button" type="button" aria-label="Allega un documento" title="Allega un documento"></button><button id="model-picker" class="model-button" type="button" aria-haspopup="dialog"><span id="model-label">Scegli modello e account</span></button><label class="sr-only" for="mode-select">Modalità</label><select id="mode-select"><option value="auto">Auto</option><option value="chat">Chat diretta</option><option value="mission">Squadra</option></select><button id="routing-policy" class="routing-button" type="button" title="Disponibilità e alternative autorizzate">Auto</button><button id="mission-settings" class="icon-button" type="button" aria-label="Autonomia e limiti" title="Autonomia e limiti"></button><button id="send" class="send" type="submit" aria-label="Invia all'orchestratore"></button><button id="stop" class="send stop" type="button" aria-label="Interrompi attività" hidden></button></div></form><div class="composer-caption"><span id="composer-status">Il contesto resta nel progetto.</span><span class="keyboard-hint">Invio ↵ · A capo ⇧↵</span></div></div></section>
       <aside class="team-panel" aria-label="Squadra di agenti"><header class="team-header"><div class="row spread"><h2 class="row" id="team-title">La tua squadra</h2><button class="icon-button close-team" id="close-team" aria-label="Chiudi squadra"></button></div><p id="team-subtitle">Agenti, modelli e avanzamento in tempo reale.</p></header><div class="team-body" id="team-body"></div><div class="task-detail" id="task-detail" hidden></div><footer class="team-footer"><span id="team-footer-left">Nessuna attività in corso</span><span id="team-footer-right"></span></footer></aside></section><section id="page-view" class="page" hidden></section></div></main></div><div class="toast-stack" id="toasts" role="status" aria-live="polite"></div><input id="file-input" type="file" accept=".md,.txt,.json,.csv,.ts,.tsx,.js,.py,.go,.rs,.yaml,.yml,.toml,.log,text/*,application/json" multiple hidden>`;
     this.installIcons(); this.bind();
+    this.syncNavigation();
+    try { this.motionEnabled = this.win.localStorage.getItem("yed1z.motion") !== "off" && !this.win.matchMedia?.("(prefers-reduced-motion: reduce)").matches; } catch { /* optional UI preference */ }
+    this.applyMotion();
     if (api.onSelection) this.disposers.push(api.onSelection(selection => { void this.uploadText(selection.name, selection.content, true); }));
     if (api.onConfigured) this.disposers.push(api.onConfigured(() => { this.loginDialog?.close(); void this.refresh(true); }));
     void this.refresh(true);
@@ -78,12 +91,17 @@ export class ControlRoom {
   private select(options: Array<{ value: string; label: string }>, value = ''): HTMLSelectElement { const select = this.el('select'); for (const item of options) { const option = this.el('option', '', item.label); option.value = item.value; select.append(option); } select.value = value; return select; }
 
   private installIcons(): void {
-    const ids: Record<string, string> = { 'new-project': 'plus', 'new-conversation': 'plus', 'user-action': this.api.native ? 'settings' : 'logout', 'mobile-menu': 'menu', 'project-settings': 'settings', 'show-team': 'people', 'close-banner': 'close', 'export-conversation': 'download', 'context-info': 'layers', 'attach-file': 'paperclip', 'mission-settings': 'settings', send: 'up', stop: 'stop', 'close-team': 'close', 'guest-login-btn': 'shield' };
+    const ids: Record<string, string> = { 'new-project': 'plus', 'new-conversation': 'plus', 'user-action': this.api.native ? 'settings' : 'logout', 'mobile-menu': 'menu', 'project-settings': 'settings', 'show-team': 'people', 'close-banner': 'close', 'export-conversation': 'download', 'context-info': 'layers', 'attach-file': 'paperclip', 'mission-settings': 'settings', send: 'up', stop: 'stop', 'close-team': 'close', 'guest-login-btn': 'shield', 'quick-connect': 'plug' };
     for (const [id, icon] of Object.entries(ids)) this.q(`#${id}`).prepend(this.icon(icon));
     this.q('#team-title').prepend(this.icon('people'));
     const navigation: Record<View, string> = { control: 'grid', infrastructure: 'activity', knowledge: 'book', connections: 'plug', releases: 'rocket' };
     for (const [view, icon] of Object.entries(navigation)) this.q(`[data-view="${view}"]`).prepend(this.icon(icon));
     this.q('#model-picker').append(this.icon('down'));
+    this.q('#quick-connect').setAttribute('aria-label', 'Collega un modello');
+    this.q('#project-settings').setAttribute('aria-label', 'Impostazioni del progetto');
+    this.q('#show-team').setAttribute('aria-label', 'Apri squadra');
+    this.q('.sidebar').id = 'navigation-sidebar';
+    this.q('#mobile-menu').setAttribute('aria-controls', 'navigation-sidebar');
   }
 
   private bind(): void {
@@ -97,6 +115,9 @@ export class ControlRoom {
     this.q('#project-settings').addEventListener('click', () => this.projectDialog(this.project));
     this.q('#new-conversation').addEventListener('click', () => { void this.newConversation(); });
     this.q('#model-picker').addEventListener('click', () => this.modelDialog());
+    this.q('#routing-policy').addEventListener('click', () => this.modelDialog());
+    this.q('#quick-connect').addEventListener('click', () => this.data?.user.id === 'guest' ? this.showLogin() : this.connectionDialog());
+    this.q('#fx-toggle').addEventListener('click', () => { this.motionEnabled = !this.motionEnabled; this.applyMotion(); try { this.win.localStorage.setItem('yed1z.motion', this.motionEnabled ? 'on' : 'off'); } catch { /* optional UI preference */ } });
     this.q('#composer').addEventListener('submit', event => { event.preventDefault(); void this.send(); });
     this.q<HTMLTextAreaElement>('#message-input').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); this.q<HTMLFormElement>('#composer').requestSubmit(); } });
     this.q('#message-input').addEventListener('input', () => this.updateComposer());
@@ -110,11 +131,21 @@ export class ControlRoom {
     this.q('#export-conversation').addEventListener('click', () => { if (this.conversation) void this.downloadJson(`${safeFilename(this.conversation.title)}.json`, this.conversation).catch(error => this.showBanner(errorMessage(error), true)); });
     this.q('#user-action').addEventListener('click', () => { if (this.api.native) this.api.configure?.(); else if (this.data?.user.id === 'guest') this.showLogin(); else void this.logout(); });
     this.q('#guest-login-btn').addEventListener('click', () => this.showLogin());
-    this.q('#mobile-menu').addEventListener('click', () => this.q('#shell').classList.toggle('sidebar-open'));
-    this.q('#sidebar-backdrop').addEventListener('click', () => this.q('#shell').classList.remove('sidebar-open'));
+    this.q('#mobile-menu').addEventListener('click', () => { this.q('#shell').classList.toggle('sidebar-open'); this.syncNavigation(); if (this.q('#shell').classList.contains('sidebar-open')) this.q<HTMLElement>('.sidebar [aria-current="page"]').focus(); });
+    this.q('#sidebar-backdrop').addEventListener('click', () => { this.q('#shell').classList.remove('sidebar-open'); this.syncNavigation(); });
+    const resize = () => this.syncNavigation(); this.win.addEventListener('resize', resize); this.disposers.push(() => this.win.removeEventListener('resize', resize));
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && this.win.innerWidth <= 720 && this.q('#shell').classList.contains('sidebar-open') && !this.root.querySelector('dialog[open]')) { event.preventDefault(); this.q('#shell').classList.remove('sidebar-open'); this.syncNavigation(); } };
+    this.document.addEventListener('keydown', escape); this.disposers.push(() => this.document.removeEventListener('keydown', escape));
     this.q('#show-team').addEventListener('click', () => { this.setView('control'); this.q('#shell').classList.toggle('team-open'); });
     this.q('#close-team').addEventListener('click', () => this.q('#shell').classList.remove('team-open'));
     this.q('#close-banner').addEventListener('click', () => { this.q('#banner').hidden = true; });
+  }
+
+  private syncNavigation(): void {
+    const sidebar = this.q('.sidebar'), hidden = this.win.innerWidth <= 720 && !this.q('#shell').classList.contains('sidebar-open');
+    if (hidden && sidebar.contains(this.document.activeElement)) this.q('#mobile-menu').focus();
+    sidebar.inert = hidden; sidebar.setAttribute('aria-hidden', String(hidden));
+    this.q('#mobile-menu').setAttribute('aria-expanded', String(this.win.innerWidth <= 720 && !hidden));
   }
 
   get ready(): Promise<void> { return this.loading ?? Promise.resolve(); }
@@ -128,6 +159,49 @@ export class ControlRoom {
   private provider(id?: string): Provider | undefined { return this.data?.providers.find(item => item.id === id); }
   private usableRoute(route: ModelRoute, writeRole = false): boolean { const kind = this.provider(route.providerId)?.kind; return route.enabled && !(route.capabilities.includes('embedding') && !route.capabilities.includes('chat')) && (kind !== 'antigravity' || writeRole) && (this.operator || !['codex', 'antigravity'].includes(kind ?? '')); }
 
+  private get routing(): RoutingPreferences { return this.routingOverrides.get(this.projectId) ?? this.project?.routing ?? { strategy: 'auto', fallbackRouteIds: [] }; }
+  private availability(routeId: string) { return this.data?.routeAvailability?.find(item => item.routeId === routeId); }
+  private applyMotion(): void {
+    this.root.dataset.motion = this.motionEnabled ? 'on' : 'off';
+    const button = this.q<HTMLButtonElement>('#fx-toggle'); button.textContent = this.motionEnabled ? 'FX ON' : 'FX OFF';
+    button.setAttribute('aria-pressed', String(this.motionEnabled)); button.setAttribute('aria-label', this.motionEnabled ? 'Disattiva animazioni' : 'Attiva animazioni');
+  }
+  private paintStream(): void {
+    if (this.streamFrame !== undefined || this.disposed) return;
+    this.streamFrame = this.win.requestAnimationFrame(() => { this.streamFrame = undefined; if (this.disposed) return; this.renderMessages(); if (this.taskId) this.renderTaskDetail(); });
+  }
+  private pulseActivity(destination: ActivityDestination): void {
+    if (!this.motionEnabled || this.disposed) return;
+    for (const node of this.root.querySelectorAll<HTMLElement>('[data-activity-node]')) node.classList.toggle('packet', node.dataset.activityNode === destination);
+    if (this.packetTimer) clearTimeout(this.packetTimer);
+    this.packetTimer = setTimeout(() => { this.packetTimer = undefined; for (const node of this.root.querySelectorAll('.activity-node.packet')) node.classList.remove('packet'); }, 650);
+  }
+  private createActivity(expanded = false): HTMLElement {
+    const run = this.currentRun;
+    return activityView(this.document, this.data!, { project: this.project, run, routeLabel: this.route(run?.routeId ?? this.routeId)?.label, expanded, serviceReply: this.conversation?.messages.some(message => message.runId === run?.id && message.source === 'service'), onSelect: destination => {
+      if (destination === 'knowledge') this.setView('knowledge');
+      else if (destination === 'models') this.data?.user.id === 'guest' ? this.showLogin() : this.modelDialog();
+      else if (destination === 'evidence') this.setView('releases');
+      else { this.setView('control'); if (destination === 'team') this.q('#shell').classList.add('team-open'); else this.q('#message-input').focus(); }
+    } });
+  }
+  private renderActivity(): void { if (this.data) this.q('#activity-strip').replaceChildren(this.createActivity()); }
+  private routingEditor(initial: RoutingPreferences, onChange: (value: RoutingPreferences) => void): HTMLElement {
+    const wrapper = this.el('details', 'routing-editor advanced'); wrapper.append(this.el('summary', '', 'Se il modello è occupato'));
+    const strategy = this.select([{ value: 'auto', label: 'Usa un’alternativa autorizzata disponibile' }, { value: 'pinned', label: 'Attendi il modello selezionato' }], initial.strategy);
+    strategy.setAttribute('aria-label', 'Instradamento quando il modello è occupato');
+    wrapper.append(this.field('Comportamento', strategy));
+    const choices = this.el('div', 'fallback-choices');
+    for (const route of this.data?.models.filter(route => this.usableRoute(route)) ?? []) {
+      const checkbox = this.input('checkbox'); checkbox.value = route.id; checkbox.checked = initial.fallbackRouteIds.includes(route.id);
+      const label = this.el('label', 'fallback-choice'); label.append(checkbox, this.el('span', '', `${route.label} · ${this.account(route.accountId)?.label ?? ''}`)); choices.append(label);
+    }
+    const help = this.el('p', 'fine-print', 'Solo i modelli che autorizzi qui. Il servizio non sposta il contesto su altri provider senza questa scelta.');
+    wrapper.append(this.el('p', 'field-label', 'Alternative autorizzate'), choices, help);
+    const update = () => { choices.hidden = strategy.value === 'pinned'; onChange({ strategy: strategy.value as RoutingPreferences['strategy'], fallbackRouteIds: Array.from(choices.querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.value), ...(initial.maxWaitMs ? { maxWaitMs: initial.maxWaitMs } : {}) }); };
+    strategy.addEventListener('change', update); choices.addEventListener('change', update); choices.hidden = strategy.value === 'pinned'; return wrapper;
+  }
+
   async refresh(initial = false): Promise<void> {
     if (this.disposed) return;
     if (this.loading) return this.loading;
@@ -135,7 +209,8 @@ export class ControlRoom {
       try {
         const data = await this.api.request<Bootstrap>('GET', '/api/bootstrap');
         if (this.disposed) return;
-        this.data = data;
+        const wasGuest = this.data?.user.id === 'guest'; this.data = data;
+        if (wasGuest && data.user.id !== 'guest') { this.view = 'control'; this.q<HTMLSelectElement>('#mode-select').value = ['admin', 'operator'].includes(data.user.role) ? 'auto' : 'chat'; }
         if (!data.projects.some(item => item.id === this.projectId)) this.projectId = data.projects[0]?.id ?? '';
         this.chooseConversation();
         if (!data.models.some(item => item.id === this.routeId && this.usableRoute(item))) { const suggested = this.conversation?.routeId ?? this.project?.routes.primary; this.routeId = data.models.find(item => item.id === suggested && this.usableRoute(item))?.id ?? data.models.find(item => this.usableRoute(item))?.id ?? ''; }
@@ -164,6 +239,27 @@ export class ControlRoom {
   private scheduleRefresh(): void { if (this.refreshTimer || this.disposed) return; this.refreshTimer = setTimeout(() => { this.refreshTimer = undefined; void this.refresh(); }, 250); }
   private onEvent(event: RunEvent): void {
     if (event.type === 'account.login') { this.loginEvent(event); return; }
+    if ((event.type === 'telemetry' || event.type === 'routing.updated') && this.data && event.data) {
+      const observation = event.data;
+      if (Array.isArray(observation.telemetry)) this.data.telemetry = observation.telemetry as Bootstrap['telemetry'];
+      if (Array.isArray(observation.routeAvailability)) this.data.routeAvailability = observation.routeAvailability as Bootstrap['routeAvailability'];
+      if (Array.isArray(observation.providerLoads)) this.data.providerLoads = observation.providerLoads as Bootstrap['providerLoads'];
+      if (observation.resourceUsage && typeof observation.resourceUsage === 'object' && !Array.isArray(observation.resourceUsage)) this.data.resourceUsage = observation.resourceUsage as Bootstrap['resourceUsage'];
+      if (event.type === 'telemetry') { this.renderFleet(); if (this.view === 'infrastructure') this.renderPage(); }
+      else if (this.view === 'infrastructure') {
+        const table = this.root.querySelector<HTMLElement>('#route-availability'); if (table) this.renderRouteAvailability(table);
+        for (const pool of this.root.querySelectorAll<HTMLElement>('[data-resource-group]')) {
+          const group = this.data.resourceGroups.find(item => item.id === pool.dataset.resourceGroup), usage = pool.querySelector('.pool-usage');
+          if (group && usage) usage.textContent = `${this.data.resourceUsage[group.id] ?? 0}/${group.capacity} slot occupati nel coordinator. Le attività in eccesso attendono la disponibilità delle risorse.`;
+        }
+      }
+      this.modelPickerRender?.(); this.updateComposer();
+      return;
+    }
+    if (event.type.endsWith('.delta')) this.pulseActivity(event.type === 'message.delta' ? 'orchestrator' : 'models');
+    else if (event.type.startsWith('context.') || event.type.startsWith('memory.')) this.pulseActivity('knowledge');
+    else if (event.type.startsWith('tool.')) this.pulseActivity('team');
+    else if (event.type === 'evidence.created') this.pulseActivity('evidence');
     if (!event.type.endsWith('.delta')) { this.events.push(event); if (this.events.length > 300) this.events.splice(0, this.events.length - 300); }
     if (event.type === 'message.delta' && event.data && this.data) {
       const { messageId, delta, offset } = event.data;
@@ -178,7 +274,7 @@ export class ControlRoom {
               if (offset + delta.length <= message.text.length) break;
               message.text += delta.slice(message.text.length - offset);
             } else message.text += delta;
-            message.status = 'streaming'; if (conversation.id === this.conversationId) this.renderMessages(); break;
+            message.status = 'streaming'; if (conversation.id === this.conversationId) this.paintStream(); break;
           }
         }
         if (!found) this.scheduleRefresh();
@@ -190,7 +286,7 @@ export class ControlRoom {
       if (offset > progress.cursor) { progress.incomplete = true; progress.cursor = offset; }
       if (offset + delta.length > progress.cursor) { progress.text += delta.slice(Math.max(0, progress.cursor - offset)); progress.cursor = offset + delta.length; }
       this.taskProgress.set(event.taskId, progress);
-      if (this.taskId === event.taskId) this.renderTaskDetail();
+      if (this.taskId === event.taskId) this.paintStream();
     } else this.scheduleRefresh();
     if (this.taskId && this.taskTab === 'events') this.renderTaskDetail();
   }
@@ -210,6 +306,7 @@ export class ControlRoom {
     this.q('#user-action').setAttribute('aria-label', isGuest ? 'Accedi' : 'Esci');
     this.q('#user-action').title = isGuest ? 'Accedi alla control room' : 'Esci';
     this.q('#breadcrumb').textContent = `yed1z / ${this.project?.name ?? (isGuest ? 'infrastruttura cluster' : 'il tuo workspace')}`;
+    this.q<HTMLButtonElement>('#quick-connect').disabled = !isGuest && !this.canWrite;
     this.q<HTMLButtonElement>('#new-project').disabled = !this.canWrite;
     this.q<HTMLButtonElement>('#project-settings').disabled = !this.project || !this.canWrite || (this.project.ownerId !== this.data.user.id && this.data.user.role !== 'admin');
     this.q<HTMLButtonElement>('#new-conversation').disabled = !this.project || !this.canWrite;
@@ -218,8 +315,8 @@ export class ControlRoom {
       const count = view === 'knowledge' ? this.data.memories.filter(item => item.projectId === this.projectId && item.status === 'candidate').length : this.data.runs.filter(item => item.projectId === this.projectId && item.status === 'awaiting_release').length;
       if (count) { const badge = this.el('span', 'dot-badge', String(count)); badge.setAttribute('aria-label', `${count} elementi in attesa`); nav.append(badge); }
     }
-    this.renderConnection(); this.renderFleet(); this.renderHistory(); this.renderMessages(); this.renderTeam(); this.updateComposer(); this.renderAttachments();
-    this.renderPage();
+    this.renderConnection(); this.renderFleet(); this.renderHistory(); this.renderMessages(); this.renderTeam(); this.renderActivity(); this.updateComposer(); this.renderAttachments();
+    this.syncView(); this.renderPage(); this.modelPickerRender?.();
   }
 
   private renderConnection(): void {
@@ -273,13 +370,17 @@ export class ControlRoom {
         const button = this.el('button', 'starter'); button.type = 'button'; const copy = this.el('span'); copy.append(this.el('strong', '', entry.title), this.el('small', '', entry.text)); button.append(this.icon(entry.icon), copy); button.addEventListener('click', () => { this.q<HTMLTextAreaElement>('#message-input').value = entry.prompt; this.q('#message-input').focus(); this.updateComposer(); }); starters.append(button);
       }
       welcome.append(starters); if (!this.project) welcome.append(this.button('Crea il primo progetto', () => this.projectDialog(), { className: 'button primary', icon: 'plus', disabled: !this.canWrite })); messages.append(welcome);
-    } else for (const message of conversation.messages) messages.append(this.messageElement(message));
+    } else {
+      if (conversation.messages.length > this.messageLimit) messages.append(this.button(`Mostra ${Math.min(80, conversation.messages.length - this.messageLimit)} messaggi precedenti`, () => { this.messageLimit += 80; this.renderMessages(); }, { className: 'history-more' }));
+      for (const message of conversation.messages.slice(-this.messageLimit)) messages.append(this.messageElement(message));
+    }
     if (scrollAtBottom) messages.scrollTop = messages.scrollHeight;
   }
 
   private messageElement(message: ChatMessage): HTMLElement {
     const article = this.el('article', `message ${message.role} ${message.status === 'streaming' ? 'pending' : ''}`); article.dataset.messageId = message.id;
-    const meta = this.el('div', 'message-meta'); meta.append(this.el('span', 'message-avatar', message.role === 'user' ? initials(this.data!.user.name) : 'y'), this.el('strong', '', message.role === 'user' ? this.data!.user.name : message.role === 'system' ? 'Progetto' : 'Orchestratore'));
+    const meta = this.el('div', 'message-meta'); meta.append(this.el('span', 'message-avatar', message.role === 'user' ? initials(this.data!.user.name) : 'y'), this.el('strong', '', message.role === 'user' ? this.data!.user.name : message.role === 'system' ? 'Progetto' : message.source === 'service' ? 'Servizio yed1z' : 'Orchestratore'));
+    if (message.source === 'service') meta.append(this.el('span', 'service-label', 'Nessuna inferenza'));
     if (message.routeId) meta.append(this.el('span', 'message-model truncate', this.route(message.routeId)?.label ?? 'Modello precedente'));
     meta.append(this.el('time', 'timestamp', time(message.createdAt))); article.append(meta);
     const body = this.el('div', 'message-body'); body.append(renderMarkdown(this.document, message.text || (message.status === 'streaming' ? 'Preparazione della risposta…' : ''))); article.append(body);
@@ -300,20 +401,27 @@ export class ControlRoom {
   }
 
   private updateComposer(): void {
-    const active = this.currentRun && !closedRunStatuses.has(this.currentRun.status);
-    const route = this.route(this.routeId); const account = this.account(route?.accountId);
-    const mode = this.q<HTMLSelectElement>('#mode-select'); const mission = mode.querySelector<HTMLOptionElement>('[value="mission"]')!; mission.disabled = !this.operator; mission.textContent = this.operator ? 'Squadra' : 'Squadra · solo operatori'; if (!this.operator) mode.value = 'chat';
-    const chat = mode.querySelector<HTMLOptionElement>('[value="chat"]')!; chat.disabled = this.provider(route?.providerId)?.kind === 'antigravity'; if (chat.disabled && this.operator) mode.value = 'mission';
-    this.q<HTMLTextAreaElement>('#message-input').maxLength = active ? 12000 : 100000;
+    const input = this.q<HTMLTextAreaElement>('#message-input');
+    const mode = this.q<HTMLSelectElement>('#mode-select');
+    const mission = mode.querySelector<HTMLOptionElement>('[value="mission"]')!;
+    mission.disabled = !this.operator; mission.textContent = this.operator ? 'Squadra' : 'Squadra · solo operatori';
+    if (!this.operator) mode.value = 'chat';
+    const intent = classifyRequest(input.value, { mode: mode.value as RequestedMode, attachmentCount: this.selectedAttachments.length });
+    const service = intent.kind === 'service';
+    const active = !!this.currentRun && !closedRunStatuses.has(this.currentRun.status);
+    const guide = active && !service;
+    const route = this.route(this.routeId), account = this.account(route?.accountId), availability = this.availability(this.routeId);
+    input.maxLength = guide ? 12000 : 100000;
     this.q<HTMLButtonElement>('#mission-settings').disabled = !this.operator;
-    mode.title = this.operator ? 'Modalità della prossima attività' : 'Le missioni con esecuzione richiedono un operatore autorizzato.';
-    this.q('#model-label').textContent = route ? `${route.label} · ${account?.label ?? 'account'}` : 'Scegli modello e account';
+    mode.title = 'Auto distingue domande e lavoro operativo. Chat risponde direttamente; Squadra pianifica ed esegue.';
+    this.q('#model-label').textContent = route ? `${route.label} · ${account?.label ?? 'account'}` : 'Collega un modello';
+    this.q('#routing-policy').textContent = this.routing.strategy === 'pinned' ? 'Fisso' : this.routing.fallbackRouteIds.length ? `Auto · ${this.routing.fallbackRouteIds.length} alternative` : 'Auto';
     this.q<HTMLButtonElement>('#send').hidden = false; this.q<HTMLButtonElement>('#stop').hidden = !active;
-    this.q<HTMLButtonElement>('#send').setAttribute('aria-label', active ? 'Invia una nuova istruzione alla squadra' : 'Invia all’orchestratore');
-    this.q<HTMLButtonElement>('#send').disabled = this.sending || !this.canWrite || !this.project || !route || !this.usableRoute(route) || !this.q<HTMLTextAreaElement>('#message-input').value.trim();
+    this.q<HTMLButtonElement>('#send').setAttribute('aria-label', guide ? 'Invia una nuova istruzione alla squadra' : service ? 'Invia al servizio yed1z' : 'Invia all’orchestratore');
+    this.q<HTMLButtonElement>('#send').disabled = this.sending || !this.canWrite || !this.project || (!service && (!route || !this.usableRoute(route))) || !input.value.trim();
     this.q<HTMLButtonElement>('#stop').disabled = this.sending;
     this.q<HTMLButtonElement>('#attach-file').disabled = !this.project || !this.canWrite;
-    this.q('#composer-status').textContent = this.sending ? 'Invio in corso…' : active ? `${labels[this.currentRun!.status]} · il prossimo messaggio guiderà la squadra.` : !this.project ? 'Crea un progetto per iniziare.' : !route ? 'Collega un provider e scegli il modello dell’orchestratore.' : !this.usableRoute(route) ? 'Scegli un modello compatibile con il ruolo di orchestratore.' : account?.status === 'cooldown' ? 'Account in attesa quota. Puoi scegliere un altro account.' : 'Cambio modello dal prossimo messaggio · cronologia condivisa';
+    this.q('#composer-status').textContent = this.sending ? 'Richiesta ricevuta, avvio…' : !this.project ? 'Crea un progetto per iniziare.' : service ? 'Risposta immediata del servizio · nessuna inferenza.' : guide ? `${labels[this.currentRun!.status]} · questo messaggio guiderà la squadra.` : !route ? 'Collega un modello. Saluti, aiuto e stato sono già disponibili.' : availability?.status === 'busy' ? `${availability.reason}${this.routing.strategy === 'auto' && this.routing.fallbackRouteIds.length ? ' · alternative autorizzate attive' : ' · attesa limitata, annullabile'}` : account?.status === 'cooldown' ? 'Quota in attesa. Scegli un altro account o autorizza un’alternativa.' : intent.mode === 'mission' ? 'Squadra · piano, esecuzione e verifiche.' : 'Chat diretta · una risposta, senza avviare una missione.';
   }
 
   private renderTeam(): void {
@@ -332,6 +440,7 @@ export class ControlRoom {
     else if (['paused', 'interrupted'].includes(run.status)) controls.append(this.button('Riprendi', () => this.runAction(run, 'resume'), { className: 'button small primary', icon: 'play', disabled: !this.canWrite }), this.button('Annulla', () => this.runAction(run, 'cancel'), { className: 'button small danger', disabled: !this.canWrite }));
     else if (run.status === 'awaiting_release') controls.append(this.button('Esamina la consegna', () => this.setView('releases'), { className: 'button small primary', icon: 'rocket' }), this.button('Annulla', () => this.runAction(run, 'cancel'), { className: 'button small subtle', disabled: !this.canWrite }));
     else if (!closedRunStatuses.has(run.status)) controls.append(this.button('Metti in pausa', () => this.runAction(run, 'pause'), { className: 'button small', icon: 'pause', disabled: !this.canWrite }), this.button('Annulla', () => this.runAction(run, 'cancel'), { className: 'button small danger', disabled: !this.canWrite }));
+    if (run.phase && run.phase !== run.status) card.append(this.el('p', 'run-phase', run.phase));
     if (run.error) card.append(this.el('p', 'fine-print', run.error)); if (controls.childElementCount) card.append(controls); body.append(card);
     const heading = this.el('div', 'section-heading'); heading.append(this.el('span', 'eyebrow', 'AGENTI E DIPENDENZE'), this.el('span', 'fine-print', `max ${run.maxParallel} in parallelo`)); body.append(heading);
     if (run.tasks.length > 1) body.append(this.taskGraph(run));
@@ -345,7 +454,7 @@ export class ControlRoom {
       if (task.dependencies.length) button.append(this.el('p', 'task-deps', `Dopo: ${task.dependencies.map(id => run.tasks.find(item => item.id === id)?.label ?? id).join(' · ')}`));
       button.addEventListener('click', () => { this.taskId = task.id; this.renderTeam(); }); list.append(button);
     }
-    if (!run.tasks.length) list.append(this.el('p', 'empty', 'L’orchestratore sta preparando il piano di lavoro.'));
+    if (!run.tasks.length) list.append(this.el('p', 'empty', run.mode === 'chat' ? closedRunStatuses.has(run.status) ? 'Risposta diretta. Nessuna squadra avviata.' : 'Risposta diretta, senza pianificazione della squadra.' : 'L’orchestratore sta preparando il piano di lavoro.'));
     body.append(list);
     this.q('#team-footer-left').textContent = `${run.budget.callsUsed}/${run.budget.maxModelCalls} chiamate`;
     this.q('#team-footer-right').textContent = `${formatNumber(run.budget.outputTokensUsed)} token output`;
@@ -359,6 +468,7 @@ export class ControlRoom {
     const deterministic = ['tester', 'release'].includes(task.role); const targetConfig = this.data?.targets.find(item => item.id === this.project?.targetId);
     for (const [label, text] of [['Agente', roleLabels[task.role] ?? task.role], [deterministic ? 'Motore' : 'Modello', deterministic ? task.role === 'tester' ? 'Verifica eseguibile' : 'Controller di rilascio' : route?.label ?? task.routeId], ['Account', deterministic ? '—' : account?.label ?? '—'], ['Nodi', deterministic ? this.data?.nodes.find(item => item.id === targetConfig?.nodeId)?.label ?? targetConfig?.nodeId ?? '—' : route?.nodeIds.map(id => this.data?.nodes.find(item => item.id === id)?.label ?? id).join(', ') || 'Provider remoto'], ['Stato', taskPaused(task) ? 'In pausa' : labels[task.status] ?? task.status]]) meta.append(this.el('dt', '', label), this.el('dd', '', text));
     target.append(meta);
+    if (task.routing) target.append(this.el('p', 'routing-decision', `${task.routing.switched ? 'Alternativa selezionata' : 'Modello selezionato'} · ${task.routing.reason} · attesa osservata ${value(task.routing.waitMs / 1000, ' s')}`));
     if (!deterministic && (task.status === 'queued' || taskPaused(task))) target.append(this.button('Cambia modello / account', () => this.modelDialog(task), { className: 'text-button', disabled: !this.operator }));
     const individualControl = this.operator && ['researcher', 'coder'].includes(task.role) && this.currentRun?.mode === 'mission' && activeRunStatuses.has(this.currentRun.status) && (taskPaused(task) || ['queued', 'running'].includes(task.status));
     if (individualControl) {
@@ -397,7 +507,13 @@ export class ControlRoom {
   }
 
   private progress(percent?: number): HTMLElement { const meter = this.el('div', 'meter'); if (percent !== undefined && Number.isFinite(percent)) { const fill = this.el('div', `meter-fill ${percent >= 90 ? 'hot' : ''}`); fill.style.width = `${Math.max(0, Math.min(100, percent))}%`; meter.append(fill); } return meter; }
-  private setView(view: View): void { this.view = view; this.q('#shell').classList.remove('sidebar-open'); const titles: Record<View, string> = { control: 'Control room', infrastructure: 'Infrastruttura', knowledge: 'Conoscenza del progetto', connections: 'Modelli e account', releases: 'Consegne e rilasci' }; this.q('#page-title').textContent = titles[view]; for (const item of this.root.querySelectorAll<HTMLButtonElement>('[data-view]')) { item.classList.toggle('active', item.dataset.view === view); if (item.dataset.view === view) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); } this.q('#control-view').hidden = view !== 'control'; this.q('#page-view').hidden = view === 'control'; this.renderPage(); }
+  private setView(view: View): void { this.view = view; this.q('#shell').classList.remove('sidebar-open'); this.syncNavigation(); this.syncView(); this.renderPage(); }
+  private syncView(): void {
+    const titles: Record<View, string> = { control: 'Chat e squadra', infrastructure: 'Dashboard cluster', knowledge: 'Conoscenza del progetto', connections: 'Modelli e account', releases: 'Consegne e rilasci' };
+    this.q('#page-title').textContent = titles[this.view];
+    for (const item of this.root.querySelectorAll<HTMLButtonElement>('[data-view]')) { const selected = item.dataset.view === this.view; item.classList.toggle('active', selected); if (selected) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); }
+    this.q('#control-view').hidden = this.view !== 'control'; this.q('#page-view').hidden = this.view === 'control';
+  }
 
   private renderPage(): void {
     const page = this.q('#page-view'); if (this.view === 'control' || !this.data) return;
@@ -417,7 +533,8 @@ export class ControlRoom {
   }
 
   private renderInfrastructure(page: HTMLElement): void {
-    page.append(this.pageIntro('Tutta la potenza. Un solo sguardo.', 'Nodi fisici, motori distribuiti e provider restano distinti. Vedi dove gira ogni modello e quali risorse condivide.', 'INFRASTRUTTURA DISTRIBUITA', this.button('Aggiorna telemetria', async () => { await this.api.request('POST', '/api/telemetry/refresh', {}); await this.refresh(); }, { icon: 'refresh' })));
+    page.append(this.pageIntro('Cluster / sistema distribuito', 'Nodi fisici, motori distribuiti e provider restano distinti. Vedi dove gira ogni modello e quali risorse condivide.', 'INFRASTRUTTURA DISTRIBUITA', this.button('Aggiorna telemetria', async () => { await this.api.request('POST', '/api/telemetry/refresh', {}); await this.refresh(); }, { icon: 'refresh' })));
+    page.append(this.createActivity(true));
     const grid = this.el('div', 'cards-grid');
     for (const node of this.data!.nodes) {
       const telemetry = this.data!.telemetry.find(item => item.nodeId === node.id);
@@ -454,15 +571,31 @@ export class ControlRoom {
     page.append(grid);
     const section = this.el('section', 'page-section'); const heading = this.el('div', 'section-heading'); heading.append(this.el('h3', '', 'Risorse condivise e parallelismo'), this.el('span', 'fine-print', 'Un modello distribuito riserva tutti i nodi dichiarati')); section.append(heading);
     const pools = this.el('div', 'topology');
-    for (const group of this.data!.resourceGroups) { const card = this.el('article', 'pool-card'); const title = this.el('h3'); title.append(this.icon('layers'), this.document.createTextNode(group.label)); const used = this.data!.resourceUsage[group.id] ?? 0; card.append(title, this.el('p', '', `${used}/${group.capacity} slot occupati. Le attività in eccesso attendono la disponibilità delle risorse.`)); const nodes = this.el('div', 'pool-nodes'); for (const nodeId of group.nodeIds) nodes.append(this.pill('unknown', this.data!.nodes.find(item => item.id === nodeId)?.label ?? nodeId)); card.append(nodes); pools.append(card); }
+    for (const group of this.data!.resourceGroups) { const card = this.el('article', 'pool-card'); card.dataset.resourceGroup = group.id; const title = this.el('h3'); title.append(this.icon('layers'), this.document.createTextNode(group.label)); const used = this.data!.resourceUsage[group.id] ?? 0; card.append(title, this.el('p', 'pool-usage', `${used}/${group.capacity} slot occupati nel coordinator. Le attività in eccesso attendono la disponibilità delle risorse.`)); const nodes = this.el('div', 'pool-nodes'); for (const nodeId of group.nodeIds) nodes.append(this.pill('unknown', this.data!.nodes.find(item => item.id === nodeId)?.label ?? nodeId)); card.append(nodes); pools.append(card); }
     if (!this.data!.resourceGroups.length) pools.append(this.el('p', 'empty', 'Nessun gruppo di risorse configurato.')); section.append(pools); page.append(section);
     if (this.data!.links.length) {
       const network = this.el('section', 'page-section'); network.append(this.el('div', 'section-heading', 'Collegamenti di rete'));
       network.append(this.table(['Da', 'A', 'Collegamento', 'Indirizzo', 'Fonte'], this.data!.links.map(link => [this.data!.nodes.find(node => node.id === link.from)?.label ?? link.from, this.data!.nodes.find(node => node.id === link.to)?.label ?? link.to, link.label, link.address ?? '—', link.status === 'observed' ? 'Osservato' : link.status === 'configured' ? 'Configurato, da verificare' : 'Da verificare']))); page.append(network);
     }
     const routes = this.el('section', 'page-section'); routes.append(this.el('div', 'section-heading', 'Dove vengono eseguiti i modelli'));
+    const availability = this.el('section', 'page-section'); availability.id = 'route-availability'; this.renderRouteAvailability(availability); page.append(availability);
     routes.append(this.table(['Modello', 'Fornitore / account', 'Nodi', 'Risorse', 'Contesto'], this.data!.models.map(model => [model.label, `${this.provider(model.providerId)?.label ?? model.providerId} · ${this.account(model.accountId)?.label ?? ''}`, model.nodeIds.map(id => this.data!.nodes.find(node => node.id === id)?.label ?? id).join(' + ') || 'Provider remoto', model.resourceGroupIds.map(id => this.data!.resourceGroups.find(group => group.id === id)?.label ?? id).join(', ') || 'Nessuna risorsa locale riservata', model.contextWindow ? formatNumber(model.contextWindow) : 'Non dichiarato']))); page.append(routes);
     page.append(this.info('Le connessioni di rete mostrate descrivono la topologia configurata. Non vengono dedotte latenza, banda o raggiungibilità da un semplice nome host. Una metrica assente resta sconosciuta.'));
+  }
+
+  private renderRouteAvailability(section: HTMLElement): void {
+    section.replaceChildren(); section.hidden = !this.data?.routeAvailability?.length;
+    if (section.hidden) return;
+    section.append(this.el('div', 'section-heading', 'Disponibilità di inferenza'), this.table(
+      ['Modello / account', 'Stato', 'Coordinator · attive / in coda', 'Motore · attive / in coda', 'Motivo', 'Fonte'],
+      this.data!.routeAvailability!.map(item => [
+        this.route(item.routeId)?.label ?? item.routeId,
+        ({ available: 'Slot libero', busy: 'Occupato', cooldown: 'Quota in attesa', disabled: 'Disabilitato', unavailable: 'Non disponibile', unknown: 'Da verificare' })[item.status],
+        `${item.activeCount} / ${item.queueCount}`,
+        `${item.externalActiveRequests ?? '—'} / ${item.externalQueuedRequests ?? '—'}`,
+        item.reason, item.source === 'provider' ? 'Provider' : item.source === 'coordinator' ? 'Coordinator' : 'Configurazione',
+      ])
+    ), this.el('p', 'fine-print', 'Le misure del motore possono includere richieste avviate dal coordinator: i conteggi non si sommano. — indica un dato non osservato.'));
   }
 
   private renderKnowledge(page: HTMLElement): void {
@@ -573,10 +706,13 @@ export class ControlRoom {
 
   private showLogin(): void {
     if (this.loginDialog?.isConnected) return;
+    const guest = this.data?.user.id === 'guest';
     this.subscription?.(); this.subscription = undefined;
     const { dialog, body } = this.modal('La tua control room.', '', 'login-dialog'); this.loginDialog = dialog;
     dialog.querySelector('.dialog-header')?.remove(); body.append(this.el('div', 'login-symbol', 'y'), this.el('div', 'eyebrow', 'YED1Z CONTROL ROOM'), this.el('h1', '', 'Tutto il lavoro, connesso.'), this.el('p', 'login-note', 'Accedi al tuo spazio per ritrovare progetti, conversazioni e la tua squadra di agenti.'));
-    dialog.addEventListener('cancel', event => event.preventDefault());
+    const dismiss = () => { dialog.close(); this.loginDialog = undefined; this.setView('infrastructure'); void this.refresh(); };
+    dialog.addEventListener('cancel', event => { event.preventDefault(); if (guest) dismiss(); });
+    if (guest) body.append(this.button('Torna al monitor pubblico', dismiss, { className: 'button subtle full' }));
     if (this.api.native) {
       body.append(this.el('p', 'fine-print', 'Indirizzo e chiave del gateway si configurano nella finestra sicura di VS Code.'), this.button('Configura connessione', () => this.api.configure?.(), { className: 'button primary full', icon: 'plug' })); return;
     }
@@ -598,6 +734,8 @@ export class ControlRoom {
     const options = [{ value: '', label: 'Scegli al primo messaggio' }, ...this.data.models.filter(item => this.usableRoute(item)).map(item => ({ value: item.id, label: `${item.label} · ${this.account(item.accountId)?.label ?? ''}` }))];
     const primary = this.select(options, project?.routes.primary ?? this.routeId);
     form.append(this.field('Nome del progetto', name), this.field('Orchestratore primario', primary));
+    let routing: RoutingPreferences = { ...(project?.routing ?? { strategy: 'auto', fallbackRouteIds: [] }), fallbackRouteIds: [...(project?.routing?.fallbackRouteIds ?? [])] };
+    form.append(this.routingEditor(routing, value => { routing = value; }));
     const advanced = this.el('details', 'advanced'); advanced.append(this.el('summary', '', 'Squadra, contesto e destinazione'));
     advanced.append(this.field('Obiettivo e convenzioni', description));
     const roleInputs = {} as Record<'coder' | 'reviewer' | 'researcher' | 'embedding', HTMLSelectElement>;
@@ -617,61 +755,64 @@ export class ControlRoom {
     const submit = this.el('button', 'button primary full', project ? 'Salva progetto' : 'Crea progetto'); submit.type = 'submit'; const error = this.el('p', 'form-error'); error.hidden = true; form.append(error, submit); body.append(form);
     form.addEventListener('submit', event => { event.preventDefault(); void this.formAction(submit, error, async () => {
       const routes: Project['routes'] = { primary: primary.value }; for (const [role, input] of Object.entries(roleInputs)) routes[role as keyof Project['routes']] = input.value;
-      const value: Record<string, unknown> = { name: name.value.trim(), description: description.value.trim(), routes };
+      const value: Record<string, unknown> = { name: name.value.trim(), description: description.value.trim(), routes, routing };
       if (this.operator) { value.targetId = target.value; value.workspace = workspace.value.trim(); value.verifyRecipeIds = Array.from(recipes.querySelectorAll<HTMLInputElement>('input:checked')).map(item => item.value); value.deploymentRecipeId = deployments.value; }
       if (project && this.operator && (project.ownerId === this.data!.user.id || this.data!.user.role === 'admin')) value.memberIds = members.value.split(',').map(item => item.trim()).filter(Boolean);
       const saved = await this.api.request<Project>(project ? 'PATCH' : 'POST', project ? `/api/projects/${encodeURIComponent(project.id)}` : '/api/projects', value);
-      const changed = saved.id !== this.projectId; if (changed) this.saveDraft(); this.projectId = saved.id; this.routeId = saved.routes.primary ?? this.routeId; if (changed) { this.conversationId = ''; this.runId = ''; } await this.refresh(); dialog.close(); if (changed) this.restoreDraft(); this.setView('control'); this.updateComposer();
+      this.routingOverrides.delete(saved.id); const changed = saved.id !== this.projectId; if (changed) this.saveDraft(); this.projectId = saved.id; this.routeId = saved.routes.primary ?? this.routeId; if (changed) { this.conversationId = ''; this.runId = ''; } await this.refresh(); dialog.close(); if (changed) this.restoreDraft(); this.setView('control'); this.updateComposer();
     }); }); name.focus();
   }
 
-  private modelDialog(task?: AgentTask): void {
-    const { dialog, body } = this.modal(task ? `Modello per ${task.label}` : 'Modello e account', task ? 'Puoi riassegnare un’attività in coda o in pausa.' : 'La scelta vale dal prossimo messaggio. La conversazione resta nel progetto.');
-    body.className = ''; const searchWrap = this.el('div', 'model-search'); const search = this.input('search', '', 'Cerca un modello, un account o una macchina…'); search.setAttribute('aria-label', 'Cerca un modello o un account'); searchWrap.append(search); const list = this.el('div', 'model-options'); body.append(searchWrap, list);
-    const render = () => { list.replaceChildren(); const query = search.value.toLocaleLowerCase(); const models = this.data?.models.filter(model => this.usableRoute(model, task?.role === 'coder') && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(' ')}`.toLocaleLowerCase().includes(query)) ?? [];
-      for (const model of models) { const account = this.account(model.accountId); const provider = this.provider(model.providerId); const selected = model.id === (task?.routeId ?? this.routeId); const button = this.el('button', `model-option ${selected ? 'selected' : ''}`); button.type = 'button'; button.dataset.routeId = model.id; const check = this.el('span', 'check'); if (selected) check.append(this.icon('check')); const info = this.el('div', 'grow'); info.append(this.el('h3', '', model.label), this.el('p', '', `${provider?.label ?? 'Provider'} · ${account?.label ?? 'Account'}${model.nodeIds.length ? ` · ${model.nodeIds.map(id => this.data?.nodes.find(node => node.id === id)?.label ?? id).join(' + ')}` : ''}`)); const quota = this.el('span', 'option-quota'); quota.append(this.document.createTextNode(account?.quota?.remainingRequests === undefined ? labels[account?.status ?? 'unknown']! : `${formatNumber(account.quota.remainingRequests)} richieste`)); if (account?.quota?.windows?.[0]?.usedPercent !== undefined) quota.textContent = `${value(100 - account.quota.windows[0].usedPercent, '%')} disponibile`; button.append(check, info, quota); button.addEventListener('click', () => { void this.perform(button, async () => { if (task) await this.api.request('POST', `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id }); else this.routeId = model.id; dialog.close(); if (task) await this.refresh(); this.updateComposer(); }); }); list.append(button); }
-      if (!models.length) list.append(this.el('p', 'empty', 'Nessun modello trovato. Collega un account e verifica i modelli disponibili.'));
-    }; search.addEventListener('input', render); render();
-    const footer = this.el('footer', 'dialog-footer'); footer.append(this.el('span', '', 'Account e quote restano distinti.'), this.button('Collega un account', () => { dialog.close(); this.connectionDialog(); }, { className: 'text-button', disabled: !this.canWrite })); body.append(footer); search.focus();
+  private modelDialog(task?: AgentTask, accountId?: string): void {
+    const { dialog, body } = this.modal(task ? `Modello per ${task.label}` : 'Scegli modello e disponibilità', task ? 'Riassegna un’attività in coda o in pausa.' : 'Il contesto resta nel progetto. Vedi subito le risorse occupate e le alternative autorizzate.');
+    body.className = ''; const searchWrap = this.el('div', 'model-search'); const search = this.input('search', '', 'Cerca modello, account o macchina…'); search.setAttribute('aria-label', 'Cerca un modello o un account'); searchWrap.append(search); const list = this.el('div', 'model-options'); body.append(searchWrap);
+    if (!task) { const policy = this.el('div', 'picker-policy'); policy.append(this.routingEditor(this.routing, value => { this.routingOverrides.set(this.projectId, value); this.updateComposer(); })); body.append(policy); }
+    body.append(list);
+    const render = () => {
+      const focusedRoute = list.contains(this.document.activeElement) ? (this.document.activeElement?.closest('[data-route-id]') as HTMLElement | null)?.dataset.routeId : undefined;
+      const scrollTop = list.scrollTop;
+      list.replaceChildren(); const query = search.value.toLocaleLowerCase();
+      const models = this.data?.models.filter(model => (!accountId || model.accountId === accountId) && this.usableRoute(model, task?.role === 'coder') && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(' ')}`.toLocaleLowerCase().includes(query)) ?? [];
+      for (const model of models) {
+        const account = this.account(model.accountId), provider = this.provider(model.providerId), availability = this.availability(model.id);
+        const selected = model.id === (task?.routeId ?? this.routeId), button = this.el('button', `model-option ${selected ? 'selected' : ''}`); button.type = 'button'; button.dataset.routeId = model.id;
+        const check = this.el('span', 'check'); if (selected) check.append(this.icon('check'));
+        const info = this.el('div', 'grow'); info.append(this.el('h3', '', model.label), this.el('p', '', `${provider?.label ?? 'Provider'} · ${account?.label ?? 'Account'}${model.nodeIds.length ? ` · ${model.nodeIds.map(id => this.data?.nodes.find(node => node.id === id)?.label ?? id).join(' + ')}` : ''}`));
+        if (availability) info.append(this.el('p', 'route-reason', availability.reason));
+        const status = this.el('span', 'option-quota');
+        const statusLabels: Record<string, string> = { available: 'Slot libero', ready: 'Slot libero', busy: 'Occupato', cooldown: 'Quota in attesa', unavailable: 'Non disponibile', disabled: 'Disabilitato', unknown: 'Da verificare' };
+        status.append(this.pill(availability?.status === 'available' ? 'ready' : availability?.status === 'busy' ? 'pending' : availability?.status ?? account?.status ?? 'unknown', availability ? statusLabels[availability.status] : labels[account?.status ?? 'unknown']));
+        if (availability?.queueCount) status.append(this.el('small', '', `${availability.queueCount} in coda`));
+        if (availability && (availability.externalActiveRequests !== undefined || availability.externalQueuedRequests !== undefined)) status.append(this.el('small', '', `Motore: ${availability.externalActiveRequests ?? '—'} attive · ${availability.externalQueuedRequests ?? '—'} in coda`));
+        if (account?.quota?.windows?.[0]?.usedPercent !== undefined) status.append(this.el('small', '', `${value(100 - account.quota.windows[0].usedPercent, '%')} quota`));
+        button.append(check, info, status);
+        button.addEventListener('click', () => { void this.perform(button, async () => { if (task) await this.api.request('POST', `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id }); else this.routeId = model.id; dialog.close(); if (task) await this.refresh(); this.updateComposer(); this.renderActivity(); }); }); list.append(button);
+      }
+      if (!models.length) list.append(this.el('p', 'empty', 'Nessun modello collegato per questo ruolo. Aggiungine uno: accesso e discovery sono guidati.'));
+      if (focusedRoute) Array.from(list.querySelectorAll<HTMLElement>('[data-route-id]')).find(element => element.dataset.routeId === focusedRoute)?.focus({ preventScroll: true });
+      list.scrollTop = scrollTop;
+    }; search.addEventListener('input', render); this.modelPickerRender = render; dialog.addEventListener('close', () => { if (this.modelPickerRender === render) this.modelPickerRender = undefined; }); render();
+    const footer = this.el('footer', 'dialog-footer'); footer.append(this.el('span', '', 'Disponibilità osservata dal coordinator o dal motore configurato. Il motivo indica la fonte e i limiti del dato.'), this.button('Collega un account', () => { dialog.close(); this.connectionDialog(); }, { className: 'text-button', disabled: !this.canWrite })); body.append(footer); search.focus();
   }
 
   private connectionDialog(existing?: Provider): void {
     if (!this.data || !this.canWrite) return;
-    const { dialog, body } = this.modal('Collega un account', 'Scegli il servizio. Verifichiamo la connessione e troviamo i modelli disponibili.'); const form = this.el('form');
-    const presets = [ { value: 'ollama', label: 'Ollama · modelli locali' }, { value: 'lmstudio', label: 'LM Studio · modelli locali' }, { value: 'openai-compatible', label: 'Endpoint compatibile OpenAI' }, { value: 'gemrouter', label: 'GemRouter · provider di inferenza' }, { value: 'openai-responses', label: 'OpenAI · API' }, { value: 'gemini', label: 'Gemini · API' }, { value: 'codex', label: 'Codex · accesso ufficiale' }, { value: 'antigravity', label: 'Antigravity · CLI ufficiale (agy)' } ];
-    const options = [ ...this.data.providers.filter(item => (this.operator || !['codex', 'antigravity'].includes(item.kind))).map(item => ({ value: `existing:${item.id}`, label: `${item.label} · nuovo account` })), ...(this.operator ? presets : []) ];
-    const service = this.select(options, existing ? `existing:${existing.id}` : this.operator ? 'ollama' : options[0]?.value ?? '');
-    const providerName = this.input('text', '', 'Nome della connessione'); const url = this.input('url'); const label = this.input('text', '', 'Personale, Lavoro, Account 2…'); label.required = true; label.maxLength = 80;
-    const secret = this.input('password'); secret.autocomplete = 'off'; const nativeSecret = this.input('checkbox'); const shared = this.input('checkbox');
-    const urlField = this.field('Indirizzo del servizio', url, 'Deve essere raggiungibile dal server yed1z, anche quando usi VS Code.');
-    const secretField = this.api.native ? this.el('label', 'row fine-print') : this.field('API key, se richiesta', secret);
-    if (this.api.native) secretField.append(nativeSecret, this.document.createTextNode('Inserisci l’API key nella richiesta sicura di VS Code'));
-    const note = this.el('p', 'fine-print');
-    form.append(this.field('Servizio', service), note, urlField, this.field('Nome dell’account', label), secretField);
-    const advanced = this.el('details', 'advanced'); advanced.append(this.el('summary', '', 'Nome e risorse della connessione'), this.field('Nome del provider', providerName));
-    const nodeChecks = this.el('div'); const groupChecks = this.el('div');
-    for (const node of this.data.nodes) { const row = this.el('label', 'row fine-print'); const check = this.input('checkbox'); check.value = node.id; row.append(check, this.document.createTextNode(node.label)); nodeChecks.append(row); }
-    for (const group of this.data.resourceGroups) { const row = this.el('label', 'row fine-print'); const check = this.input('checkbox'); check.value = group.id; row.append(check, this.document.createTextNode(group.label)); groupChecks.append(row); }
-    if (this.operator) { advanced.append(this.el('p', 'fine-print', 'Nodi che forniscono inferenza'), nodeChecks, this.el('p', 'fine-print', 'Risorse da riservare durante le richieste'), groupChecks); const row = this.el('label', 'row fine-print'); row.append(shared, this.document.createTextNode('Rendi questo account disponibile agli utenti autorizzati')); advanced.append(row); }
-    form.append(advanced); const error = this.el('p', 'form-error'); error.hidden = true; const submit = this.el('button', 'button primary full', 'Verifica e trova modelli'); submit.type = 'submit'; form.append(error, submit); body.append(form);
-    let createdProviderId: string | undefined; let createdAccountId: string | undefined;
-    const apply = () => { const chosen = this.data!.providers.find(item => service.value === `existing:${item.id}`); const kind = chosen?.kind ?? service.value; const cli = ['codex', 'antigravity'].includes(kind); urlField.hidden = !!chosen || cli; providerName.disabled = !!chosen; nodeChecks.hidden = !!chosen || cli; groupChecks.hidden = !!chosen || cli; secretField.hidden = cli; const defaults: Record<string, string> = { ollama: 'http://127.0.0.1:11434', lmstudio: 'http://127.0.0.1:1234/v1', 'openai-responses': 'https://api.openai.com/v1', gemini: 'https://generativelanguage.googleapis.com/v1beta', gemrouter: '', 'openai-compatible': '' }; url.value = chosen?.baseUrl ?? defaults[service.value] ?? ''; url.required = !chosen && !cli; providerName.value = chosen?.label ?? presets.find(item => item.value === service.value)?.label.split(' · ')[0] ?? ''; note.textContent = cli ? kind === 'codex' ? 'La CLI ufficiale Codex è installata sul server. Creiamo un profilo isolato e avviamo l’accesso ufficiale via codice di verifica.' : 'La CLI ufficiale Antigravity (agy) è installata sul server. Gestisce i modelli Gemini con strumenti e agenti.' : 'Un provider può esporre più modelli. Li rileveremo senza aggiungerli uno per uno.'; submit.textContent = kind === 'codex' ? 'Collega e accedi a Codex' : kind === 'antigravity' ? 'Collega Antigravity (agy)' : 'Verifica e trova modelli'; createdProviderId = undefined; createdAccountId = undefined; };
-    const changeService = () => { secret.value = ''; nativeSecret.checked = false; const cli = service.value === 'codex' || this.data!.providers.some(item => service.value === `existing:${item.id}` && ['codex', 'antigravity'].includes(item.kind)); shared.disabled = cli; if (cli) { shared.checked = false; for (const check of [...nodeChecks.querySelectorAll<HTMLInputElement>('input'), ...groupChecks.querySelectorAll<HTMLInputElement>('input')]) check.checked = false; } apply(); };
-    service.addEventListener('change', changeService); changeService();
-    if (!options.length) { submit.disabled = true; note.textContent = 'L’operatore deve prima configurare almeno un provider.'; }
-    form.addEventListener('submit', event => { event.preventDefault(); void this.formAction(submit, error, async () => {
-      const chosen = this.data!.providers.find(item => service.value === `existing:${item.id}`);
-      if (!createdProviderId) {
-        if (chosen) createdProviderId = chosen.id;
-        else {
-          const kind = ['lmstudio', 'gemrouter'].includes(service.value) ? 'openai-compatible' : service.value;
-          const provider = await this.api.request<Provider>('POST', '/api/providers', { label: providerName.value.trim() || 'Provider', kind, ...(kind === 'codex' ? {} : { baseUrl: url.value.trim() }), tag: service.value === 'gemrouter' ? 'gemrouter' : ['ollama', 'lmstudio'].includes(service.value) ? 'local' : 'cloud', nodeIds: Array.from(nodeChecks.querySelectorAll<HTMLInputElement>('input:checked')).map(item => item.value), resourceGroupIds: Array.from(groupChecks.querySelectorAll<HTMLInputElement>('input:checked')).map(item => item.value) }); createdProviderId = provider.id;
-        }
+    const { dialog, body } = this.modal('Collega un modello', 'Scegli il servizio. Accesso, verifica e discovery nello stesso percorso.', 'connection-dialog');
+    mountConnectionWizard({ body, dialog, api: this.api, data: this.data, existing,
+      connected: async (result, routeId) => {
+        if (routeId && result.provider.kind === 'antigravity' && this.project) await this.api.request('PATCH', `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { coder: routeId } });
+        await this.refresh();
+        if (routeId && this.route(routeId) && this.usableRoute(this.route(routeId)!)) this.routeId = routeId;
+        this.updateComposer(); this.renderActivity(); this.toast(`${result.provider.label}: ${result.models.length} modelli nel catalogo.`);
+      },
+      login: async accountId => {
+        const waiting = this.modal('Accesso a Codex', 'Avvio del login ufficiale. Le istruzioni compariranno qui.', 'login-dialog');
+        this.accountLoginDialog = waiting.dialog;
+        waiting.body.append(this.el('p', 'connection-progress', 'Attendo il codice di autorizzazione…'));
+        try { await this.api.request('POST', `/api/accounts/${encodeURIComponent(accountId)}/login`, {}); }
+        catch (error) { waiting.dialog.close(); this.showBanner(errorMessage(error), true); }
       }
-      if (!createdAccountId) { const data: Record<string, unknown> = { providerId: createdProviderId, label: label.value.trim(), shared: this.operator && shared.checked }; if (this.api.native && nativeSecret.checked) data.requestSecret = true; else if (!this.api.native && secret.value) data.secret = secret.value; secret.value = ''; const account = await this.api.request<Account>('POST', '/api/accounts', data); createdAccountId = account.id; }
-      if ((chosen?.kind ?? service.value) === 'codex') { await this.api.request('POST', `/api/accounts/${encodeURIComponent(createdAccountId)}/login`, {}); dialog.close(); await this.refresh(); this.toast('Account creato. Attendi le istruzioni di accesso ufficiali.'); return; }
-      const discovered = await this.api.request<{ models: ModelRoute[] }>('POST', `/api/accounts/${encodeURIComponent(createdAccountId)}/discover`, {}); await this.refresh(); dialog.close(); if (!this.routeId) this.routeId = discovered.models[0]?.id ?? ''; this.updateComposer(); this.toast(`Account collegato · ${discovered.models.length} modelli rilevati.`);
-    }); });
+    });
   }
 
   private modelSettingsDialog(model: ModelRoute): void {
@@ -730,16 +871,19 @@ export class ControlRoom {
       this.showLogin();
       return;
     }
-    if (this.sending || !this.canWrite || !this.project || !this.routeId) return;
+    if (this.sending || !this.canWrite || !this.project) return;
     const input = this.q<HTMLTextAreaElement>('#message-input'); const text = input.value.trim(); if (!text) return;
-    const active = this.currentRun && !closedRunStatuses.has(this.currentRun.status);
-    if (!active && this.q<HTMLSelectElement>('#mode-select').value === 'mission' && (!this.project.targetId || !this.project.verifyRecipeIds.length)) { this.toast('Per avviare la squadra, scegli workspace e verifiche del progetto. La bozza resta qui.'); this.projectDialog(this.project); const advanced = this.root.querySelector<HTMLDetailsElement>('dialog details'); if (advanced) advanced.open = true; return; }
+    const mode = this.q<HTMLSelectElement>('#mode-select').value as RequestedMode;
+    const intent = classifyRequest(text, { mode, attachmentCount: this.selectedAttachments.length });
+    if (!this.routeId && intent.kind !== 'service') { this.connectionDialog(); return; }
+    const active = this.currentRun && !closedRunStatuses.has(this.currentRun.status) && intent.kind !== 'service';
+    if (!active && intent.mode === 'mission' && (!this.project.targetId || !this.project.verifyRecipeIds.length)) { this.toast('Per avviare la squadra, scegli workspace e verifiche del progetto. La bozza resta qui.'); this.projectDialog(this.project); const advanced = this.root.querySelector<HTMLDetailsElement>('dialog details'); if (advanced) advanced.open = true; return; }
     this.sending = true; this.updateComposer();
     try {
       if (active) { await this.api.request('POST', `/api/runs/${encodeURIComponent(this.currentRun!.id)}/steer`, { text, attachmentIds: this.selectedAttachments.map(item => item.id) }); input.value = ''; this.selectedAttachments = []; this.saveDraft(); await this.refresh(); this.renderAttachments(); this.toast('Indicazione salvata. La missione si mette in pausa: usa Riprendi per ripianificare.'); return; }
       if (!this.conversationId) { const conversation = await this.api.request<Conversation>('POST', '/api/conversations', { projectId: this.projectId, routeId: this.routeId }); this.conversationId = conversation.id; }
-      const run = await this.api.request<Run>('POST', `/api/conversations/${encodeURIComponent(this.conversationId)}/messages`, { text, routeId: this.routeId, mode: this.q<HTMLSelectElement>('#mode-select').value, attachmentIds: this.selectedAttachments.map(item => item.id), permissions: { write: this.autonomy.write, commands: this.autonomy.commands, deploy: this.autonomy.deploy }, maxIterations: this.autonomy.maxIterations, maxParallel: this.autonomy.maxParallel });
-      this.runId = run.id; this.taskId = ''; input.value = ''; this.selectedAttachments = []; this.saveDraft(); await this.refresh(); this.renderAttachments(); this.setView('control');
+      const run = await this.api.request<Run>('POST', `/api/conversations/${encodeURIComponent(this.conversationId)}/messages`, { text, routeId: this.routeId, mode, routing: this.routing, attachmentIds: this.selectedAttachments.map(item => item.id), permissions: { write: this.autonomy.write, commands: this.autonomy.commands, deploy: this.autonomy.deploy }, maxIterations: this.autonomy.maxIterations, maxParallel: this.autonomy.maxParallel });
+      if (intent.kind !== 'service' || !this.currentRun || closedRunStatuses.has(this.currentRun.status)) { this.runId = run.id; this.taskId = ''; } input.value = ''; this.selectedAttachments = []; this.saveDraft(); await this.refresh(); this.renderAttachments(); this.setView('control');
     } catch (error) { this.showBanner(errorMessage(error), true); }
     finally { this.sending = false; this.updateComposer(); }
   }
@@ -801,7 +945,7 @@ export class ControlRoom {
 
   private loginEvent(event: RunEvent): void {
     const data = event.data; if (!data) return;
-    if (data.status === 'complete') { this.accountLoginDialog?.close(); this.accountLoginDialog = undefined; this.toast('Accesso completato. Usa Trova modelli per aggiornare il catalogo.'); this.scheduleRefresh(); return; }
+    if (data.status === 'complete') { this.accountLoginDialog?.close(); this.accountLoginDialog = undefined; this.toast('Accesso completato. Scegli il modello del nuovo account.'); void this.refresh().then(() => { const accountId = typeof data.accountId === 'string' ? data.accountId : undefined; if (accountId && this.data?.models.some(model => model.accountId === accountId)) this.modelDialog(undefined, accountId); }); return; }
     if (data.status === 'error') { this.accountLoginDialog?.close(); this.accountLoginDialog = undefined; this.showBanner(typeof data.message === 'string' ? data.message : 'Accesso non riuscito.', true); return; }
     if (typeof data.verificationUri !== 'string' && typeof data.userCode !== 'string') return;
     this.accountLoginDialog?.close(); const { dialog, body } = this.modal('Accedi con il servizio ufficiale', 'Completa l’autorizzazione nel sito del provider. I codici sono temporanei e non entrano nella cronologia.'); this.accountLoginDialog = dialog;
@@ -817,7 +961,7 @@ export class ControlRoom {
   private showBanner(message: string, error = false): void { const banner = this.q('#banner'); banner.hidden = false; banner.classList.toggle('error', error); this.q('#banner > span').textContent = message; }
   private async downloadJson(name: string, value: unknown): Promise<void> { await this.downloadText(name, JSON.stringify(value, null, 2), 'application/json'); }
   private async downloadText(name: string, text: string, mime: string): Promise<void> { if (this.api.native && this.api.saveFile) { await this.api.saveFile(name, text, mime); this.toast('Esportazione salvata.'); return; } const url = URL.createObjectURL(new Blob([text], { type: mime })); const link = this.el('a'); link.href = url; link.download = safeFilename(name); this.root.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
-  dispose(): void { this.disposed = true; this.subscription?.(); if (this.refreshTimer) clearTimeout(this.refreshTimer); for (const dispose of this.disposers) dispose(); this.api.dispose?.(); this.root.replaceChildren(); }
+  dispose(): void { this.disposed = true; this.subscription?.(); if (this.refreshTimer) clearTimeout(this.refreshTimer); if (this.packetTimer) clearTimeout(this.packetTimer); if (this.streamFrame !== undefined) this.win.cancelAnimationFrame(this.streamFrame); for (const dispose of this.disposers) dispose(); this.api.dispose?.(); this.root.replaceChildren(); }
 }
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : 'Operazione non riuscita.'; }

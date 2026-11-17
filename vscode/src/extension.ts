@@ -56,7 +56,7 @@ export class CommandView implements vscode.WebviewViewProvider,vscode.Disposable
       const path=apiPath(message.path),method=typeof message.method==='string'?message.method:'GET';
       if(method!=='GET'&&!vscode.workspace.isTrusted&&path!=='/api/logout')throw new Error('Rendi attendibile il workspace prima di inviare attività o file al gateway.');
       let body=message.body;
-      if(method==='POST'&&path==='/api/accounts'&&body&&typeof body==='object'&&!Array.isArray(body)){
+      if(method==='POST'&&['/api/accounts','/api/connections'].includes(path)&&body&&typeof body==='object'&&!Array.isArray(body)){
         const account={...body as Record<string,unknown>};
         if(account.requestSecret===true){const secret=await vscode.window.showInputBox({title:'yed1z · Chiave del provider',prompt:'La chiave viene inviata al gateway e non entra nel webview.',password:true,ignoreFocusOut:true});if(!secret)throw new Error('Inserimento della chiave annullato.');account.secret=secret;}
         delete account.requestSecret;body=account;
