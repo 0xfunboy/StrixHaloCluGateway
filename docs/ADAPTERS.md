@@ -108,15 +108,11 @@ server MCP esterno attivo, il runtime segnala la configurazione richiesta prima
 di avviare il turno. Chat, login e discovery usano il percorso del profilo
 ordinario. Il round trip del tool locale è stato provato con Codex CLI 0.153.4.
 
-**Antigravity:** ACP della CLI ufficiale `agy acp --sandbox`. La discovery 0.4
-esegue realmente initialize/session e usa soltanto il catalogo o il modello
-corrente dichiarato dal runtime; non costruisce una lista di nomi Gemini.
-Quando il login manca, indica `agy acp --login` da eseguire con l'utente del
-servizio e richiede una nuova verifica. La sessione deve
-essere autenticata con il flusso ufficiale sul server. Modalità sola lettura,
-OAuth guidato, quote numeriche e isolamento multi-account non sono verificati;
-non sono dichiarati disponibili. Le operazioni sono serializzate e il piano di
-controllo limita la connessione a un profilo dedicato configurato dall'operatore.
+**Antigravity.** Il coordinator avvia la CLI ufficiale e negozia ACP v1. Per i nuovi account assegna `--gemini-dir`, `--app-data-dir` e directory XDG private. Il profilo di servizio già esistente conserva la propria configurazione e la serializzazione delle operazioni. Discovery, login e turni di un account usano il relativo profilo.
+
+**Accedi con Google** avvia `agy acp --login` sul coordinator. Il titolare concede l’accesso nella pagina ufficiale. Se il processo attende un codice, la UI invia il codice o l’URL di ritorno all’operazione di login aperta, quindi viene eseguita la discovery. La guida del profilo può anche fornire il comando di terminale con gli stessi parametri di isolamento. La discovery legge i modelli o il corrente dichiarati da ACP. Quando la sessione è autenticata ma non espone un selettore, `current` indica il modello corrente della CLI.
+
+Il router ammette le rotte native per operatori e amministratori su workspace locali autorizzati secondo le capacità richieste. Nelle attività di sola lettura il coordinator rifiuta le richieste di autorizzazione a scritture e comandi. Il client ACP dichiara disabilitati filesystem e terminale lato client. La CLI applica il proprio sandbox ai suoi strumenti. Il consenso Google reale è stato verificato fino all’attesa della risposta del titolare. Il ciclo con due profili separati è stato collaudato con una CLI di prova. La generazione autenticata Antigravity su due identità reali resta da confermare e la discovery ACP lascia la quota numerica sconosciuta. [Profili](../src/adapters/antigravity-profile.ts) · [Discovery ACP](../src/adapters/antigravity-inspect.ts) · [Collaudo dei provider](CONSEGNA-1.0-RC1.md)
 
 Gli adapter delegano il sandbox alla CLI e inoltrano le richieste di approvazione
 supportate. Non promettono controllo completo di ogni effetto di MCP o plugin

@@ -4,6 +4,10 @@
 
 Il progetto collega chat, percorso degli agenti ed evidenze verificabili sul Web e in VS Code. Il router gestisce profili, quote, motori locali e remoti e la facciata Responses. La Knowledge accetta un encoder locale per la ricerca con citazioni. L’handoff descrive la migrazione sulla porta 8081, il collaudo sui diversi provider e i limiti osservati. [Consegna RC1](docs/CONSEGNA-1.0-RC1.md)
 
+### Ripristino della home hardware
+
+La radice e `/index.html` servono l’HUD originale Dual Strix. `/control` apre il prodotto e `/cockpit` la vista Fleet. I segnalibri storici con `#project=…` riaprono il progetto nella Control Room. Il comando VS Code per aprire il portale e i collegamenti di missione generati dall’app puntano a `/control`. Il nuovo README raccoglie i benchmark e l’indice collega le funzioni dell’interfaccia ai contratti HTTP e ai comandi di amministrazione. [Documentazione del prodotto](docs/README.md)
+
 ## 0.4.0 · 17 novembre 2026
 
 ### Base della modifica

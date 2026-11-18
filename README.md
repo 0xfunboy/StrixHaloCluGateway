@@ -1,285 +1,177 @@
-# yed1z Control Room · 1.0.0-rc.1
+# yed1z · Control Room
 
-Un centro di controllo per progetti, conversazioni, conoscenza, squadre di agenti e
-infrastruttura distribuita. **Un coordinator TypeScript, la stessa applicazione in
-web e VS Code, più macchine per inferenza ed esecuzione.**
+**Un progetto, più modelli, una traccia verificabile del lavoro.** Con yed1z puoi far pianificare una modifica a un modello remoto, affidare il codice a una GPU del tuo cluster e chiedere la revisione a un altro account. Dal browser o da VS Code ritrovi la stessa conversazione, i file forniti agli agenti, i test eseguiti e il commit candidato. La dashboard hardware mostra nel frattempo cosa sta facendo la macchina che paga il costo dell’inferenza.
 
-Apri **Percorso** nel progetto per seguire turni, agenti, dipendenze, tentativi e verifiche. **Connessioni** collega i profili Codex e Antigravity, i motori HTTP locali o remoti e GemRouter. Il gateway espone anche l’API Responses per usare una rotta HTTP dentro Codex. Il monitor hardware è disponibile su `/cockpit` e la plancia storica su `/cockpit/classic`.
+**Versione 1.0.0-rc.1** · [Dashboard hardware dal vivo](https://yed1z.ai/) · [Apri la Control Room](https://yed1z.ai/control) · [Indice della documentazione](docs/README.md)
 
-Le prove del candidato e le istruzioni per account, nodi e aggiornamento sono nell’[handoff del candidato](docs/CONSEGNA-1.0-RC1.md).
+![Dashboard hardware yed1z con topologia Dual Strix, stato del gateway e pannelli di telemetria](docs/media/dashboard-hardware.png)
 
-## Novità della 0.4
+## Scegli da dove entrare
 
-- **Un unico HUD:** chat, monitor, squadra e connessioni usano la grammatica visiva
-  della dashboard storica: reticolo discreto, pannelli squadrati e accenti cyan,
-  viola e verde. Il flusso animato rappresenta contesto, inferenza, strumenti e
-  verifiche realmente osservati. FX è disattivabile e rispetta reduced motion.
-- **Collegamento guidato:** scegli provider, inserisci soltanto i dati necessari,
-  verifica e seleziona il modello. Un'unica operazione conserva il collegamento
-  anche se occorre correggere la chiave o completare il login. Codex e Antigravity
-  non chiedono URL/API key; usano le rispettive CLI ufficiali.
-- **Auto come percorso iniziale:** i saluti e alcune richieste di stato ricevono
-  una risposta del servizio, esplicitamente indicata, senza avviare un modello.
-  Una normale domanda usa una chiamata chat; una richiesta operativa può diventare
-  missione. Chat e Missione restano selezionabili. Auto non concede permessi.
-- **Disponibilità prima della scelta:** risorse fisiche, concorrenza per account,
-  quota osservata e probe opzionali del motore partecipano all'ammissione. Le
-  alternative sono un insieme autorizzato esplicitamente dall'utente.
-- **Attesa controllata:** chat con priorità interattiva, coda con scadenza, retrieval
-  vettoriale opzionale entro 600 ms per la chat e ripiego sul contesto testuale.
-  La UI distingue attesa, contesto, caricamento e generazione.
-- **Nessuna ripetizione nascosta dopo un effetto:** se il provider cade dopo testo
-  parziale o un comando mutativo completato, il risultato viene conservato e il
-  run interrotto. Il ciclo di riparazione non riesegue automaticamente il comando.
+| Ingresso | Cosa trovi | Quando usarlo |
+|---|---|---|
+| [Dashboard hardware · /](https://yed1z.ai/) | HUD Strix originale, topologia, strumenti dei nodi, attività e misure del gateway. Il pulsante **Control Room** apre l’applicazione. | Per vedere quale motore è acceso, leggere i sensori o tenere il cluster su un monitor dedicato. |
+| [Control Room · /control](https://yed1z.ai/control) | Progetti, conversazioni, agenti, modelli e account, conoscenza, consumi e consegne. | Per lavorare su un progetto, decidere dove eseguirlo e verificare il risultato. |
+| [Fleet monitor · /cockpit](https://yed1z.ai/cockpit) | Stato sintetico di nodi, engine e risorse condivise. | Per controllare la disponibilità della flotta. Il vecchio indirizzo [Cockpit Classic](https://yed1z.ai/cockpit/classic) apre la dashboard hardware completa. |
+| [Estensione VS Code](vscode/README.md) | La Control Room nell’editor con accesso nativo e invio della selezione al contesto. | Per passare da un file alla conversazione e riaprire nel browser la stessa missione. |
+| [API del gateway](docs/RIFERIMENTO-FUNZIONI.md) | Catalogo per utente, Chat Completions, Responses, streaming e controllo dei progetti. | Per usare il cluster da un client compatibile o integrare il coordinator nel proprio software. |
 
-Leggi **[HANDOFF.md](HANDOFF.md)** per aggiornamento, collaudo sul cluster, rollback,
-criteri di accettazione e implementazioni future. [CHANGELOG.md](CHANGELOG.md)
-identifica anche i problemi trovati nei sorgenti caricati.
+## Indice del prodotto
 
-**Stato della consegna:** implementazione e pacchetti verificati con HTTP, RPC,
-filesystem, SQLite e flussi UI di prova. Nessuna installazione su `yed1z.ai`, nessun
-servizio di produzione fermato e nessun accesso alle vostre macchine in questa
-sessione. Il rendering nella finestra reale del browser/VS Code resta da
-collaudare: Chromium è bloccato dal sistema e la preview locale del browser cloud
-è stata rifiutata dalla sua policy. Non sono stati prodotti screenshot di verifica.
+- [Una missione con tre fonti di inferenza](#una-missione-con-tre-fonti-di-inferenza)
+- [Cosa mostra la dashboard hardware](#cosa-mostra-la-dashboard-hardware)
+- [Account, quote e scelta del motore](#account-quote-e-scelta-del-motore)
+- [Dalla conversazione alla consegna](#dalla-conversazione-alla-consegna)
+- [Conoscenza e contesto](#conoscenza-e-contesto)
+- [Prestazioni misurate](#prestazioni-misurate)
+- [Installazione e primo progetto](#installazione-e-primo-progetto)
+- [Collegare hardware e client](#collegare-hardware-e-client)
+- [Esercizio, dati e licenza](#esercizio-dati-e-licenza)
 
-## Il prodotto
+## Una missione con tre fonti di inferenza
 
-L'utente apre un progetto, parla all'orchestratore e vede contemporaneamente:
+Nel collaudo del 18 novembre 2026 abbiamo chiesto al sistema di correggere la gestione dei fine riga in un piccolo progetto JavaScript e di preservare le righe vuote. Lo stesso obiettivo, il file allegato e il criterio di verifica sono rimasti disponibili lungo tutta la missione.
 
-- conversazioni e allegati del proprio account;
-- modello/account selezionato e quote effettivamente osservate;
-- stato dei nodi Strix 01, Strix 02 e CUDA, GPU/CPU/memoria e interfacce di rete;
-- agenti, dipendenze, avanzamento, file coinvolti e risultati degli strumenti;
-- contesto utilizzato da ogni agente, fonti incluse e fonti escluse per budget;
-- verifiche e rilascio, con evidenze separate dalla risposta del modello.
+| Passaggio | Chi lo ha eseguito | Cosa ha lasciato nel progetto |
+|---|---|---|
+| Pianificazione | Astra via GemRouter | Piano, assegnazioni e dipendenze fra i task |
+| Modifica | Qwen su Strix | Modifica di `index.js` nel worktree dedicato |
+| Revisione | Codex con account autenticato | Lettura del file effettivo con `yed1z_read_file`, contenuto letto e digest SHA-256 |
+| Verifica | Runner del target | Esecuzioni riuscite di `npm test` e `npm run build`, report e commit candidato |
 
-La vista principale ha tre aree: progetti e cronologia a sinistra, orchestratore al
-centro, squadra a destra. La panoramica dei nodi rimane visibile. Infrastruttura,
-Conoscenza, Connessioni e Consegne aprono il dettaglio senza riempire la chat di
-configurazioni.
+Aprendo **Percorso del progetto** puoi selezionare il revisore nel grafo, leggere il file su cui ha basato il giudizio e passare al risultato del verificatore. Gli otto eventi di inferenza della missione corrispondono a due chiamate GemRouter, cinque Qwen e un turno nativo Codex. Un’altra missione ha verificato anche la promozione del candidato su un ramo Git dedicato. [Esiti, contatori e prove del collaudo](docs/CONSEGNA-1.0-RC1.md#missione-finale-con-tre-fonti)
 
-## Cosa è implementato
+## Cosa mostra la dashboard hardware
 
-| Area | Funzionamento |
+La home è il cockpit del Gateway originale. Puoi osservare i due Strix, il nodo CUDA e il percorso della richiesta, ruotare la topologia, leggere i pannelli hardware e passare dalla vista cluster al progetto senza cambiare dominio.
+
+| Lettura | Come interpretarla |
 |---|---|
-| Inferenza | OpenAI compatibile, GemRouter, Ollama, Responses e Gemini; discovery dei modelli e più account. |
-| OAuth ufficiale | Codex tramite app-server e device code, con `CODEX_HOME` privato per account. Antigravity tramite profilo CLI ufficiale configurato dall'operatore. |
-| Risorse e routing | Prenotazione atomica di nodi e account, alternative autorizzate, priorità e attesa limitata. DeepSeek Dual Strix occupa entrambi; Qwen Strix 01 e CUDA hanno associazioni distinte. |
-| Lifecycle | Readiness sul motore effettivo e attivazione tramite ricette Strix o node-agent CUDA; risorsa trattenuta fino a fine richiesta. |
-| Esecuzione | Target locale o SSH indipendente dal modello. Runner TypeScript stateless, nessun ulteriore server pubblico. |
-| Missioni | Piano con dipendenze, agenti di lettura paralleli, scritture serializzate nello stesso workspace, review, verifiche e riparazione entro budget. |
-| Controllo agenti | Pausa, ripresa, annullamento e istruzioni per ricercatori/sviluppatori. Cambio modello/account in coda o pausa. |
-| Rilascio | Ricette operatore, nuove verifiche, autorizzazione, health check e rollback configurato. |
-| Conoscenza | Allegati testuali, memorie private o di progetto, revisioni e provenienza; ricerca FTS5 e vettoriale con embeddings reali opzionali. |
-| Interfacce | HUD condiviso, attività animata da eventi reali, onboarding guidato, stessa applicazione/API/stato in web e VS Code. |
-| Accesso ospite | Dashboard hardware pubblica in sola lettura, disattivabile con `publicDashboard:false`; nessuna conversazione, chiave, endpoint privato o identità account. |
-| Persistenza | SQLite/WAL, chiavi di accesso hashate, segreti API cifrati, checkpoint, eventi e approvazioni persistenti. |
-| Migrazione | Import idempotente delle conversazioni 0.2, senza toccare il database originale o importare credenziali. |
+| Nodi e sensori | Carico, memoria, temperatura e potenza dipendono dai sensori esposti dal nodo. L’interfaccia distingue un valore osservato pari a zero da una misura assente. |
+| Motore attivo e richieste in corso | Aiutano a capire se l’attesa deriva da una risorsa occupata o dall’avvio del motore. La topologia configurata descrive le connessioni note all’operatore. |
+| Primo token, prefill e decode | Descrivono fasi diverse della generazione. I valori dipendono da motore, modello, contesto e dettagli restituiti dall’upstream. |
+| Statistiche del gateway | Le richieste alla facciata API hanno contatori propri. Per le chiamate degli agenti e l’uso per account apri **Consumi** nella Control Room. |
+| Accesso e preferenze | L’HUD supporta italiano e inglese. Tema ed effetti seguono la scelta dell’utente. La modalità ospite usa la proiezione pubblica quando abilitata. Lo switch manuale del motore richiede autorizzazione. |
 
-## Avvio rapido
+[Guida alla dashboard e ai suoi comandi](docs/GUIDA-PRODOTTO.md#hud)
 
-### Requisiti
+## Account, quote e scelta del motore
 
-- Linux per il coordinator e i runner di questa release.
-- **Node 24.15+ della linea 24**, verificato per questa RC con **24.18.0**.
-- Un endpoint di inferenza oppure una CLI ufficiale configurata separatamente.
-- Per SSH: host alias e chiavi già configurati, host key nota, Node e runner sul nodo.
+In **Modelli e account** colleghi un provider, scegli il profilo e interroghi il suo catalogo. La rotta identifica il modello offerto da **quell’account**. Due account possono esporre lo stesso nome di modello e avere quote, autorizzazioni e disponibilità differenti. Il modello può cambiare fra un turno e il successivo mantenendo storia e allegati nel progetto.
 
-I bundle sono inclusi in `dist/`. **Per usare la release non occorre installare
-dipendenze npm o compilare i sorgenti.** Le dipendenze di sviluppo servono soltanto
-a modificare, verificare o ricostruire il progetto.
+| Fonte | Collegamento | Evidenza sul cluster di riferimento |
+|---|---|---|
+| Codex | Login ufficiale, profilo privato per account, catalogo e finestre di quota del runtime. | Un account autenticato ha restituito quattro modelli e ha completato chat e revisione della missione. La seconda identità reale richiede ancora il login del titolare. |
+| Antigravity | Login Google dalla Control Room tramite CLI ufficiale e scoperta via ACP. Ogni nuovo account ha il proprio profilo. | Avvio reale del consenso e annullamento verificati. Catalogo dopo il consenso su due profili esercitato con CLI di prova. La generazione con identità Google reali attende il consenso dei titolari. |
+| GemRouter | Base compatibile OpenAI e credenziale del profilo. La scoperta alimenta il selettore. | Il catalogo ha restituito Astra, Gemini e Gemma. Astra ha pianificato una missione. Gemini e Gemma hanno segnalato alta domanda o timeout durante il collaudo. |
+| Motori locali e remoti | Endpoint compatibile OpenAI oppure Ollama, diretto o tramite bridge installato sul nodo. | Qwen e DeepSeek hanno generato su Strix e su RTX 3090. Il bridge è stato provato su due macchine. |
+| Altri endpoint supportati | Preset e adapter distinti per Chat Completions, Responses e Gemini API. | Usa la scoperta e poi una breve generazione per verificare le capacità della combinazione scelta. |
 
-Da questa cartella:
+Con una scelta **fissa**, il coordinator conserva la rotta richiesta. In **Auto**, competono la preferita e le sole alternative autorizzate. Il router considera ruoli, capacità del modello, quota osservata, concorrenza dell’account e risorse fisiche. Se due engine condividono la stessa memoria GPU, la prenotazione copre tutti i gruppi necessari. Una GPU indipendente può rispondere mentre l’altra ha una coda.
+
+Puoi mantenere un account privato, concederlo a utenti specifici o condividerlo secondo la configurazione. Profili che consumano la stessa quota possono dichiarare un dominio comune. Per una 429 HTTP idonea, prima di testo o effetti, il router può selezionare un’alternativa autorizzata entro i limiti del turno. Se il provider tace sulla quota, il pannello mostra il dato come sconosciuto. [Account e login](docs/GUIDA-PRODOTTO.md#account) · [Regole del router](docs/ROUTING.md)
+
+## Dalla conversazione alla consegna
+
+| Funzione | Cosa puoi fare |
+|---|---|
+| Progetto e conversazioni | Impostare obiettivo, modelli per ruolo, destinazione di esecuzione e verifiche. Allegare un brief, proseguire lo stesso thread o creare un ramo da un turno preciso. |
+| Chat e Auto | Parlare con il modello scelto. Alcune domande di stato ricevono una risposta immediata dal servizio. La modalità esplicita permette di scegliere fra conversazione e lavoro operativo. |
+| Missione e squadra | Vedere il piano, seguire le dipendenze, mettere in pausa un agente supportato, modificarne istruzioni o rotta e riprenderlo. La chat e lo steering della squadra hanno comandi distinti. |
+| Percorso ed evidenze | Esaminare tentativi e decisioni di routing, tornare a un evento precedente, aprire risultati degli strumenti, verifiche e file prodotti. |
+| Esecuzione | Scegliere target locale o SSH separatamente dalla macchina di inferenza. Le ricette configurate dall’operatore definiscono i comandi consentiti. Un progetto Git locale può lavorare in un worktree dedicato. |
+| Verifica e promozione | Eseguire le verifiche impostate, ispezionare il diff e creare un riferimento Git al candidato verificato. La promozione lascia il checkout di partenza al suo commit. |
+| Rilascio e recupero | Collegare una ricetta di deploy, la sua approvazione, il controllo health e il rollback. Un effetto dall’esito incerto resta visibile e richiede riconciliazione prima di riprendere. |
+
+[Manuale operativo](docs/GUIDA-PRODOTTO.md) · [Esecuzione locale, SSH e approvazioni](docs/EXECUTION.md)
+
+## Conoscenza e contesto
+
+Un allegato conserva testo, proprietario e digest. Una memoria proposta può diventare una decisione o un metodo riusabile dopo l’approvazione. Scegli tu se mantenerla privata o pubblicarla nel progetto. La ricerca applica l’accesso alla fonte e restituisce estratti citabili con revisione, posizione e hash. Il rapporto del task spiega quali fonti sono entrate nel budget di contesto.
+
+Il lettore TypeScript adatta le idee di Memorilla al recupero di testo per modelli eterogenei. Combina ricerca lessicale e vettori quando è configurato un encoder. Nell’installazione di riferimento un MiniLM multilingue CPU su loopback produce vettori di dimensione 384. Una domanda inglese ha recuperato una procedura italiana. Il successivo passaggio di indicizzazione ha riutilizzato i vettori invariati. Il ritiro di una memoria rimuove i passaggi dall’indice corrente. [Come vengono selezionate e citate le fonti](docs/KNOWLEDGE-MEMORILLA.md) · [Riprodurre l’encoder locale](docs/ENCODER-LOCALE.md)
+
+## Prestazioni misurate
+
+Le prove seguenti sono del **18 novembre 2026**. La prima tabella riporta singole generazioni reali con risposta attesa `OK`. Il TTFT è il tempo fino al primo token osservato. Dove riportato, l’avvio misura separatamente il tempo fino alla disponibilità del catalogo del motore.
+
+| Motore | Modello provato | Avvio osservato | TTFT osservato |
+|---|---|---:|---:|
+| Strix · Qwen | `qwen38-uncensored-gufo` | Già ripristinato e pronto | 1,837 s |
+| Strix · DeepSeek | `deepseek-v4.1-flash` | Non misurato in questa prova | 5,204 s |
+| RTX 3090 · Qwen | `qwen3.8-flash-next-iq3_s` | 27 s | 0,911 s |
+| RTX 3090 · DeepSeek | `deepseek-v4.1-flash` | 24 s | 3,977 s |
+
+**Due utenti sul cluster reale.** Tre richieste sovrapposte sono terminate con HTTP 200. La prima richiesta Strix aveva coda 0 ms, la seconda 844 ms. La richiesta CUDA ha atteso 1 ms mentre Strix era impegnata. La prova ha attraversato Chat Completions JSON, Chat Completions in streaming e Responses JSON.
+
+**Coda sotto carico ripetibile.** In una prova distinta due utenti condividevano un engine HTTP controllato, uno slot e risposta ritardata di 40 ms. Il p50 è la mediana e il p95 indica la soglia sotto cui cade il 95% delle osservazioni.
+
+| Richieste concorrenti | Completate | Coda p50 / p95 | Primo contenuto p50 / p95 |
+|---:|---:|---:|---:|
+| 4 | 32 su 32 | 49 / 139 ms | 116 / 187 ms |
+| 8 | 64 su 64 | 135 / 309 ms | 186 / 358 ms |
+
+**Costo delle interazioni.** Nel progetto di prova, «come stai?» e «a che punto siamo?» hanno richiesto 7 e 5 ms con zero chiamate modello. Nella missione con tre fonti, GemRouter ha riportato 15.518 token di input e 469 di output, Qwen 20.506 e 1.696, Codex 35.044 e 377 per il turno nativo. L’interfaccia conserva la distinzione tra uso dichiarato dal provider e stima del contesto. Sono misure riferite a quei prompt, a quella concorrenza e a quei motori. [Ambiente, metodologia e limiti delle prove](docs/CONSEGNA-1.0-RC1.md#collaudo-sui-servizi-reali)
+
+## Installazione e primo progetto
+
+### Avvio locale dai bundle
+
+Servono Linux, **Node 24.15 o successivo della serie 24** e una porta 8081 libera. Il collaudo della RC usa Node 24.18.0. Il checkout contiene i bundle eseguibili. Per una nuova installazione, dalla radice del repository:
 
 ```bash
-node dist/cli.mjs init --name funboy --workspace /percorso/dei/progetti
+mkdir -p "$HOME/yed1z-workspaces"
+export YED1Z_STATE_DIR="$HOME/.local/share/yed1z-control-room"
+node dist/cli.mjs init --name operatore --workspace "$HOME/yed1z-workspaces"
 node dist/server.mjs
 ```
 
-La directory `/percorso/dei/progetti` deve esistere e la porta 8081 deve essere
-libera. Sul coordinator che ospita il gateway precedente usa prima una porta
-diversa in `state/config.json`, come descritto nella migrazione. Il setup stampa
-la chiave una sola volta. Apri `http://127.0.0.1:8081`, inserisci la chiave, quindi:
+Il primo `init` stampa una volta la chiave dell’amministratore. Apri `http://127.0.0.1:8081/` per il monitor o `http://127.0.0.1:8081/control` per entrare nel progetto. La configurazione iniziale usa loopback. Per un’installazione HTTPS configura origine pubblica, cookie e reverse proxy nell’ambiente di destinazione. Le operazioni CLI che aprono lo stato richiedono il coordinator fermo. [Comandi, configurazione e variabili](docs/RIFERIMENTO-CLI.md)
 
-1. **Collega modello / Connessioni**: scegli il provider, compila i soli campi
-   richiesti e usa **Collega e trova modelli**. Puoi rilevare i servizi già
-   configurati e i runtime locali noti; non viene scandagliata la rete.
-2. **Progetto → Impostazioni**: seleziona il modello primario e, se desiderato,
-   modelli diversi per sviluppatore, ricercatore e revisore.
-3. Per una chat basta la connessione. Per una missione configura target/workspace
-   e almeno una ricetta di verifica reale.
-4. Scrivi in **Auto**, oppure scegli esplicitamente Chat o Missione. Concedi i
-   permessi necessari per le azioni; il classificatore non li concede da solo.
-5. Nel selettore del modello indica quali alternative puoi usare. Senza una
-   selezione esplicita non viene inviata la richiesta a un altro provider.
+### Prima chat e prima missione
 
-Un nuovo progetto può creare la propria sottodirectory nella radice configurata.
-La creazione è confinata alla radice del target e non sostituisce file esistenti.
-Usa radici dedicate ai progetti; conserva lo stato del coordinator al di fuori dei
-workspace su cui gli agenti lavorano.
+1. Entra in **Control Room** con la chiave personale. Apri **Collega modello**, scegli la fonte e completa la verifica dell’account. Seleziona uno dei modelli rilevati.
+2. Crea il progetto, scegli la rotta primaria e invia una domanda in **Chat**. Sotto la risposta trovi la rotta e le misure disponibili.
+3. In **Progetto** scegli target e workspace. Per il progetto JavaScript d’esempio, abilita le ricette `npm-test` e `npm-build` se corrispondono ai comandi di verifica di quel repository.
+4. Allega una specifica breve, scegli i modelli per sviluppatore e revisore e invia come **Missione**. Concedi i soli permessi richiesti dal lavoro.
+5. Apri **Percorso del progetto**, seleziona un nodo del grafo e segui il collegamento all’evidenza. La scheda delle consegne espone il risultato verificato e le azioni disponibili sul target.
 
-### Collegare VS Code
+### VS Code
+
+Installa il VSIX con **Extensions → Install from VSIX…**. Da un clone del repository puoi costruirlo con i comandi di sviluppo riportati sotto. Da terminale, per il pacchetto appena generato:
 
 ```bash
-code --install-extension release/yed1z-control-room-1.0.0-rc.1.vsix --force
+code --install-extension artifacts/yed1z-control-room-1.0.0-rc.1.vsix --force
 ```
 
-Apri **yed1z Control Room** e scegli **Collega il gateway**. Inserisci lo stesso URL
-e la chiave. Il token resta nel SecretStorage dell'extension host. L'identificativo
-`funboy.haloforge` è conservato per aggiornare la precedente estensione.
+Esegui **yed1z: Collega il gateway**, indica l’origine, per esempio `https://yed1z.ai`, e la chiave. Il SecretStorage dell’extension host conserva la credenziale. Con Remote SSH, `localhost` è relativo all’host remoto. **Aggiungi selezione al contesto** allega il testo evidenziato al progetto. **Apri portale nel browser** porta alla Control Room. [Comandi e permessi dell’editor](docs/GUIDA-PRODOTTO.md#vscode)
 
-Con Remote SSH, `localhost` fa riferimento all'ambiente dell'extension host.
-L'azione sull'editor **Aggiungi selezione al contesto** allega il testo selezionato
-al progetto scelto; non espone automaticamente tutto il disco locale.
+## Collegare hardware e client
 
-## Adattamento al cluster
+Il **provider di inferenza** genera testo o embedding, il **target di esecuzione** legge file ed esegue ricette e la **destinazione di rilascio** applica una consegna verificata. Queste tre scelte possono riferirsi a macchine diverse.
 
-`examples/strix-cluster.json` descrive la topologia ricavata dai sorgenti forniti:
-
-| Risorsa | Riferimento documentato | Trattamento |
-|---|---|---|
-| Coordinator | `01-EVO-X3` | Coordinator, inferenza, eventuale esecuzione locale. |
-| Secondo Strix | `02-evo-x3-tb`, collegamento documentato `10.55.0.2` | Nodo distinto, spesso parte della stessa route distribuita. |
-| CUDA | `aireward-llm`, `192.168.178.47` | Engine Qwen su 8080 e DeepSeek su 8085, lifecycle 8090. |
-| Strix DeepSeek | Porta 18231 | Endpoint sul coordinator, prenotazione di entrambi gli Strix. |
-| Strix Qwen | Porta 18562 | Nel sorgente allegato usa il solo Strix 01; il template 0.4 corregge questa associazione. |
-| GemRouter | URL da impostare dall'operatore | Un ulteriore provider di inferenza selezionabile nei modelli. |
-
-Sono **riferimenti di configurazione**, non risultati di una scansione live. Gli
-IP LAN storici `.67`/`.77` degli Strix erano contraddittori e non vengono scelti
-arbitrariamente. L'alias SSH CUDA e la porta SSH devono essere risolti nella
-configurazione SSH reale. Gli ID del modello e le capacità nell'esempio sono
-dichiarazioni dell'operatore da confermare contro il motore prima del cutover.
-
-Il template include percorsi espliciti per il runner, radici workspace dedicate e
-ricette per `cluster-model`. Adattalo ai percorsi effettivi. Per i nodi remoti copia
-`dist/runner.mjs` e una configurazione locale basata su
-`examples/node-runner.json`: il target deve avere **lo stesso ID** del coordinator,
-ma `kind: "local"` sul nodo che lo esegue.
-
-```bash
-node dist/cli.mjs init --name funboy --config examples/strix-cluster.json
+```mermaid
+flowchart LR
+  W[Control Room Web] --> C[Coordinator]
+  V[VS Code] --> C
+  A[Client API] --> C
+  H[Dashboard hardware] --> C
+  C --> I[Account e motori di inferenza]
+  C --> T[Target locale o runner SSH]
+  C --> K[SQLite, memoria ed evidenze]
+  T --> D[Deploy e health check configurati]
 ```
 
-Il template usa `publicOrigin: https://yed1z.ai` e cookie sicuri: è destinato al
-dominio HTTPS dietro tunnel, non a un test browser su HTTP locale. Per la prima
-prova locale usa il setup rapido senza questo template.
+- **Aggiungere un nodo.** Un motore raggiungibile può essere collegato direttamente. Su un’altra macchina puoi avviare `dist/node-bridge.mjs` e raggiungerlo da un tunnel SSH. Il bridge usa credenziali distinte per il collegamento al coordinator e per l’engine a monte. Associa alla rotta i gruppi fisici realmente occupati. [Procedura per il nodo di inferenza](docs/NODO-INFERENZA.md)
+- **Eseguire sul nodo.** Il runner SSH riceve operazioni per un target registrato. Sul nodo, la configurazione locale stabilisce la radice del workspace e le ricette permesse. Il template del cluster descrive i due Strix, la RTX 3090 e GemRouter. [Esecuzione distribuita](docs/EXECUTION.md) · [Configurazione di esempio](examples/strix-cluster.json)
+- **Usare un client compatibile.** Configura la base `https://yed1z.ai/v1` o la tua origine locale. Richiedi `GET /v1/models` con la chiave personale e usa un ID restituito. La facciata espone `POST /v1/chat/completions` e `POST /v1/responses`. Il test con Codex CLI ha verificato lettura di un file tramite Responses e Qwen reale. [Contratti e compatibilità](docs/RIFERIMENTO-FUNZIONI.md) · [Canary ripetibile](scripts/canary-codex-local.ts)
 
-### Un solo servizio di controllo
+## Esercizio, dati e licenza
 
-`systemd/yed1z-command.service` è l'unità del coordinator. Gli engine di inferenza,
-il tunnel e gli eventuali controller del nodo sono infrastruttura esterna. Il
-runner SSH viene avviato soltanto per un'operazione e termina dopo la risposta.
-
-Il vecchio gateway Python non è una dipendenza del nuovo servizio. La modalità
-CUDA può adattare il node-agent esistente per il lifecycle, mentre la telemetria
-moderna usa il runner TypeScript. Il formato legacy che contiene fallback fissi
-rimane marcato `legacy-unverified` e non viene presentato come misurazione.
-
-## Come funziona una missione
-
-1. L'orchestratore costruisce il contesto e produce un piano strutturato con dipendenze.
-2. Lo scheduler prenota le risorse di inferenza e il workspace. Le letture
-   indipendenti procedono in parallelo; chi modifica lo stesso checkout lavora in serie.
-3. I task raccolgono evidenze dagli strumenti, con hash dei file, timeout e controlli di autorizzazione.
-4. Il revisore esamina il risultato. Le ricette di verifica eseguono realmente test/build configurati.
-5. Un errore di review o verifica può aprire un nuovo ciclo di correzione, entro il budget.
-6. Una verifica superata produce un report Markdown scaricabile. Se esiste una
-   ricetta di rilascio, la missione arriva al relativo gate.
-7. Il controller di rilascio ripete le verifiche sotto lease, esegue la ricetta e
-   osserva il health check. Se fallisce, esegue il rollback previsto e conserva l'esito.
-
-Il sistema distingue **risposta completata**, **consegna nel workspace** e
-**rilascio con health check positivo**. Il risultato del modello non può da solo
-portare lo stato a "distribuito". Il health check attesta la condizione configurata
-dalla rete della macchina di esecuzione, non tutte le possibili reti o funzionalità.
-
-`examples/deployment-recipe.json` è uno schema operatore: i programmi
-`my-app-deploy` e `my-app-rollback` devono essere implementati per il prodotto
-effettivo. Non sono script di deploy già installati sui tuoi server.
-
-### Pause, interruzioni e quote
-
-- Un agente in pausa libera la chiamata di inferenza; gli agenti indipendenti
-  possono terminare, le sue dipendenze attendono.
-- Riprendere un agente ricompone il contesto, include le evidenze precedenti e
-  richiede di controllare lo stato dei file. Non ripete lo stesso RPC.
-- Annullare un ramo mette in pausa la missione dopo le attività già avviate.
-- Dopo un crash o un esito remoto incerto, la missione richiede una ripresa esplicita.
-- Un 429 non avvia rotazioni o replay nascosti. Puoi scegliere un altro account
-  mantenendo la stessa conversazione.
-- Il routing può scegliere una tua alternativa prima di iniziare l'inferenza;
-  non sposta testo già in streaming né riavvia uno strumento su un altro account.
-- La chat ordinaria ha una sola chiamata, una deadline di 120 secondi e attesa
-  hardware di 8 secondi per default. Il tempo effettivo del modello dipende dal
-  motore; questi limiti impediscono un'attesa indefinita, non garantiscono un TTFT.
-- Default: 3 cicli di correzione, 3 agenti di lettura paralleli, 48 chiamate esterne
-  dell'harness, budget output e deadline di 60 minuti. Le CLI native gestiscono
-  internamente ulteriori chiamate: il limite dei turni esterni non è una misura
-  completa delle loro richieste interne o del costo.
-
-## Memoria e contesto
-
-I dati vengono separati per funzione:
-
-- **Conversazione:** cronologia canonica privata dell'utente, indipendente dal provider.
-- **Allegati:** file UTF-8/Markdown conservati con hash e proprietario, fino a 1 MiB
-  ciascuno e 64 MiB per utente in questa release.
-- **Memorie:** metodi, decisioni, brief e documenti con stato candidato/approvato/ritirato,
-  revisioni, fonti e visibilità privata o di progetto.
-- **Indice:** FTS5 e, quando configurato, vettori realmente restituiti dal provider
-  embedding. La ricerca combina ranking testuale e similarità coseno.
-- **Contesto del task:** istruzioni, obiettivo, cronologia recente, metodi approvati,
-  allegati selezionati e risultati delle dipendenze, entro un budget visibile.
-
-Le proposte di metodo raccolte dopo una missione verificata restano candidate.
-L'utente le approva prima del riuso. Pubblicarle al progetto è una decisione
-esplicita. Eliminare una memoria elimina anche revisioni e vettori. Questo è un
-sistema di memoria e recupero del contesto, non un addestramento dei pesi del modello.
-
-La stima del contesto usa bytes UTF-8 e margine; non viene presentata come il
-tokenizer esatto. Token, TTFT e velocità sotto le risposte riportano la fonte. Il
-TTFT del gateway include attesa/rete; non equivale al solo prefill. La memoria GPU
-non è la finestra di contesto. Il traffico di rete viene calcolato soltanto fra
-due campioni reali compatibili, conservando lo zero e distinguendo l'ignoto.
-
-## Utenti e confini di esecuzione
-
-| Ruolo | Permessi di questa release |
-|---|---|
-| Admin | Configurazione, creazione utenti, connessioni, progetti ed esecuzione fidata. |
-| Operator | Connessioni e target autorizzati, missioni, CLI e rilascio. |
-| Member | Chat HTTP, conversazioni, allegati e memoria nei progetti accessibili. |
-| Viewer | Consultazione dei dati autorizzati. |
-
-Le conversazioni e i task rimangono del proprietario anche in un progetto condiviso.
-Non è una chat collaborativa simultanea con altri utenti che possono controllare
-silenziosamente i tuoi agenti. Le memorie di progetto sono il canale di condivisione
-esplicito.
-
-Le chiavi API sono cifrate AES-256-GCM con `master.key` separata; il database e la
-directory sono privati. Le chiavi di accesso sono hashate. Web usa cookie HttpOnly,
-SameSite e controllo Origin; VS Code usa SecretStorage e un bridge senza token nel
-webview.
-
-**I tool di file e le ricette non sono un sandbox OS.** Un programma del progetto
-eseguito con lo stesso utente Unix può avere i privilegi di quell'utente. Gli
-operatori di questa release devono essere fidati. Per offrire esecuzione a utenti
-esterni servono target con UID/container e mount realmente isolati, da collaudare
-separatamente; assegnare una directory diversa nel form non garantisce quell'isolamento.
-
-## API e sviluppo
-
-- `/api/*`: progetti, conversazioni, missioni, agenti, conoscenza, account,
-  telemetria, evidenze ed eventi SSE con replay persistente.
-- `/v1/models`: ID univoci di modello/account.
-- `/v1/chat/completions`: inferenza compatibile, streaming, usage e function tool
-  forwarding. Non esegue autonomamente i tool forniti dal chiamante.
-
-Un nome sottostante presente in più account è ambiguo: usare la route restituita
-dal catalogo. Anche le richieste API attraversano le stesse prenotazioni hardware,
-attivazioni e quote. La facade non ricostruisce tutta l'API legacy del vecchio HUD.
+- **Stato e accessi.** Il coordinator conserva lo stato in SQLite/WAL. Le chiavi personali sono memorizzate come hash, i segreti dei provider sono cifrati e i profili delle CLI hanno storage dedicato. Le conversazioni hanno un proprietario, le memorie condivise hanno uno stato di pubblicazione e approvazione. [Guida a utenti e permessi](docs/GUIDA-PRODOTTO.md#accesso)
+- **Backup e migrazione.** La CLI esporta il database e può importare lo storico supportato attribuendolo al proprietario corretto. Per un ripristino completo servono anche configurazione, chiave master, allegati e profili pertinenti. Il collaudo su copia ha ripristinato la versione precedente con login e dati. [Esercizio e rollback](docs/CONSEGNA-1.0-RC1.md#installazione-diagnosi-e-rollback) · [Riferimento CLI](docs/RIFERIMENTO-CLI.md)
+- **Confini della RC.** Un consenso OAuth richiede l’utente del provider. Le ricette di produzione, i test applicativi e il significato del relativo health check competono all’operatore del progetto. Il rollback applicativo è stato provato su un target isolato con health HTTP 503. L’esecuzione nativa e le missioni richiedono un operatore fidato. [Verifiche sul campo e prove aperte](docs/CONSEGNA-1.0-RC1.md#stato-delle-prove-del-piano)
+- **Sviluppo.** Con Node 24, esegui i comandi seguenti dalla radice. `check` comprende TypeScript, suite e build. Lo smoke avvia il prodotto dai bundle su stato temporaneo e controlla anche gli ingressi Web. [Istruzioni per i contributori](AGENTS.md)
 
 ```bash
 npm ci
@@ -288,29 +180,4 @@ npm run smoke
 npm run package:vsix
 ```
 
-Il codice applicativo, i tool, i test e gli script sono TypeScript. HTML, CSS,
-SQL incorporato e JSON descrivono interfaccia, schema e configurazione. I file JS
-in `dist/` sono bundle generati. Il runtime non richiede framework o servizi di
-database/vector aggiuntivi.
-
-## Documentazione e limiti residui
-
-- [Architettura completa](docs/ARCHITETTURA.md)
-- [Audit delle lacune 0.2 → 0.3 e confini della release](docs/GAP_AUDIT.md)
-- [Esperienza utente e verifiche dell'interfaccia](docs/UX.md)
-- [Collegamento provider e login](docs/CONNECTIONS.md)
-- [Routing, occupazione e probe dei motori](docs/ROUTING.md)
-- [API](docs/API.md)
-- [Adapter e fonti](docs/ADAPTERS.md)
-- [Esecuzione, SSH e rilascio](docs/EXECUTION.md)
-- [Migrazione e rollback](docs/MIGRATION.md)
-- [Verifica della RC e matrice delle prove](docs/CONSEGNA-1.0-RC1.md)
-- [Verifica storica della versione 0.4](docs/VERIFICA.md)
-
-Il coordinator può creare worktree Git locali per le missioni e promuovere i candidati verificati su rami dedicati. Ogni progetto configura il proprio target e la propria ricetta di deploy. La telemetria hardware visualizza i campioni della sessione. Il registro persistente conserva eventi e uso per rotta. Gli operatori nativi usano profili dedicati. Il consenso iniziale di ogni identità Codex e Google richiede il titolare. Le percentuali di quota dipendono da ciò che il provider espone. Per i limiti operativi e le prove di questa versione consulta l’handoff della RC.
-
-Non è una fusione del codice completo di OpenCode, Pi, Goose e DSH. Il progetto
-ricostruisce il prodotto attorno alla tua infrastruttura e riusa gli adapter
-TypeScript MIT di HaloForge con la loro provenienza. La licenza principale resta
-quella **0xfunboy Non-Commercial v1.1**, con le eccezioni MIT documentate nei moduli
-vendor; non viene presentato tutto il repository come MIT.
+Il progetto è distribuito con **0xfunboy Non-Commercial License**. La licenza descrive le condizioni per l’uso commerciale. Gli adapter derivati da HaloForge mantengono le rispettive attribuzioni MIT. [Licenza del progetto](LICENSE.md) · [Attribuzioni degli adapter](src/adapters/vendor/NOTICE.md) · [Documentazione completa](docs/README.md)

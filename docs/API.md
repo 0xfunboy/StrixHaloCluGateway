@@ -9,6 +9,8 @@ I contratti di collegamento, routing e carico dei motori sono definiti anche in
 [`routing-types.ts`](../src/routing-types.ts) e
 [`load-types.ts`](../src/load-types.ts), riesportati dai contratti condivisi.
 
+Sul sito condiviso `/` apre l’HUD hardware storico, `/control` apre il progetto e `/cockpit` apre Fleet. Il client può raggiungere l’HUD anche da `/cockpit/classic`. [Indice completo dei metodi HTTP](RIFERIMENTO-FUNZIONI.md)
+
 ## Convenzioni, autenticazione e ruoli
 
 I body sono oggetti JSON con `Content-Type: application/json`, entro 7 MiB;
@@ -21,11 +23,10 @@ significa attività accettata, non completamento o successo.
 | Browser | `POST /api/login {token}` → `{user}` e cookie `yed1z_session`, HttpOnly, SameSite=Strict, durata 12 ore. `Secure` dipende dalla configurazione HTTPS. |
 | Client nativo | Header `Authorization: Bearer <chiave-personale-yed1z>`. Non è la chiave del provider del modello. |
 | Logout | `POST /api/logout` → `{ok:true}`, revoca la sessione cookie corrente; non revoca una chiave Bearer. |
-| Stato pubblico | `GET /api/health` → `{ok,version}`, senza informazioni di infrastruttura. |
+| Stato pubblico | `GET /api/health` oppure `GET /health` → `{ok,status,version,active_model}`. L’etichetta del motore è null se assente. |
 | Monitor pubblico | Con `publicDashboard:true`, `GET /api/bootstrap`, `/api/events`, `/api/dashboard` e `/api/telemetry` sono accessibili senza credenziali con dati pubblici limitati, descritti sotto. |
 
-Le mutazioni con cookie richiedono `Origin` uguale a `publicOrigin` o, se non
-configurato, all'origine HTTP del servizio. Anche il login controlla l'origine
+Le mutazioni con cookie richiedono `Origin` uguale a `publicOrigin` o, se assente, all’origine HTTP del servizio. È ammessa anche un’origine loopback con host e porta corrispondenti quando la connessione stessa arriva da loopback. Anche il login controlla l'origine
 quando inviata dal client. Le credenziali nelle query URL sono rifiutate.
 Le API `/v1/` richiedono sempre Bearer.
 
@@ -37,7 +38,7 @@ alle altre risorse private o avviare inferenza.
 
 | Ruolo | Capacità |
 | --- | --- |
-| `viewer` | Letture GET autorizzate, bootstrap ed eventi. Nessuna inferenza o mutazione. |
+| `viewer` | Letture autorizzate, bootstrap, eventi, ricerca lessicale di progetto e modifica delle proprie preferenze di aspetto. |
 | `member` | Propri progetti e conversazioni, chat HTTP, conoscenza autorizzata e account HTTP privati sui provider disponibili. |
 | `operator` | Capacità member più configurazione autorizzata, missioni, CLI native, controlli per task e rilasci. È un operatore fidato. |
 | `admin` | Capacità operator e amministrazione utenti/progetti. I controlli di proprietario degli oggetti privati rimangono validi. |
@@ -123,7 +124,7 @@ La UI usa `message.delta`, `task.delta`, `task.updated`, `run.updated`,
 `state.changed`. Ricaricare bootstrap/conversazione ai cambiamenti rilevanti,
 raggruppando gli aggiornamenti: i delta non sostituiscono lo stato persistito.
 
-Gli eventi 0.4 rendono osservabili le fasi senza richiedere percentuali simulate:
+Gli eventi seguenti rendono osservabili le fasi del lavoro.
 
 | Evento | Dati e significato |
 | --- | --- |
@@ -135,7 +136,7 @@ Gli eventi 0.4 rendono osservabili le fasi senza richiedere percentuali simulate
 | `route.queued` | `{queuedAt,waitedMs,position,candidateIds,busyResourceIds}`; attesa effettiva sulle risorse condivise dalle alternative. La posizione non è una stima del tempo residuo. |
 | `route.selected` | Decisione registrata nel task: `{requestedRouteId,chosenRouteId,switched,waitMs,reason}` quando viene effettuata la selezione iniziale; le prenotazioni successive mantengono la route scelta. |
 | `inference.started` | `{routeId}` e, nel percorso HTTP, `queueMs`/`loadMs`. |
-| `inference.completed` | Sui percorsi HTTP e nativo, `{routeId,durationMs}` quando viene ricevuto il risultato. |
+| `inference.completed` | Sui percorsi HTTP e nativo, `{routeId,accountId,durationMs}` e contatori `inputTokens`, `outputTokens` quando misurati. I record storici possono contenere meno campi. |
 | `routing.updated` | Snapshot effimero di disponibilità; contratto distinto dalla telemetria hardware. |
 
 `message.delta` contiene `{messageId,delta,offset}`; usare l'offset per non
@@ -194,7 +195,7 @@ non autorizza l'uso di tutti i modelli disponibili. `auto` può selezionare
 soltanto la route richiesta e le alternative esplicitamente indicate, fino a
 32 ID; `pinned` attende esclusivamente la route richiesta. Le alternative
 esplicite non accessibili producono errore. Ruolo del task, capacità, contesto,
-permessi native, stato account, quote e risorse restano controllati dal router.
+permessi dei runtime nativi, stato account, quote e risorse restano controllati dal router. In Auto, a parità di disponibilità, provider, modello e unità di misura, le osservazioni di quota degli ultimi cinque minuti possono privilegiare l’account con più margine. I candidati con quota sconosciuta restano nella propria posizione. [Regole di selezione e dominio di quota](ROUTING.md)
 
 `maxWaitMs` è un intero da 0 a 120.000. Se non configurato, l'attesa massima di
 prenotazione è 8 secondi per chat e 30 secondi per gli altri ruoli; zero richiede
@@ -289,17 +290,14 @@ inferenza riceve `409 MODEL_REQUIRED`; il percorso servizio resta utilizzabile.
 La chat HTTP non esegue tool. Le missioni richiedono operator/admin, target e
 almeno una ricetta di verifica eseguibile. Anche le CLI native fuori dalle
 missioni richiedono operator/admin e mantengono i limiti dell'adapter:
-Antigravity non è disponibile per ruoli di sola lettura. Una richiesta
+Su un target locale le rotte native possono essere selezionate anche nei ruoli di sola lettura. Le richieste di scrittura o comando dei runtime in tali ruoli vengono negate dal coordinator. Una richiesta
 accettata può poi fallire nel controllo delle capacità; la causa appare nel run.
 
-Una conversazione ammette un solo run non terminale che richiede inferenza;
-l'eccezione è la risposta del servizio descritta sopra. Il coordinator limita le
-attività attive a quattro per utente e 32 totali, senza consumare questi slot per
-le risposte immediate del servizio.
+Una conversazione può avere una chat e una missione aperte contemporaneamente. Un secondo run non terminale della stessa modalità restituisce `ACTIVE_RUN`. Una risposta di servizio riconosciuta rimane disponibile. Il coordinator limita le attività attive a quattro per utente e 32 totali, escludendo da questi slot le risposte immediate del servizio.
 
 | Percorso | Budget e timeout |
 | --- | --- |
-| Chat | Una chiamata modello, fino a 4.096 token output; limite complessivo 120 secondi. La chiamata HTTP upstream ha timeout 90 secondi. La chat non acquisisce il lock esclusivo del workspace. |
+| Chat | Una chiamata modello ordinaria. In Auto possono aggiungersi fino a due tentativi per limite di quota, secondo le alternative autorizzate. Budget di 4.096 token output e limite complessivo 120 secondi. La chiamata HTTP upstream ha timeout 90 secondi. La chat non acquisisce il lock esclusivo del workspace. |
 | Missione | Budget iniziale 48 chiamate modello e 64.000 token output; limite complessivo 60 minuti. |
 | Risposta del servizio | Zero chiamate modello consumate; risposta calcolata dal coordinator e salvata subito. |
 
@@ -378,7 +376,7 @@ generico di comando dei modelli.
 
 ### Percorso guidato di collegamento
 
-Il client 0.4 usa un'unica operazione recuperabile per creare o riutilizzare
+Il client usa un'unica operazione recuperabile per creare o riutilizzare
 provider/account, verificare l'accesso e scoprire i modelli. I dettagli dei
 runtime, degli stati e del collaudo sono in
 [`CONNECTIONS.md`](CONNECTIONS.md).
@@ -401,7 +399,7 @@ Esempio di collegamento di un servizio locale, raggiungibile dal coordinator:
 ```
 
 I preset sono `codex`, `antigravity`, `openai`, `gemini`, `ollama`, `lmstudio`,
-`gemrouter`, `custom`. Il body può contenere anche `providerId`, `accountId`,
+`gemrouter`, `custom`. Il body può contenere anche `providerId`, `accountId`, `quotaDomain`,
 `label`, `secret`, `shared`, `nodeIds`, `resourceGroupIds`, `modelIds`. Gli alias
 `openai-compatible` e `openai-responses` corrispondono a `custom` e `openai`.
 Comandi, argv, environment e indirizzi delle sonde non sono accettati.
@@ -461,8 +459,8 @@ guidato precedente:
 | `POST /api/providers` | Operator/admin. `{label,kind,baseUrl?,tag?,nodeIds?,resourceGroupIds?}` → `201 Provider`. |
 | `POST /api/accounts` | `{providerId,label,secret?,shared?}` → `201 Account`; privato su provider disponibile, condivisione solo operator/admin. |
 | `POST /api/accounts/:id/discover` | Proprietario; `{}` → `{models,account,warnings}`, limite 45 secondi. Native solo operator/admin. |
-| `POST /api/accounts/:id/login` | Proprietario, operazione native solo operator/admin; `{}` → `202 {operationId}`, esito attraverso `account.login`. |
-| `PATCH /api/models/:id` | Operator/admin e proprietario dell'account; `{label?,contextWindow?,capabilities?,resourceGroupIds?}` → `ModelRoute`. |
+| `POST /api/accounts/:id/login` | Operatore o admin titolare. `{}` → 202 con stato, `operationId` e `accountId`. L’esito arriva attraverso `account.login`. |
+| `PATCH /api/models/:id` | Operator/admin e proprietario dell'account; `{label?,enabled?,contextWindow?,capabilities?,resourceGroupIds?}` → `ModelRoute`. |
 
 Provider HTTP: `openai-compatible`, `openai-responses`, `ollama`, `gemini`.
 Codex e Antigravity sono entrambi creabili dall'operatore, anche da
@@ -473,18 +471,9 @@ Comandi CLI, argv ed environment arbitrari non sono campi della UI.
 `tag` è `gemrouter`, `cluster`, `cloud` o `local`; GemRouter è un provider
 `openai-compatible` con relativo tag.
 
-Gli account native non sono condivisibili. Codex isola il profilo per account;
-Antigravity ammette un solo account nel servizio. Creazione, discovery, login
-ed esecuzione native escludono i member anche in presenza di record legacy.
-Il login asincrono può terminare con un evento di errore dopo il `202`.
+Gli account nativi hanno un titolare e ammettono deleghe nominative a operatori autorizzati. L’opzione di condivisione generale resta riservata agli account HTTP. La gestione del login e la discovery spettano al titolare. Codex utilizza un `CODEX_HOME` privato per account. I nuovi account Antigravity utilizzano directory private per il profilo ACP e lo stato XDG. Il profilo storico continua a usare la configurazione originaria.
 
-Il login guidato Codex inoltra URL/codice ufficiali effimeri; Antigravity usa una
-CLI autenticata tramite `agy acp --login` con lo stesso utente Unix del
-coordinator, seguito da una nuova verifica; non offre OAuth guidato nel webview.
-La discovery Antigravity legge i modelli effettivamente esposti da ACP. Se il
-runtime non espone una scelta, la route `current` significa **modello corrente
-della CLI**, non un nome Gemini dedotto. Rimane utilizzabile per il ruolo
-sviluppatore, non per orchestratore/revisore in sola lettura.
+Il login guidato Codex inoltra il device code ufficiale. Per Antigravity, il coordinator avvia `agy acp --login` sul profilo scelto e inoltra l’URL Google al titolare. Se la CLI richiede la risposta, inviare `POST /api/accounts/:id/login/respond` con `operationId` e `code`. Anche il webview dispone di questo flusso, con input protetto dell’host. `GET /api/accounts/:id/login` recupera lo stato e `DELETE` annulla l’operazione. Per entrambi, 202 conferma l’avvio. A login concluso viene eseguita la discovery. ACP espone la lista disponibile oppure `current` per il modello corrente della sessione autenticata. La discovery lascia la quota numerica Antigravity sconosciuta. [Stato dei collaudi con account reali](CONSEGNA-1.0-RC1.md)
 
 `account.login` contiene `operationId`, `accountId` e `status`. `pending` può
 contenere URL/codice temporanei; `complete` viene emesso soltanto dopo discovery
@@ -537,15 +526,14 @@ La facade condivide account, quote, attivazioni e prenotazioni del prodotto.
 Non crea conversazioni, missioni, memorie o workspace e non esegue tool. Non è
 l'intera API OpenAI.
 
-`GET /v1/models` restituisce `object:'list'` con ID di **route specifiche
-dell'account**, `name`, `owned_by`, `underlying_model`, eventuale `context_length`.
+`GET /v1/models` restituisce `object:'list'` con ID di **route specifiche dell’account**, `name`, `owned_by`, `underlying_model`, eventuale `context_length`, `aliases` ed `endpoints`.
 Usare l'ID per scegliere la quota. Il nome sottostante è accettato solo se non
 ambiguo; altrimenti `400 AMBIGUOUS_MODEL`. Le route native possono comparire nel
-catalogo, ma completions le rifiuta con `409 CAPABILITY`.
+catalogo. Il campo `endpoints` indica `conversation` per una CLI nativa. Per una richiesta fissata a questa rotta la facciata HTTP rifiuta il target nativo (`409 NATIVE_TARGET` se questo è il vincolo che fallisce).
 
 `POST /v1/chat/completions` accetta:
 
-- `model`: ID route o nome sottostante non ambiguo;
+- `model`: ID route, alias o nome sottostante univoco;
 - `messages`: massimo 200, ruoli `system`, `user`, `assistant`, `tool`;
 - `content`: testo o `null`, massimo 100.000 caratteri per messaggio;
 - `tool_call_id` nei risultati `tool` e `tool_calls` nei messaggi `assistant`;
@@ -608,11 +596,10 @@ il webview non chiama i provider. La chiave yed1z è in SecretStorage per origin
 | `{type:'configure'}` | Dialoghi host URL/chiave; `{type:'configured'}` dopo verifica del gateway. |
 | `{type:'attachSelection'}` | `{type:'selection',name,content}`, selezione esplicita dell'editor. |
 | `{type:'saveFile',name,content}` | Dialogo nativo e `{type:'savedFile',ok,error?}`, massimo 16 MB. |
-| `{type:'open-portal'}` | Apre il gateway configurato. |
-| `{type:'openAuth',url}` | Solo URL HTTPS senza credenziali sui domini OpenAI consentiti. |
+| `{type:'open-portal'}` | Apre `/control` nell’origine del gateway configurato. |
+| `{type:'openAuth',url}` | URL HTTPS senza credenziali o porta esplicita sui domini ammessi da Codex e Google, incluso `accounts.google.com`. |
 
-Workspace Trust precede mutazioni e selezioni; letture e logout restano
-possibili. Il body webview di `POST /api/connections` e `POST /api/accounts`
+Workspace Trust precede le mutazioni operative e il trasferimento delle selezioni. Letture, preferenze personali di aspetto e logout rimangono disponibili. Il body webview di `POST /api/connections` e `POST /api/accounts`
 può usare `requestSecret:true`:
 l'host chiede la chiave in un input password, rimuove il flag e invia `secret`
 solo al server. Il flag appartiene al bridge, non all'API pubblica.

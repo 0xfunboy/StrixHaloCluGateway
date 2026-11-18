@@ -1,7 +1,6 @@
 # Routing, code e carico dei motori
 
-Questa guida descrive il comportamento della versione 0.4: un coordinator
-sceglie e prenota un modello accessibile all'utente, tenendo conto di account,
+Nella Control Room 1.0 RC1 il coordinator sceglie e prenota un modello accessibile all'utente, tenendo conto di account,
 quote osservate, risorse delle macchine e, quando configurati, contatori di
 carico del motore. Web e VS Code usano lo stesso servizio e la stessa
 cronologia. Il routing non sposta la conversazione fra archivi diversi.
@@ -22,7 +21,7 @@ pubblico del modello non sostituisce l'ID della route.
 | Strategia | Comportamento |
 | --- | --- |
 | `pinned` | Usa soltanto il modello/account selezionato. Se le sue risorse interne sono occupate, attende entro il limite configurato. Non usa le alternative. |
-| `auto` | Considera la route selezionata e le sole alternative autorizzate. Preferisce capacità disponibili, poi disponibilità non ancora verificata, poi risorse occupate. A parità di stato mantiene l'ordine delle scelte. |
+| `auto` | Considera la route selezionata e le sole alternative autorizzate. Preferisce capacità disponibili, poi disponibilità non ancora verificata, poi risorse occupate. Nello stesso stato può riordinare account equivalenti con misure di quota recenti e confrontabili. Gli altri conservano la posizione relativa. |
 
 `auto` non significa cercare un provider qualsiasi: un modello cloud o un
 secondo account deve essere incluso esplicitamente in `fallbackRouteIds`.
@@ -57,9 +56,7 @@ Senza override, il run eredita la politica del progetto; in assenza anche di
 questa, usa `auto` senza alternative. Un elenco vuoto lascia come unica
 candidata la route selezionata.
 
-La facade `POST /v1/chat/completions` usa invece la route richiesta in modalità
-`pinned`, con attesa massima interna di 8 secondi. Non eredita una politica di
-fallback da un progetto.
+Le facciate `POST /v1/chat/completions` e `POST /v1/responses` usano di default `pinned` e una finestra di attesa di 8 secondi. Per usare alternative il client deve specificare nel body `routing.strategy: "auto"` e `fallbackRouteIds`. Queste richieste API sono indipendenti dalla politica di un progetto.
 
 ### Controlli prima della scelta
 
@@ -75,9 +72,8 @@ Il router applica questi vincoli a ogni candidata:
 - **Capacità e contesto:** requisiti espliciti compatibili e finestra sufficiente
   per il controllo preliminare. L'orchestratore compila poi il contesto sul
   modello effettivamente scelto e applica il relativo budget.
-- **Runtime nativi:** ruolo operator/admin e workspace locale autorizzato.
-  Antigravity è riservato ai task coder; non è un'alternativa per chat o attività
-  di sola lettura. I dettagli sono in [ADAPTERS.md](ADAPTERS.md).
+- **Runtime nativi.** Codex e Antigravity richiedono operator/admin, un account utilizzabile e un workspace sul coordinator. Il router verifica il ruolo, le capacità e il target per il task. Nei task di sola lettura il coordinator rifiuta le autorizzazioni di scrittura o comando. Le rotte native si invocano attraverso le conversazioni di progetto. [Runtime e limiti ACP](ADAPTERS.md)
+
 - **Carico autorevole:** se esiste un probe configurato, il dato deve essere
   recente e compatibile con l'uso delle risorse. La sezione 5 descrive i casi
   di occupazione esterna e lettura non disponibile.
@@ -97,6 +93,8 @@ residue, percentuali e finestre restano assenti quando non disponibili. Un
 429 può registrare `Retry-After`; un limite senza scadenza utilizzabile imposta
 un cooldown prudenziale di 60 secondi. Non è una misura della quota residua.
 Il budget locale del run è separato dal saldo commerciale dell'account.
+
+Il confronto fra quote in Auto avviene soltanto fra candidati con uguale classe di disponibilità, stesso provider e stesso modello a monte. L’osservazione deve risalire agli ultimi cinque minuti. Fra finestre percentuali ancora valide il router usa il minimo del residuo delle finestre. In loro assenza usa le richieste residue. Ordina i valori in senso decrescente fra account con la stessa unità, lasciando le quote sconosciute nella loro posizione. Un `quotaDomain` esplicitamente uguale fra account dello stesso proprietario condivide le osservazioni, dando precedenza al cooldown futuro con scadenza più lunga. [Quota effettiva](../src/catalog.ts) · [Ordinamento delle alternative](../src/routing.ts)
 
 In `auto`, un HTTP 429 esplicito alla prima chiamata del task, prima di testo,
 tool o effetti precedenti, permette fino a due selezioni alternative HTTP nello
@@ -445,12 +443,7 @@ La suite riproducibile è:
 node --test tests/routing.test.ts tests/inference-load.test.ts tests/interaction.test.ts
 ```
 
-Comprende 40 casi su atomicità, code, fairness, ACL, quote, carico esterno,
-riconciliazione dopo rilascio, chat rapida, cronologia, FTS e interruzioni dopo
-output/effetti. Usa server HTTP
-reali su loopback, SQLite e filesystem di prova. Non sostituisce il collaudo
-con GPU, account reali, CLI installate e rete dell'impianto. Il gate completo
-del repository resta `npm run check`.
+La suite copre atomicità, code, equità, permessi, quote, carico esterno, riconciliazione, chat rapida e interruzioni dopo output o effetti. Usa server HTTP su loopback, SQLite e filesystem di prova. Il rapporto di consegna documenta anche la prova con due utenti e richieste sovrapposte a Strix e CUDA, le misure di coda, la generazione su quattro motori e i limiti rilevati sui provider. Il comando di verifica complessivo è `npm run check`. [Collaudo sul cluster e prestazioni](CONSEGNA-1.0-RC1.md)
 
 ## Riferimenti di implementazione
 
