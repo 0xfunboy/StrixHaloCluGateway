@@ -1,11 +1,11 @@
-# Runtime data and secrets
-data/api_keys.json
-data/stats.json
-data/*.tmp
-data/*.bak*
-*.bak*
+node_modules
+state/
+data/
+.env
 *.log
-__pycache__/
-*.pyc
+*.sqlite*
+*.vsix
+*.bak*
 .DS_Store
+coverage/
 

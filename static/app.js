@@ -4,58 +4,250 @@
  */
 
 // Global State
-let currentTheme = localStorage.getItem('theme') || 'dark';
-let crtActive = localStorage.getItem('crt') !== 'false';
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let currentTheme = 'dark';
+let crtActive = false;
+let themePreference = 'system';
+let motionPreference = 'on';
+let appearanceRevision = 0;
+let appearanceQueue = Promise.resolve();
+let currentLang = localStorage.getItem('yed1z_lang') || 'it';
 let currentInspectorView = 'cluster'; // 'cluster' | 'die'
 let lastTelemetry = null;
 let animationFrameId = null;
 
 // ============================================================================
+// I18N BILINGUAL SYSTEM (IT / EN)
+// ============================================================================
+const I18N = {
+  it: {
+    sys_utc: 'SYS_UTC:',
+    crt_fx: 'CRT FX:',
+    control_room_btn: 'CONTROL ROOM',
+    master_arbitration: 'ARBITRAGGIO PRINCIPALE:',
+    sec1_name: 'TOPOLOGIA CLUSTER 4D & PIPELINE ARBITRAGGIO TEMPO REALE',
+    sec1_status: 'PIPELINE ATTIVA // MUTEX FIFO MULTI-UTENTE INGAGGIATO',
+    tess_title: 'IPER-PROIEZIONE TESSERATTO 4D',
+    tess_sub: 'ROTAZIONE SPAZIALE INTERATTIVA · TRASCINA PER ORIENTARE',
+    wf_title: 'FLUSSO PIPELINE MULTI-UTENTE AUTONOMO',
+    wf_sync: 'TEMPO REALE ZERO-COLLISIONI',
+    wf_step1: '01. APP CLIENT',
+    wf_step2: '02. GATEWAY YED1Z',
+    wf_step3: '03. CLUSTER TRI-NODO',
+    wf_step4: '04. MOTORE SPECULATIVO',
+    osc_title: 'OSCILLOSCOPIO AI FOSFORI CRT',
+    osc_mode: 'CH1: TOK/S · CH2: JITTER BUS',
+    osc_decode: 'VELOCITÀ DECODE',
+    osc_prefill: 'BURST PREFILL',
+    osc_acc: 'ACCURATEZZA SPEC.',
+    sec2_name: 'SENSORI HARDWARE CLUSTER TRI-NODO & ISPETTORE CHASSIS',
+    sec2_status: '3 NODI SINCRONIZZATI // DUAL STRIX HALO APU + ACCELERATORE AIREWARD CUDA',
+    pod_node01_role: '[ COORDINATORE · RANK 0 ]',
+    pod_node02_role: '[ WORKER · RANK 1 ]',
+    pod_air_role: '[ ACCEL CUDA · RTX 3090 24GB ]',
+    insp_title: 'PORTA ISPEZIONE CHASSIS & SILICIO',
+    btn_view_cluster: 'VISTA DUAL CHASSIS',
+    btn_view_die: 'BLUEPRINT DIE SILICIO',
+    hs_node01: 'NODO 01 (PRIMARIO)',
+    hs_usb4: 'INTERCONNESSIONE USB4 40Gbps',
+    hs_node02: 'NODO 02 (WORKER)',
+    matrix_badge: 'PIANO DI CONTROLLO',
+    matrix_title: 'MATRICE DI ARBITRAGGIO MOTORI',
+    guest_text: 'OSPITE (SOLA LETTURA)',
+    admin_text: 'OPERATORE ADMIN',
+    btn_unlock: '🔓 SBLOCCA',
+    btn_lock: '🔒 BLOCCA',
+    strix_group: 'CLUSTER DUAL STRIX HALO (256GB LPDDR5X)',
+    air_group: 'ACCELERATORE AIREWARD-LLM (RTX 3090 + 64GB DDR5)',
+    active_engines: 'MOTORI ATTIVI:',
+    sec3_name: 'ANALISI STORICA PRODUZIONE & LOG FLUSSO INFERENZA',
+    aggregated_tokens: 'TOKEN AGGREGATI:',
+    chart_title: 'PRODUZIONE GIORNALIERA TOKEN PER MODELLO',
+    stream_title: 'FLUSSO LOG INFERENZA IN TEMPO REALE',
+    stream_meta: '[ NESSUNA ESPOSIZIONE IP CLIENT · ARBITRAGGIO AUTOMATICO ]',
+    th_req_id: 'REQ ID',
+    th_time: 'ORA',
+    th_client: 'CLIENT / UTENTE',
+    th_app: 'APPLICAZIONE',
+    th_model: 'MODELLO SERVITO',
+    th_prompt: 'PROMPT',
+    th_gen: 'GEN',
+    th_duration: 'DURATA',
+    th_velocity: 'VELOCITÀ',
+    th_status: 'STATO',
+    modal_title: 'OVERRIDE DI SISTEMA // AUTENTICAZIONE ADMIN',
+    modal_notice_strong: 'PIANO DI CONTROLLO ARBITRAGGIO RISERVATO',
+    modal_notice_body: 'Il cambio di modello live e il controllo del cluster richiedono autorizzazione crittografica operatore. Inserisci la tua chiave Bearer (<code class="mono-code">sk-yed...</code>) per sbloccare i privilegi.',
+    modal_key_label: 'CHIAVE OPERATORE CRITTOGRAFICA:',
+    modal_dismiss: 'ANNULLA',
+    modal_authorize: '🔓 AUTORIZZA OPERATORE'
+  },
+  en: {
+    sys_utc: 'SYS_UTC:',
+    crt_fx: 'CRT FX:',
+    control_room_btn: 'CONTROL ROOM',
+    master_arbitration: 'MASTER ARBITRATION:',
+    sec1_name: '4D CLUSTER TOPOLOGY & REAL-TIME ARBITRATION PIPELINE',
+    sec1_status: 'PIPELINE ACTIVE // FIFO MULTI-USER MUTEX ENGAGED',
+    tess_title: '4D TESSERACT HYPER-PROJECTION',
+    tess_sub: 'INTERACTIVE SPATIAL ROTATION · DRAG TO ORIENT',
+    wf_title: 'AUTONOMOUS MULTI-USER PIPELINE WORKFLOW',
+    wf_sync: 'REALTIME ZERO-COLLISION',
+    wf_step1: '01. CLIENT APPS',
+    wf_step2: '02. YED1Z GATEWAY',
+    wf_step3: '03. TRI-NODE CLUSTER',
+    wf_step4: '04. SPECULATIVE ENGINE',
+    osc_title: 'CRT PHOSPHOR OSCILLOSCOPE',
+    osc_mode: 'CH1: TOK/S · CH2: BUS JITTER',
+    osc_decode: 'DECODE VELOCITY',
+    osc_prefill: 'PREFILL BURST',
+    osc_acc: 'SPECULATIVE ACC',
+    sec2_name: 'TRI-NODE CLUSTER HARDWARE TELEMETRY & CHASSIS INSPECTOR',
+    sec2_status: '3 NODES SYNCHRONIZED // DUAL STRIX HALO APU + AIREWARD CUDA ACCELERATOR',
+    pod_node01_role: '[ COORDINATOR · RANK 0 ]',
+    pod_node02_role: '[ WORKER · RANK 1 ]',
+    pod_air_role: '[ CUDA ACCEL · RTX 3090 24GB ]',
+    insp_title: 'CHASSIS & SILICON INSPECTION PORT',
+    btn_view_cluster: 'DUAL CHASSIS VIEW',
+    btn_view_die: 'SILICON DIE BLUEPRINT',
+    hs_node01: 'NODE 01 (PRIMARY)',
+    hs_usb4: '40Gbps USB4 INTERCONNECT',
+    hs_node02: 'NODE 02 (WORKER)',
+    matrix_badge: 'CONTROL PLANE',
+    matrix_title: 'ENGINE ARBITRATION MATRIX',
+    guest_text: 'READ-ONLY GUEST',
+    admin_text: 'ADMIN OPERATOR',
+    btn_unlock: '🔓 UNLOCK',
+    btn_lock: '🔒 LOCK',
+    strix_group: 'DUAL STRIX HALO CLUSTER (256GB LPDDR5X)',
+    air_group: 'AIREWARD-LLM ACCELERATOR (RTX 3090 + 64GB DDR5)',
+    active_engines: 'ACTIVE ENGINES:',
+    sec3_name: 'HISTORICAL PRODUCTION ANALYTICS & INFERENCE STREAM LOGS',
+    aggregated_tokens: 'AGGREGATED TOKENS:',
+    chart_title: 'DAILY TOKEN PRODUCTION BY MODEL',
+    stream_title: 'REAL-TIME INFERENCE LOG STREAM',
+    stream_meta: '[ ZERO CLIENT IP EXPOSURE · AUTOMATIC ARBITRATION ]',
+    th_req_id: 'REQ ID',
+    th_time: 'TIMESTAMP',
+    th_client: 'CLIENT / USER',
+    th_app: 'APPLICATION',
+    th_model: 'MODEL SERVED',
+    th_prompt: 'PROMPT',
+    th_gen: 'GEN',
+    th_duration: 'DURATION',
+    th_velocity: 'VELOCITY',
+    th_status: 'STATUS',
+    modal_title: 'SYSTEM OVERRIDE // ADMIN AUTHENTICATION',
+    modal_notice_strong: 'RESTRICTED ARBITRATION CONTROL PLANE',
+    modal_notice_body: 'Live model switching and cluster control require cryptographic operator authorization. Enter your Bearer key (<code class="mono-code">sk-yed...</code>) to unlock execution privileges.',
+    modal_key_label: 'CRYPTOGRAPHIC OPERATOR KEY:',
+    modal_dismiss: 'DISMISS',
+    modal_authorize: '🔓 AUTHORIZE OPERATOR'
+  }
+};
+
+function applyLanguage(lang) {
+  currentLang = lang;
+  localStorage.setItem('yed1z_lang', lang);
+  document.documentElement.setAttribute('lang', lang);
+
+  const langLabel = document.getElementById('lang-label');
+  if (langLabel) {
+    langLabel.textContent = lang === 'it' ? 'IT / EN' : 'EN / IT';
+  }
+
+  const dict = I18N[lang] || I18N.it;
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const key = el.getAttribute('data-i18n');
+    if (dict[key]) {
+      el.innerHTML = dict[key];
+    }
+  });
+
+  // Dynamic status updates
+  const badgeText = document.getElementById('badge-auth-text');
+  const btnAuthLabel = document.getElementById('btn-auth-label');
+  if (badgeText) {
+    badgeText.textContent = isAdminUnlocked() ? dict.admin_text : dict.guest_text;
+  }
+  if (btnAuthLabel) {
+    btnAuthLabel.textContent = isAdminUnlocked() ? dict.btn_lock : dict.btn_unlock;
+  }
+}
+
+function initLanguage() {
+  const langBtn = document.getElementById('lang-toggle-btn');
+  if (langBtn) {
+    langBtn.addEventListener('click', () => {
+      const nextLang = currentLang === 'it' ? 'en' : 'it';
+      applyLanguage(nextLang);
+    });
+  }
+  applyLanguage(currentLang);
+}
+
+// ============================================================================
 // 1. THEME & CRT CONTROLS
 // ============================================================================
-function initThemeAndCrt() {
-  document.documentElement.setAttribute('data-theme', currentTheme);
-  const themeIcon = document.getElementById('theme-icon');
-  if (themeIcon) {
-    themeIcon.textContent = currentTheme === 'dark' ? 'DARK' : 'LIGHT';
-  }
+function readLocalAppearance() {
+  const theme = localStorage.getItem('theme');
+  themePreference = ['dark', 'light', 'system'].includes(theme) ? theme : 'system';
+  const crt = localStorage.getItem('crt');
+  motionPreference = crt === 'false' || (crt !== 'true' && localStorage.getItem('yed1z.motion') === 'off') ? 'off' : 'on';
+}
 
-  const crtLabel = document.getElementById('crt-mode-label');
-  if (crtActive) {
-    document.body.classList.add('crt-active');
-    if (crtLabel) crtLabel.textContent = 'ON';
-  } else {
-    document.body.classList.remove('crt-active');
-    if (crtLabel) crtLabel.textContent = 'OFF';
-  }
-
-  const themeBtn = document.getElementById('theme-toggle');
-  if (themeBtn) {
-    themeBtn.addEventListener('click', () => {
-      currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', currentTheme);
-      localStorage.setItem('theme', currentTheme);
-      if (themeIcon) themeIcon.textContent = currentTheme === 'dark' ? 'DARK' : 'LIGHT';
-      if (lastTelemetry && lastTelemetry.stats) {
-        renderTokensChart(lastTelemetry.stats.daily_tokens || {});
-      }
-    });
-  }
-
+function applyAppearance() {
+  currentTheme = themePreference === 'system' ? systemDark.matches ? 'dark' : 'light' : themePreference;
+  crtActive = motionPreference === 'on' && !reducedMotion.matches;
+  document.documentElement.dataset.theme = currentTheme;
+  document.documentElement.dataset.motion = crtActive ? 'on' : 'off';
+  document.body.classList.toggle('crt-active', crtActive);
+  document.getElementById('theme-toggle').value = themePreference;
   const crtBtn = document.getElementById('crt-toggle-btn');
-  if (crtBtn) {
-    crtBtn.addEventListener('click', () => {
-      crtActive = !crtActive;
-      localStorage.setItem('crt', crtActive);
-      if (crtActive) {
-        document.body.classList.add('crt-active');
-        if (crtLabel) crtLabel.textContent = 'ON';
-      } else {
-        document.body.classList.remove('crt-active');
-        if (crtLabel) crtLabel.textContent = 'OFF';
-      }
-    });
+  crtBtn.setAttribute('aria-pressed', String(crtActive));
+  crtBtn.disabled = reducedMotion.matches;
+  document.getElementById('crt-mode-label').textContent = crtActive ? 'ON' : 'OFF';
+  if (lastTelemetry?.stats) renderTokensChart(lastTelemetry.stats.daily_tokens || {});
+}
+
+function updateAppearance(change) {
+  if (change.theme) {
+    themePreference = change.theme;
+    localStorage.setItem('theme', change.theme);
   }
+  if (change.motion) {
+    motionPreference = change.motion;
+    localStorage.setItem('crt', String(change.motion === 'on'));
+    localStorage.setItem('yed1z.motion', change.motion);
+  }
+  applyAppearance();
+}
+
+function syncAppearance(change) {
+  if (change) { appearanceRevision++; updateAppearance(change); }
+  const revision = appearanceRevision;
+  appearanceQueue = appearanceQueue.then(async () => {
+    try {
+      const options = change ? { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(change) } : { cache: 'no-store' };
+      const response = await fetch('/api/me/appearance', options);
+      const saved = response.ok ? await response.json() : undefined;
+      if (saved && revision === appearanceRevision) updateAppearance(saved);
+    } catch { /* Signed-out and disconnected monitors retain the local appearance. */ }
+  });
+}
+
+function initThemeAndCrt() {
+  document.getElementById('theme-toggle').addEventListener('change', event => syncAppearance({ theme: event.target.value }));
+  document.getElementById('crt-toggle-btn').addEventListener('click', () => syncAppearance({ motion: motionPreference === 'on' ? 'off' : 'on' }));
+  systemDark.addEventListener('change', applyAppearance);
+  reducedMotion.addEventListener('change', applyAppearance);
+  window.addEventListener('storage', event => {
+    if (event.key === null || ['theme', 'crt', 'yed1z.motion'].includes(event.key)) { readLocalAppearance(); applyAppearance(); }
+  });
+  readLocalAppearance();
+  applyAppearance();
+  syncAppearance();
 }
 
 // UTC Clock
@@ -190,8 +382,10 @@ function init4DTesseract() {
 
     // Auto-rotation speed ramps up if in-flight inference is happening
     const speedMultiplier = (lastTelemetry && lastTelemetry.in_flight > 0) ? 2.5 : 1.0;
-    angleXW += 0.012 * speedMultiplier;
-    angleZW += 0.008 * speedMultiplier;
+    if (crtActive) {
+      angleXW += 0.012 * speedMultiplier;
+      angleZW += 0.008 * speedMultiplier;
+    }
 
     const width = canvas.width;
     const height = canvas.height;
@@ -291,72 +485,26 @@ function init4DTesseract() {
 // ============================================================================
 // 4. CRT PHOSPHOR OSCILLOSCOPE CANVAS (CH1: TOKEN WAVE, CH2: BUS JITTER)
 // ============================================================================
-function initOscilloscope() {
+const samples = [];
+function drawSamples(latest) {
   const canvas = document.getElementById('osc-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-
-  let phase = 0;
-
-  function renderOsc() {
-    const width = canvas.width;
-    const height = canvas.height;
-
-    // Phosphor decay persistence
-    ctx.fillStyle = 'rgba(2, 6, 3, 0.22)';
-    ctx.fillRect(0, 0, width, height);
-
-    const isBusy = lastTelemetry && lastTelemetry.in_flight > 0;
-    const decodeTps = (lastTelemetry && lastTelemetry.speeds) ? lastTelemetry.speeds.decode_tps : 51.4;
-
-    phase += isBusy ? 0.12 : 0.04;
-
-    // --- Trace 1: Channel 1 Token Emission Wave (Phosphor Green #00ff88) ---
-    ctx.beginPath();
-    ctx.lineWidth = 1.6;
-    ctx.strokeStyle = '#00ff88';
-    ctx.shadowBlur = 6;
-    ctx.shadowColor = '#00ff88';
-
-    const centerY1 = height * 0.42;
-    for (let x = 0; x < width; x += 2) {
-      const freq = (decodeTps / 30) * 0.04;
-      const noise = isBusy ? (Math.random() - 0.5) * 6 : (Math.random() - 0.5) * 1.5;
-      const amp = isBusy ? 28 : 14;
-      const y = centerY1 + Math.sin(x * freq + phase) * amp + noise;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (latest && samples.at(-1)?.created !== latest.created) samples.push(latest);
+  if (samples.length > 80) samples.shift();
+  for (const [field, color] of [['decode_tps','#00ff88'], ['prefill_tps','#00f2fe']]) {
+    const max = Math.max(1, ...samples.map(s => s[field] || 0));
+    ctx.strokeStyle = ctx.fillStyle = color; ctx.beginPath();
+    samples.forEach((sample, i) => {
+      if (!Number.isFinite(sample[field])) return;
+      const x = 4 + i * (canvas.width-8) / Math.max(1,samples.length-1);
+      const y = canvas.height - 3 - sample[field] / max * (canvas.height-8);
+      ctx.lineTo(x,y); ctx.fillRect(x-1,y-1,2,2);
+    });
     ctx.stroke();
-
-    // --- Trace 2: Channel 2 USB4 Interconnect Bus Jitter (Neon Cyan #00f2fe) ---
-    ctx.beginPath();
-    ctx.lineWidth = 1.2;
-    ctx.strokeStyle = '#00f2fe';
-    ctx.shadowBlur = 4;
-    ctx.shadowColor = '#00f2fe';
-
-    const centerY2 = height * 0.72;
-    for (let x = 0; x < width; x += 3) {
-      const busNoise = (Math.sin(x * 0.08 - phase * 1.5) * 6) + (Math.random() - 0.5) * 3;
-      const y = centerY2 + busNoise;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    // Reset shadow
-    ctx.shadowBlur = 0;
-
-    requestAnimationFrame(renderOsc);
   }
-
-  requestAnimationFrame(renderOsc);
 }
-
-// ============================================================================
-// 5. HIGH-PRECISION ANALOG DIAL GAUGES (SVG/CANVAS NEEDLES & TICKS)
-// ============================================================================
 function drawAnalogDial(canvasId, value, minVal, maxVal, unit, warnVal, critVal) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
@@ -571,86 +719,45 @@ function renderTokensChart(daily) {
 async function fetchTelemetry() {
   try {
     const res = await fetch('/api/telemetry', { cache: 'no-store' });
-    if (!res.ok) return;
+    if (!res.ok) throw Error('Telemetry unavailable');
     const data = await res.json();
+    setText('control-status-pill', 'ONLINE');
     lastTelemetry = data;
     updateHUD(data);
   } catch (err) {
-    console.error('Telemetry fetch failed:', err);
+    updateHUD({}); setText('control-status-pill', 'OFFLINE');
   }
 }
 
 function updateHUD(data) {
-  // Master Active Model Banner
-  const modelTitle = document.getElementById('active-model-title');
-  if (modelTitle) {
-    const strixMod = data.active_strix;
-    const airMod = data.active_aireward;
-    if (strixMod && airMod) {
-      modelTitle.textContent = `${strixMod.toUpperCase()} [STRIX] + ${airMod.toUpperCase()} [AIR]`;
-      modelTitle.className = 'pill-value text-cyan';
-    } else if (data.active_model === 'deepseek') {
-      modelTitle.textContent = 'DEEPSEEK V4.1 DUAL TP2';
-      modelTitle.className = 'pill-value text-cyan';
-    } else if (data.active_model === 'qwen') {
-      modelTitle.textContent = 'QWEN 3.8 FLASH NEXT';
-      modelTitle.className = 'pill-value text-purple';
-    } else if (airMod === 'qwen38-strata') {
-      modelTitle.textContent = 'STRATA QWEN @ 100 TPS';
-      modelTitle.className = 'pill-value text-emerald';
-    } else if (airMod === 'ds41-strata') {
-      modelTitle.textContent = 'STRATA DEEPSEEK CUDA';
-      modelTitle.className = 'pill-value text-cyan';
-    } else {
-      modelTitle.textContent = 'STANDBY // READY';
-      modelTitle.className = 'pill-value text-amber';
+  const fmt = (v, unit = '', factor = 1) => Number.isFinite(v) ? Number((v / factor).toFixed(1)) + unit : '—';
+  const latest = data.stats?.latest;
+  const engines = data.engines || [];
+  setText('active-model-title', engines.filter(e => e.status === 'ready').map(e => e.label).join(' + ') || '—');
+  for (const [key, value, unit] of [
+    ['wf-inflight-val',data.in_flight,' REQ'],['wf-tps-val',latest?.decode_tps,' tok/s'],['osc-decode-val',latest?.decode_tps,' TPS'],
+    ['osc-prefill-val',latest?.prefill_tps,' TPS'],['wf-ttft-val',latest?.ttft_ms,' ms'],['wf-acc-val',null,'%'],['osc-acc-val',null,'%'],
+    ['link-rtt-val',null,' ms'],['lan-rtt-val',null,' ms'],['total-tokens-badge',data.stats?.totals?.total_tokens,'']
+  ]) setText(key,fmt(value,unit));
+  drawSamples(latest);
+  for (const [prefix,id] of [['node01','strix01'],['node02','strix02'],['aireward','aireward']]) {
+    const n = (data.upstreamTelemetry || []).find(n => n.nodeId === id) || {};
+    for (const [suffix,v,unit] of [['temp-val',n.cpuTempC,'°C'],['gpu-temp',n.gpuTempC,'°C'],['gpu-temp-val',n.gpuTempC,'°C'],['cpu-temp-val',n.cpuTempC,'°C'],['power-val',n.gpuPowerW,' W'],['gpu-load',n.gpuPercent,'%'],['fan-val',null,''],['nvme-temp',null,''],['sclk',null,'']])
+      setText(prefix+'-'+suffix,fmt(v,unit));
+    for (const [key,used,total] of [['ram',n.ramUsedBytes,n.ramTotalBytes],['disk',n.diskUsedBytes,n.diskTotalBytes],['vram',n.gpuMemoryUsedBytes,n.gpuMemoryTotalBytes]]) {
+      setText(prefix+'-'+key+'-text',fmt(used,'',2**30)+' / '+fmt(total,' GiB',2**30)); renderLedBar(prefix+'-'+key+'-leds',total ? used*100/total : 0);
     }
-  }
-
-  // Pipeline in-flight counter
-  setText('wf-inflight-val', `${data.in_flight || 0} REQ`);
-
-  // Speeds
-  if (data.speeds) {
-    setText('wf-tps-val', `${data.speeds.decode_tps} tok/s`);
-    setText('wf-acc-val', `${data.speeds.dspark_acc}%`);
-    setText('wf-ttft-val', `${data.speeds.ttft_ms} ms`);
-
-    setText('osc-decode-val', `${data.speeds.decode_tps} TPS`);
-    setText('osc-prefill-val', `${data.speeds.prefill_tps} TPS`);
-    setText('osc-acc-val', `${data.speeds.dspark_acc}%`);
-  }
-
-  // Telemetry per node
-  if (data.telemetry) {
-    const n1 = data.telemetry.node01;
-    const n2 = data.telemetry.node02;
-    const air = data.telemetry.aireward;
-    const tb = data.telemetry.tb_link;
-    const lan = data.telemetry.lan_link;
-
-    if (n1) updateNodePod('node01', n1);
-    if (n2) updateNodePod('node02', n2);
-    if (air) updateAirewardPod(air);
-    if (tb) {
-      setText('link-rtt-val', `${(tb.rtt_ms || 0.16).toFixed(3)} ms`);
+    for (const [key,v,max,unit] of [['temp',n.cpuTempC,105,'°C'],['cpu-temp',n.cpuTempC,105,'°C'],['gpu-temp',n.gpuTempC,100,'°C'],['power',n.gpuPowerW,350,'W']]) {
+      const dial='dial-'+prefix+'-'+key;
+      if(Number.isFinite(v)) drawAnalogDial(dial,v,0,max,unit,max*.82,max*.93);
+      else {const canvas=document.getElementById(dial);canvas?.getContext('2d').clearRect(0,0,canvas.width,canvas.height);}
     }
-    if (lan) {
-      setText('lan-rtt-val', `${(lan.rtt_ms || 0.45).toFixed(3)} ms`);
-    }
+    const alert=document.getElementById(prefix+'-alert-pill');if(alert){alert.textContent=(n.status || 'unknown').toUpperCase();alert.className='alert-pill-retro alert-'+(n.status==='online'?'healthy':'warn');}
   }
-
-  // Update control matrix buttons active state
   updateMatrixButtons(data);
-
-  // Stats & Sessions
-  if (data.stats) {
-    if (data.stats.totals) {
-      setText('total-tokens-badge', formatNumber(data.stats.totals.total_tokens || 0));
-    }
-    renderTokensChart(data.stats.daily_tokens || {});
-    renderSessionsTable(data.stats.recent_sessions || []);
-  }
+  setText('cfs-active-summary', engines.map(e=>e.label+' · '+e.status).join(' | ') || '—');
+  renderTokensChart(data.stats?.daily_tokens || {});
+  renderSessionsTable(data.stats?.recent_sessions || []);
 }
 
 function updateMatrixButtons(data) {
@@ -687,6 +794,7 @@ function setAdminUnlocked(unlocked, token = null) {
   currentAdminToken = unlocked && token ? token.trim() : null;
   if (unlocked && currentAdminToken) {
     sessionStorage.setItem(ADMIN_STORAGE_KEY, currentAdminToken);
+    syncAppearance();
   } else {
     sessionStorage.removeItem(ADMIN_STORAGE_KEY);
   }
@@ -703,11 +811,12 @@ function setAdminUnlocked(unlocked, token = null) {
   if (badgeIcon) {
     badgeIcon.textContent = unlocked ? '🔓' : '🔒';
   }
+  const dict = I18N[currentLang] || I18N.it;
   if (badgeText) {
-    badgeText.textContent = unlocked ? 'ADMIN OPERATOR' : 'READ-ONLY GUEST';
+    badgeText.textContent = unlocked ? dict.admin_text : dict.guest_text;
   }
   if (btnAuthLabel) {
-    btnAuthLabel.textContent = unlocked ? 'LOCK' : 'UNLOCK';
+    btnAuthLabel.textContent = unlocked ? dict.btn_lock : dict.btn_unlock;
   }
 
   // Update Switch buttons lock state and tags
@@ -963,89 +1072,6 @@ async function switchModel(target, model) {
   }
 }
 
-function updateAirewardPod(nodeData) {
-  const temps = nodeData.temps || {};
-  const gpu = nodeData.gpu || {};
-  const ram = nodeData.ram || {};
-  const cpu = nodeData.cpu || {};
-
-  // 1. Digital Values
-  setText('aireward-gpu-temp-val', `${temps.gpu_c ? temps.gpu_c.toFixed(1) : 56.0}°C`);
-  setText('aireward-cpu-temp-val', `${cpu.temp_c || temps.cpu_c ? (cpu.temp_c || temps.cpu_c).toFixed(1) : 45.0}°C`);
-  setText('aireward-power-val', `${gpu.power_w ? gpu.power_w.toFixed(1) : 158.0} W`);
-
-  setText('aireward-sclk', `${gpu.sclk_mhz || 1950} MHz`);
-  setText('aireward-gpu-load', `${gpu.load_pct || 0}%`);
-  setText('aireward-fan-val', `${gpu.fan_pct || 65}%`);
-  setText('aireward-nvme-temp', `${temps.nvme_c ? temps.nvme_c.toFixed(1) : 57.9}°C`);
-
-  // 2. Analog Dials
-  drawAnalogDial('dial-aireward-gpu-temp', gpu.temp_c || temps.gpu_c || 56, 20, 100, '°C', 78, 88);
-  drawAnalogDial('dial-aireward-cpu-temp', cpu.temp_c || temps.cpu_c || 45, 20, 105, '°C', 85, 95);
-  drawAnalogDial('dial-aireward-power', gpu.power_w || 158, 0, 350, 'W', 280, 330);
-
-  // 3. Segmented LED VU-Meters
-  const vramTot = gpu.vram_total_gb || 24.0;
-  const vramUsed = gpu.vram_used_gb || 0.0;
-  const vramPct = Math.min(100, Math.round((vramUsed / vramTot) * 100));
-  setText('aireward-vram-text', `${vramUsed.toFixed(1)} / ${vramTot.toFixed(1)} GiB (${vramPct}%)`);
-  renderLedBar('aireward-vram-leds', vramPct);
-
-  const ramTot = ram.total_gb || 61.6;
-  const ramUsed = ram.used_gb || 0.0;
-  const ramPct = ram.pct || Math.round((ramUsed / ramTot) * 100);
-  setText('aireward-ram-text', `${ramUsed.toFixed(1)} / ${ramTot.toFixed(1)} GiB (${ramPct}%)`);
-  renderLedBar('aireward-ram-leds', ramPct);
-
-  // 4. Alert Badge
-  const alertEl = document.getElementById('aireward-alert-pill');
-  if (alertEl) {
-    const lvl = nodeData.alert_level || 'healthy';
-    alertEl.className = `alert-pill-retro alert-${lvl}`;
-    alertEl.textContent = lvl.toUpperCase();
-  }
-}
-
-function updateNodePod(nodeKey, nodeData) {
-  const temps = nodeData.temps || {};
-  const cooling = nodeData.cooling || {};
-  const gpu = nodeData.gpu || {};
-  const ram = nodeData.ram || {};
-  const disk = nodeData.disk || {};
-
-  // 1. Digital Values
-  setText(`${nodeKey}-temp-val`, `${temps.cpu_c ? temps.cpu_c.toFixed(1) : 42.0}°C`);
-  setText(`${nodeKey}-fan-val`, `${cooling.fan_rpm || 1900} RPM`);
-  setText(`${nodeKey}-power-val`, `${gpu.power_w ? gpu.power_w.toFixed(1) : 11.0} W`);
-
-  setText(`${nodeKey}-gpu-temp`, `${temps.gpu_c ? temps.gpu_c.toFixed(1) : 41.0}°C`);
-  setText(`${nodeKey}-nvme-temp`, `${temps.nvme_c ? temps.nvme_c.toFixed(1) : 32.0}°C`);
-  setText(`${nodeKey}-sclk`, `${gpu.sclk_mhz || 605} MHz`);
-  setText(`${nodeKey}-gpu-load`, `${gpu.load_pct || 0}%`);
-
-  // 2. Analog Dials
-  drawAnalogDial(`dial-${nodeKey}-temp`, temps.cpu_c || 42, 20, 100, '°C', 75, 88);
-  drawAnalogDial(`dial-${nodeKey}-fan`, cooling.fan_rpm || 1900, 0, 5000, 'RPM', 3500, 4400);
-  drawAnalogDial(`dial-${nodeKey}-power`, gpu.power_w || 11, 0, 75, 'W', 50, 65);
-
-  // 3. Segmented LED VU-Meters
-  const ramPct = ram.pct || Math.round((ram.used_gb / ram.total_gb) * 100);
-  setText(`${nodeKey}-ram-text`, `${ram.used_gb.toFixed(1)} / ${ram.total_gb.toFixed(1)} GiB (${ramPct}%)`);
-  renderLedBar(`${nodeKey}-ram-leds`, ramPct);
-
-  const diskPct = disk.pct || Math.round((disk.used_gb / disk.total_gb) * 100);
-  setText(`${nodeKey}-disk-text`, `${disk.used_gb.toFixed(1)} / ${disk.total_gb.toFixed(1)} GiB (${diskPct}%)`);
-  renderLedBar(`${nodeKey}-disk-leds`, diskPct);
-
-  // 4. Alert Badge
-  const alertEl = document.getElementById(`${nodeKey}-alert-pill`);
-  if (alertEl) {
-    const lvl = nodeData.alert_level || 'healthy';
-    alertEl.className = `alert-pill-retro alert-${lvl}`;
-    alertEl.textContent = lvl.toUpperCase();
-  }
-}
-
 function renderSessionsTable(sessions) {
   const tbody = document.getElementById('sessions-tbody');
   if (!tbody) return;
@@ -1055,41 +1081,15 @@ function renderSessionsTable(sessions) {
     return;
   }
 
-  tbody.innerHTML = sessions.slice(0, 15).map(s => {
-    const isDs = (s.model || '').includes('ds41') || (s.model || '').includes('deepseek');
-    const isStrata = (s.model || '').includes('strata');
-    let badge = `<span class="badge-qwen">Qwen 3.8</span>`;
-    if (isDs && isStrata) {
-      badge = `<span class="badge-ds" style="border-color:#76b900;color:#76b900">Strata DS41</span>`;
-    } else if (isDs) {
-      badge = `<span class="badge-ds">DeepSeek V4.1</span>`;
-    } else if (isStrata) {
-      badge = `<span class="badge-qwen" style="border-color:#00ff88;color:#00ff88">Strata 100tps</span>`;
+  tbody.replaceChildren(...sessions.slice(0,15).map(s => {
+    const row=document.createElement('tr');
+    for (const value of [s.time,s.user,s.app,s.model,s.prompt,s.gen,s.duration,s.velocity,s.status]) {
+      const cell=document.createElement('td');cell.textContent=value ?? '—';row.append(cell);
     }
-
-    const userLabel = s.user || (s.client === '127.0.0.1' ? 'funboy (local)' : 'cooper');
-    const userClass = userLabel.toLowerCase().includes('cooper') ? 'user-cooper' : 'user-funboy';
-    const appLabel = s.client_app || 'Copilot Chat';
-    const tpsVal = s.tok_per_sec ? `${s.tok_per_sec} tok/s` : '—';
-
-    return `
-      <tr>
-        <td><code>${escapeHtml(s.id || 'req')}</code></td>
-        <td>${escapeHtml(s.time || '')}</td>
-        <td><span class="user-tag ${userClass}">${escapeHtml(userLabel)}</span></td>
-        <td><span class="app-tag">${escapeHtml(appLabel)}</span></td>
-        <td>${badge}</td>
-        <td>${s.prompt_tokens ?? '—'}</td>
-        <td><strong>${s.completion_tokens ?? '—'}</strong></td>
-        <td>${s.duration_s ? `${s.duration_s}s` : '—'}</td>
-        <td><span class="speed-pill">${tpsVal}</span></td>
-        <td><span class="status-badge ${s.status === 'completed' ? 'success' : 'pending'}">${escapeHtml(s.status || 'done').toUpperCase()}</span></td>
-      </tr>
-    `;
-  }).join('');
+    return row;
+  }));
 }
 
-// Helpers
 function setText(id, text) {
   const el = document.getElementById(id);
   if (el) el.textContent = text;
@@ -1111,11 +1111,24 @@ function escapeHtml(str) {
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
+// RC1 shared project links originally used the home page; keep those bookmarks working.
+function openLinkedProject() {
+  const { pathname, hash } = window.location;
+  if ((pathname === '/' || pathname === '/index.html') && new URLSearchParams(hash.slice(1)).get('project')) {
+    window.location.replace('/control' + hash);
+    return true;
+  }
+  return false;
+}
+
+window.addEventListener('hashchange', openLinkedProject);
 document.addEventListener('DOMContentLoaded', () => {
+  if (openLinkedProject()) return;
   initThemeAndCrt();
+  initLanguage();
   initInspectorSwitcher();
   init4DTesseract();
-  initOscilloscope();
+  drawSamples(null);
   verifySavedAdminToken();
 
   // Escape key closes admin modal

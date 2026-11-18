@@ -268,12 +268,32 @@ body:not(.crt-active) .crt-overlay {
   padding: 4px 10px;
   cursor: pointer;
   transition: all 0.15s ease;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .hud-btn-retro:hover {
   background: var(--bg-hover);
   border-color: var(--neon-cyan);
   color: var(--neon-cyan);
+}
+
+.hud-btn-retro.highlight {
+  border-color: var(--neon-emerald);
+  color: var(--neon-emerald);
+}
+
+.hud-btn-retro.highlight .btn-bracket {
+  color: var(--neon-emerald);
+}
+
+.hud-btn-retro.highlight:hover {
+  background: rgba(0, 255, 136, 0.15);
+  border-color: #00ff88;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(0, 255, 136, 0.35);
 }
 
 .btn-bracket {
@@ -1790,3 +1810,11 @@ body:not(.crt-active) .crt-overlay {
   box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
 }
 
+
+#theme-toggle { color-scheme: dark; }
+[data-theme=light] #theme-toggle { color-scheme: light; }
+[data-motion=off] *, [data-motion=off] *::before, [data-motion=off] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}

@@ -1,0 +1,11 @@
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const require=createRequire(import.meta.url);const root=fileURLToPath(new URL('..',import.meta.url));
+const binary=resolve(dirname(require.resolve('@vscode/vsce/package.json')),'vsce');
+const version=JSON.parse(readFileSync(resolve(root,'vscode/package.json'),'utf8')).version;
+mkdirSync(resolve(root,'artifacts'),{recursive:true});
+const result=spawnSync(process.execPath,[binary,'package','--no-dependencies','--no-rewrite-relative-links','--allow-missing-repository','--out',resolve(root,`artifacts/yed1z-control-room-${version}.vsix`)],{cwd:resolve(root,'vscode'),stdio:'inherit'});
+process.exitCode=result.status??1;

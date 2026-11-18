@@ -1,0 +1,7 @@
+<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fleet · yed1z Control Room</title><link rel="stylesheet" href="/assets/cockpit.css"><link rel="icon" href="/assets/favicon.svg"><script type="module" src="/assets/cockpit.js"></script></head><body>
+<header><a href="/control">yed1z<span>.</span> <small>Control Room</small></a><a href="/">Cockpit Strix ↗</a><a href="/control">Apri il progetto ↗</a>
+<div class="appearance-controls"><label for="theme">Tema</label><select id="theme"><option value="system">Come il sistema</option><option value="light">Chiaro</option><option value="dark">Scuro</option></select><button type="button" id="effects" aria-label="Effetti visivi" aria-pressed="true">FX ON</button></div></header>
+<main><div class="heading"><div><small>INFRASTRUTTURA</small><h1>Fleet monitor</h1></div><output id="stamp" aria-live="polite">Collegamento…</output></div>
+<section aria-label="Uso del gateway" id="metrics"></section><div class="heading"><h2>Topologia</h2><span id="node-count"></span></div><div class="fleet" id="fleet"></div><div class="links" id="links"></div>
+<div class="heading"><h2>Motori di inferenza</h2></div><div id="engines"></div><form id="access" hidden><label>Chiave operatore <input id="credential" type="password" autocomplete="current-password" required></label><button>Accedi</button><button type="button" id="dismiss">Chiudi</button></form><p id="feedback" role="status"></p>
+</main></body></html>

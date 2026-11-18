@@ -1,0 +1,18 @@
+{
+  "id": "application-server",
+  "kind": "ssh",
+  "nodeId": "application-server",
+  "sshHost": "my-app-server",
+  "workspaceRoot": "/srv/yed1z-projects",
+  "remoteRunner": "/opt/yed1z/dist/runner.mjs",
+  "remoteConfig": "/etc/yed1z/node.json",
+  "commands": [
+    {"id":"test","label":"Test","argv":["npm","test"],"verification":true,"timeoutMs":180000},
+    {"id":"build","label":"Build","argv":["npm","run","build"],"verification":true,"timeoutMs":180000},
+    {"id":"deploy","label":"Deploy versione","argv":["/usr/local/libexec/my-app-deploy"],"controllerOnly":true,"timeoutMs":180000},
+    {"id":"rollback","label":"Ripristina versione precedente","argv":["/usr/local/libexec/my-app-rollback"],"controllerOnly":true,"timeoutMs":180000}
+  ],
+  "deployments": [
+    {"id":"production","label":"Produzione","verify":["test","build"],"steps":["deploy"],"health":{"url":"http://127.0.0.1:3000/health","expectedStatus":200,"expectedText":"ok","attempts":5,"timeoutMs":3000},"rollback":["rollback"]}
+  ]
+}

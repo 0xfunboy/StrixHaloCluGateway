@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>yed1z // DUAL_STRIX_HALO_WORKSTATION_HUD</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=cc45965a3b81a260">
+</head>
+<body class="crt-active">
+  <!-- CRT Phosphor Scanline & Shadow Mask Overlay -->
+  <div class="crt-overlay" id="crt-overlay"></div>
+  <div class="vignette-overlay"></div>
+
+  <!-- Ambient Engineering Grid -->
+  <div class="cyber-grid-canvas"></div>
+
+  <!-- Top Aerospace Cockpit Header -->
+  <header class="hud-header-bar">
+    <div class="hud-header-left">
+      <div class="hud-brand-box">
+        <span class="hud-status-beacon pulse"></span>
+        <span class="hud-brand-title">yed1z</span>
+        <span class="hud-brand-sub">QUANTUM // HALO</span>
+      </div>
+      <div class="hud-chassis-tag">
+        <span class="tag-bracket">[</span>
+        <span class="tag-text">CLUSTER_ID: HYBRID_TRINITY_GFX1151_GA102</span>
+        <span class="tag-sep">|</span>
+        <span class="tag-text">BACKPLANE: 40Gbps USB4 + 1Gbps LAN MESH</span>
+        <span class="tag-bracket">]</span>
+      </div>
+    </div>
+
+    <div class="hud-header-center">
+      <div class="hud-telemetry-pill">
+        <span class="pill-dot blink-slow"></span>
+        <span class="pill-label" data-i18n="master_arbitration">MASTER ARBITRATION:</span>
+        <span id="active-model-title" class="pill-value text-cyan">—</span>
+      </div>
+    </div>
+
+    <div class="hud-header-right">
+      <div class="hud-clock-group">
+        <span class="hud-clock-label" data-i18n="sys_utc">SYS_UTC:</span>
+        <span id="hud-clock-val" class="hud-clock-digits">00:00:00</span>
+      </div>
+      <button id="lang-toggle-btn" class="hud-btn-retro" title="Toggle Language / Cambia Lingua">
+        <span class="btn-bracket">[</span> <span id="lang-label">IT / EN</span> <span class="btn-bracket">]</span>
+      </button>
+      <button id="crt-toggle-btn" class="hud-btn-retro" title="Toggle CRT Phosphor Scanlines">
+        <span class="btn-bracket">[</span> <span data-i18n="crt_fx">CRT FX:</span> <span id="crt-mode-label">ON</span> <span class="btn-bracket">]</span>
+      </button>
+      <select id="theme-toggle" class="hud-btn-retro" aria-label="Tema / Theme">
+        <option value="system">Sistema / System</option><option value="light">Chiaro / Light</option><option value="dark">Scuro / Dark</option>
+      </select>
+      <a href="/control" id="control-room-nav-btn" class="hud-btn-retro highlight" title="Open AI Chat & Control Room">
+        <span class="btn-bracket">[</span> 💬 <span id="control-room-nav-label" data-i18n="control_room_btn">CONTROL ROOM</span> <span class="btn-bracket">]</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- Main HUD Viewport -->
+  <main class="hud-viewport">
+
+    <!-- ================================================================= -->
+    <!-- SECTION 1: 4D REAL-TIME CORE & VISUAL WORKFLOW PIPELINE -->
+    <!-- ================================================================= -->
+    <section class="hud-panel hud-hero-complex">
+      <div class="panel-header-bracket">
+        <div class="bracket-title">
+          <span class="sec-num">SEC.01</span>
+          <span class="sec-name">4D CLUSTER TOPOLOGY & REAL-TIME ARBITRATION PIPELINE</span>
+        </div>
+        <div class="bracket-status">
+          <span class="status-pip live"></span>
+          <span class="status-msg">PIPELINE ACTIVE // FIFO MULTI-USER MUTEX ENGAGED</span>
+        </div>
+      </div>
+
+      <div class="hero-complex-grid">
+        <!-- 4D Hypercube / Tesseract Spatial Canvas -->
+        <div class="tesseract-module">
+          <div class="module-title-bar">
+            <span class="title-label">4D TESSERACT HYPER-PROJECTION</span>
+            <span class="coord-tag" id="tesseract-coords">W: 1.000 | X: 0.707 | Y: 0.000 | Z: 0.707</span>
+          </div>
+          <div class="canvas-3d-wrapper">
+            <canvas id="tesseract-canvas" width="280" height="240"></canvas>
+            <div class="tesseract-hud-crosshairs">
+              <span class="reticle-tl">+</span>
+              <span class="reticle-tr">+</span>
+              <span class="reticle-bl">+</span>
+              <span class="reticle-br">+</span>
+              <div class="hud-reticle-center"></div>
+            </div>
+          </div>
+          <div class="tesseract-footer">
+            <span class="tess-sub">INTERACTIVE SPATIAL ROTATION · DRAG TO ORIENT</span>
+            <span class="tess-fps" id="tess-fps">60 FPS</span>
+          </div>
+        </div>
+
+        <!-- Workflow & Arbitration Pipeline Diagram -->
+        <div class="pipeline-module">
+          <div class="module-title-bar">
+            <span class="title-label">AUTONOMOUS MULTI-USER PIPELINE WORKFLOW</span>
+            <span class="pipeline-sync-tag">REALTIME ZERO-COLLISION</span>
+          </div>
+
+          <div class="workflow-visualizer">
+            <!-- Stage 1: Client Inputs -->
+            <div class="wf-node" id="wf-client">
+              <div class="wf-node-header">
+                <span class="wf-dot"></span>
+                <span class="wf-name">01. CLIENT APPS</span>
+              </div>
+              <div class="wf-node-body">
+                <div class="wf-badge">GitHub Copilot Chat</div>
+                <div class="wf-badge">inference.yed1z.ai</div>
+                <div class="wf-meta">Multi-seat auth</div>
+              </div>
+            </div>
+
+            <!-- Pipeline Trace 1 -->
+            <div class="wf-connector">
+              <svg class="wf-laser-line" viewBox="0 0 40 20">
+                <path d="M 0 10 L 40 10" stroke="var(--neon-cyan)" stroke-width="2" stroke-dasharray="4 4" class="laser-anim" />
+              </svg>
+              <span class="wf-flow-pill">SSL / REST</span>
+            </div>
+
+            <!-- Stage 2: Gateway Arbitration -->
+            <div class="wf-node wf-node-core" id="wf-gateway">
+              <div class="wf-node-header">
+                <span class="wf-dot active-pulse"></span>
+                <span class="wf-name">02. YED1Z GATEWAY</span>
+              </div>
+              <div class="wf-node-body">
+                <div class="wf-stat-line"><span>ROUTER:</span> <strong class="text-cyan">AUTO-DEMAND</strong></div>
+                <div class="wf-stat-line"><span>MUTEX:</span> <strong class="text-emerald">FIFO DRAIN</strong></div>
+                <div class="wf-stat-line"><span>IN FLIGHT:</span> <strong id="wf-inflight-val" class="text-amber">—</strong></div>
+              </div>
+            </div>
+
+            <!-- Pipeline Trace 2 -->
+            <div class="wf-connector">
+              <svg class="wf-laser-line" viewBox="0 0 40 20">
+                <path d="M 0 10 L 40 10" stroke="var(--neon-purple)" stroke-width="2" stroke-dasharray="4 4" class="laser-anim-rev" />
+              </svg>
+              <span class="wf-flow-pill">40Gbps USB4</span>
+            </div>
+
+            <!-- Stage 3: Tri-Node Hybrid Cluster -->
+            <div class="wf-node" id="wf-cluster">
+              <div class="wf-node-header">
+                <span class="wf-dot"></span>
+                <span class="wf-name">03. TRI-NODE CLUSTER</span>
+              </div>
+              <div class="wf-node-body">
+                <div class="wf-cluster-nodes">
+                  <div class="mini-cluster-chip">
+                    <span class="chip-dot"></span>
+                    <span>NODE 01 [STRIX RANK 0]</span>
+                  </div>
+                  <div class="mini-cluster-chip">
+                    <span class="chip-dot"></span>
+                    <span>NODE 02 [STRIX RANK 1]</span>
+                  </div>
+                  <div class="mini-cluster-chip chip-nvidia">
+                    <span class="chip-dot dot-green"></span>
+                    <span>NODE 03 [AIREWARD RTX 3090]</span>
+                  </div>
+                </div>
+                <div class="wf-meta">256 GB LPDDR5X + 24 GB GDDR6X · RTT 0.16ms / 0.45ms</div>
+              </div>
+            </div>
+
+            <!-- Pipeline Trace 3 -->
+            <div class="wf-connector">
+              <svg class="wf-laser-line" viewBox="0 0 40 20">
+                <path d="M 0 10 L 40 10" stroke="var(--neon-green)" stroke-width="2" stroke-dasharray="4 4" class="laser-anim" />
+              </svg>
+              <span class="wf-flow-pill">TP2 DSpark</span>
+            </div>
+
+            <!-- Stage 4: Inference Engine -->
+            <div class="wf-node" id="wf-engine">
+              <div class="wf-node-header">
+                <span class="wf-dot"></span>
+                <span class="wf-name">04. SPECULATIVE ENGINE</span>
+              </div>
+              <div class="wf-node-body">
+                <div class="wf-stat-line"><span>SPEED:</span> <strong id="wf-tps-val" class="text-cyan">—</strong></div>
+                <div class="wf-stat-line"><span>DRAFT ACC:</span> <strong id="wf-acc-val" class="text-emerald">—</strong></div>
+                <div class="wf-stat-line"><span>TTFT:</span> <strong id="wf-ttft-val" class="text-amber">—</strong></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Oscilloscope Waveform & Live Velocity HUD -->
+        <div class="oscilloscope-module">
+          <div class="module-title-bar">
+            <span class="title-label">CRT PHOSPHOR OSCILLOSCOPE</span>
+            <span class="osc-mode-tag">CH1: TOK/S · CH2: BUS JITTER</span>
+          </div>
+          <div class="osc-canvas-wrapper">
+            <canvas id="osc-canvas" width="300" height="150"></canvas>
+            <div class="osc-grid-overlay"></div>
+          </div>
+          <div class="osc-telemetry-readouts">
+            <div class="osc-readout-item">
+              <span class="osc-ro-k">DECODE VELOCITY</span>
+              <span class="osc-ro-v text-cyan" id="osc-decode-val">—</span>
+            </div>
+            <div class="osc-readout-item">
+              <span class="osc-ro-k">PREFILL BURST</span>
+              <span class="osc-ro-v text-purple" id="osc-prefill-val">—</span>
+            </div>
+            <div class="osc-readout-item">
+              <span class="osc-ro-k">SPECULATIVE ACC</span>
+              <span class="osc-ro-v text-emerald" id="osc-acc-val">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- SECTION 2: TRI-NODE CLUSTER HARDWARE TELEMETRY & CHASSIS INSPECTOR -->
+    <!-- ================================================================= -->
+    <section class="hud-panel hud-hardware-cockpit">
+      <div class="panel-header-bracket">
+        <div class="bracket-title">
+          <span class="sec-num">SEC.02</span>
+          <span class="sec-name">TRI-NODE CLUSTER HARDWARE TELEMETRY & CHASSIS INSPECTOR</span>
+        </div>
+        <div class="bracket-status">
+          <span class="status-pip live"></span>
+          <span class="status-msg">3 NODES SYNCHRONIZED // DUAL STRIX HALO APU + AIREWARD CUDA ACCELERATOR</span>
+        </div>
+      </div>
+
+      <!-- Top Row: 3 Hardware Telemetry Pods -->
+      <div class="cockpit-tri-layout">
+        <!-- ================= POD 01: NODE 01 TELEMETRY ================= -->
+        <div class="node-telemetry-pod" id="pod-node01">
+          <div class="pod-header">
+            <div class="pod-title-group">
+              <span class="pod-badge">NODE 01</span>
+              <span class="pod-hostname">01-EVO-X3</span>
+            </div>
+            <div class="pod-role-tag">[ COORDINATOR · RANK 0 ]</div>
+            <span class="alert-pill-retro alert-healthy" id="node01-alert-pill">—</span>
+          </div>
+
+          <!-- Analog Dials Row -->
+          <div class="dials-row">
+            <!-- Dial 1: APU Temp -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-node01-temp" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">APU TCTL</span>
+                <span class="dial-val" id="node01-temp-val">—</span>
+              </div>
+            </div>
+
+            <!-- Dial 2: Fan RPM -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-node01-fan" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">SMART EC FAN</span>
+                <span class="dial-val" id="node01-fan-val">—</span>
+              </div>
+            </div>
+
+            <!-- Dial 3: GPU Power -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-node01-power" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">PPT POWER</span>
+                <span class="dial-val" id="node01-power-val">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Secondary Sensors Grid -->
+          <div class="sensor-readout-strip">
+            <div class="strip-item">
+              <span class="strip-k">GPU EDGE TEMP:</span>
+              <span class="strip-v" id="node01-gpu-temp">—</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">NVME COMPOSITE:</span>
+              <span class="strip-v" id="node01-nvme-temp">—</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">CORE CLOCK (SCLK):</span>
+              <span class="strip-v text-cyan" id="node01-sclk">605 MHz</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">GPU BUSY LOAD:</span>
+              <span class="strip-v text-emerald" id="node01-gpu-load">—</span>
+            </div>
+          </div>
+
+          <!-- Segmented LED VU-Meters for RAM & Storage -->
+          <div class="vu-meters-block">
+            <!-- RAM Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">UNIFIED LPDDR5X (256-BIT)</span>
+                <span class="vu-stats" id="node01-ram-text">—</span>
+              </div>
+              <div class="vu-led-bar" id="node01-ram-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+
+            <!-- Disk Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">NVME SSD STORAGE</span>
+                <span class="vu-stats" id="node01-disk-text">—</span>
+              </div>
+              <div class="vu-led-bar" id="node01-disk-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= POD 02: NODE 02 TELEMETRY ================= -->
+        <div class="node-telemetry-pod" id="pod-node02">
+          <div class="pod-header">
+            <div class="pod-title-group">
+              <span class="pod-badge">NODE 02</span>
+              <span class="pod-hostname">02-evo-x3-tb</span>
+            </div>
+            <div class="pod-role-tag">[ WORKER · RANK 1 ]</div>
+            <span class="alert-pill-retro alert-healthy" id="node02-alert-pill">—</span>
+          </div>
+
+          <!-- Analog Dials Row -->
+          <div class="dials-row">
+            <!-- Dial 1: APU Temp -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-node02-temp" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">APU TCTL</span>
+                <span class="dial-val" id="node02-temp-val">—</span>
+              </div>
+            </div>
+
+            <!-- Dial 2: Fan RPM -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-node02-fan" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">SMART EC FAN</span>
+                <span class="dial-val" id="node02-fan-val">—</span>
+              </div>
+            </div>
+
+            <!-- Dial 3: GPU Power -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-node02-power" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">PPT POWER</span>
+                <span class="dial-val" id="node02-power-val">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Secondary Sensors Grid -->
+          <div class="sensor-readout-strip">
+            <div class="strip-item">
+              <span class="strip-k">GPU EDGE TEMP:</span>
+              <span class="strip-v" id="node02-gpu-temp">—</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">NVME COMPOSITE:</span>
+              <span class="strip-v" id="node02-nvme-temp">—</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">CORE CLOCK (SCLK):</span>
+              <span class="strip-v text-cyan" id="node02-sclk">604 MHz</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">GPU BUSY LOAD:</span>
+              <span class="strip-v text-emerald" id="node02-gpu-load">—</span>
+            </div>
+          </div>
+
+          <!-- Segmented LED VU-Meters for RAM & Storage -->
+          <div class="vu-meters-block">
+            <!-- RAM Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">UNIFIED LPDDR5X (256-BIT)</span>
+                <span class="vu-stats" id="node02-ram-text">—</span>
+              </div>
+              <div class="vu-led-bar" id="node02-ram-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+
+            <!-- Disk Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">NVME SSD STORAGE</span>
+                <span class="vu-stats" id="node02-disk-text">—</span>
+              </div>
+              <div class="vu-led-bar" id="node02-disk-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= POD 03: AIREWARD-LLM TELEMETRY ================= -->
+        <div class="node-telemetry-pod" id="pod-aireward">
+          <div class="pod-header">
+            <div class="pod-title-group">
+              <span class="pod-badge badge-nvidia">NODE 03</span>
+              <span class="pod-hostname">aireward-llm</span>
+            </div>
+            <div class="pod-role-tag">[ CUDA ACCEL · RTX 3090 24GB ]</div>
+            <span class="alert-pill-retro alert-healthy" id="aireward-alert-pill">—</span>
+          </div>
+
+          <!-- Analog Dials Row -->
+          <div class="dials-row">
+            <!-- Dial 1: GPU Temp -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-aireward-gpu-temp" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">GPU TEMP</span>
+                <span class="dial-val" id="aireward-gpu-temp-val">—</span>
+              </div>
+            </div>
+
+            <!-- Dial 2: Core Temp -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-aireward-cpu-temp" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">CPU TCTL</span>
+                <span class="dial-val" id="aireward-cpu-temp-val">—</span>
+              </div>
+            </div>
+
+            <!-- Dial 3: GPU Power -->
+            <div class="analog-dial-wrap">
+              <div class="dial-canvas-box">
+                <canvas id="dial-aireward-power" width="110" height="110"></canvas>
+              </div>
+              <div class="dial-caption">
+                <span class="dial-name">GPU POWER</span>
+                <span class="dial-val" id="aireward-power-val">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Secondary Sensors Grid -->
+          <div class="sensor-readout-strip">
+            <div class="strip-item">
+              <span class="strip-k">NVIDIA CORE SCLK:</span>
+              <span class="strip-v text-cyan" id="aireward-sclk">1950 MHz</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">CUDA BUSY LOAD:</span>
+              <span class="strip-v text-emerald" id="aireward-gpu-load">—</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">AXIAL FAN SPEED:</span>
+              <span class="strip-v" id="aireward-fan-val">—</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-k">NVME PRO SSD:</span>
+              <span class="strip-v" id="aireward-nvme-temp">—</span>
+            </div>
+          </div>
+
+          <!-- Segmented LED VU-Meters for VRAM & RAM -->
+          <div class="vu-meters-block">
+            <!-- VRAM Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">RTX 3090 VRAM (24GB GDDR6X)</span>
+                <span class="vu-stats" id="aireward-vram-text">—</span>
+              </div>
+              <div class="vu-led-bar" id="aireward-vram-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+
+            <!-- RAM Meter -->
+            <div class="vu-meter-group">
+              <div class="vu-label-line">
+                <span class="vu-title">DDR5 SYSTEM MEMORY</span>
+                <span class="vu-stats" id="aireward-ram-text">—</span>
+              </div>
+              <div class="vu-led-bar" id="aireward-ram-leds">
+                <!-- Dynamically populated 20 LED pips -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lower Grid: Visual Inspection Port + Interactive Engine Arbitration Matrix -->
+      <div class="cockpit-lower-grid">
+        <!-- ================= VISUAL CLUSTER INSPECTION BAY ================= -->
+        <div class="cluster-inspector-pod">
+          <div class="inspector-controls">
+            <span class="inspector-title">CHASSIS & SILICON INSPECTION PORT</span>
+            <div class="inspector-switch-group">
+              <button class="insp-btn active" id="btn-view-cluster">DUAL CHASSIS VIEW</button>
+              <button class="insp-btn" id="btn-view-die">SILICON DIE BLUEPRINT</button>
+            </div>
+          </div>
+
+          <div class="inspector-display-window">
+            <img src="/static/assets/strix_halo_dual_cluster.jpg" alt="Dual Strix Halo Cluster" id="inspector-img" class="inspector-viewport-img">
+            
+            <!-- Technical Reticle Overlay -->
+            <div class="inspector-reticle">
+              <div class="hud-corner hud-c-tl"></div>
+              <div class="hud-corner hud-c-tr"></div>
+              <div class="hud-corner hud-c-bl"></div>
+              <div class="hud-corner hud-c-br"></div>
+              <div class="scan-line-sweep"></div>
+              
+              <!-- Hotspot Labels -->
+              <div class="hud-hotspot hs-node01" id="hs-node01">
+                <span class="hs-marker"></span>
+                <span class="hs-label">NODE 01 (PRIMARY)</span>
+              </div>
+              <div class="hud-hotspot hs-usb4" id="hs-usb4">
+                <span class="hs-marker"></span>
+                <span class="hs-label">40Gbps USB4 INTERCONNECT</span>
+              </div>
+              <div class="hud-hotspot hs-node02" id="hs-node02">
+                <span class="hs-marker"></span>
+                <span class="hs-label">NODE 02 (WORKER)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dual Interconnect Diagnostic Strip (USB4 Mesh + 1Gbps LAN Link) -->
+          <div class="interconnect-hud-banner">
+            <div class="ic-item">
+              <span class="ic-key">USB4 MESH:</span>
+              <span class="ic-val text-cyan">40 Gbps [10.55.0.0/30]</span>
+            </div>
+            <div class="ic-item">
+              <span class="ic-key">USB4 RTT:</span>
+              <span class="ic-val text-emerald" id="link-rtt-val">—</span>
+            </div>
+            <div class="ic-item">
+              <span class="ic-key">LAN ACCEL:</span>
+              <span class="ic-val text-purple">192.168.178.47</span>
+            </div>
+            <div class="ic-item">
+              <span class="ic-key">LAN RTT:</span>
+              <span class="ic-val text-emerald" id="lan-rtt-val">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= INTERACTIVE ENGINE ARBITRATION MATRIX ================= -->
+        <div class="cluster-control-pod">
+          <div class="pod-header">
+            <div class="pod-title-group">
+              <span class="pod-badge" data-i18n="matrix_badge">CONTROL PLANE</span>
+              <span class="pod-hostname" data-i18n="matrix_title">ENGINE ARBITRATION MATRIX</span>
+            </div>
+            <div class="pod-header-right-group">
+              <div class="admin-auth-status-bar" id="admin-auth-status-bar">
+                <span class="admin-badge-pill guest" id="admin-badge-pill" title="Current session authorization level">
+                  <span class="badge-lock-icon" id="badge-lock-icon">🔒</span>
+                  <span id="badge-auth-text" data-i18n="guest_text">READ-ONLY GUEST</span>
+                </span>
+                <button class="admin-auth-toggle-btn" id="btn-admin-auth-toggle" onclick="handleAuthToggleClick()" title="Toggle Admin Authentication">
+                  <span class="btn-bracket">[</span> <span id="btn-auth-label" data-i18n="btn_unlock">🔓 UNLOCK</span> <span class="btn-bracket">]</span>
+                </button>
+              </div>
+              <span class="alert-pill-retro alert-healthy" id="control-status-pill">—</span>
+            </div>
+          </div>
+
+          <div class="control-matrix-grid">
+            <!-- Strix Halo Engine Controls -->
+            <div class="matrix-group">
+              <div class="matrix-group-title">
+                <span class="mg-icon">AMD</span>
+                <span data-i18n="strix_group">DUAL STRIX HALO CLUSTER (256GB LPDDR5X)</span>
+              </div>
+              <div class="matrix-btn-row">
+                <button class="switch-btn is-locked" id="btn-switch-strix-ds41" onclick="switchModel('strix', 'deepseek')">
+                  <span class="btn-pip" id="pip-strix-ds41"></span>
+                  <div class="btn-info">
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-strix-ds41">🔒</span> DeepSeek V4.1 Dual TP2</span>
+                    <span class="btn-desc">Dual gfx1151 · 51.4 tok/s · Q2-iMat</span>
+                  </div>
+                </button>
+                <button class="switch-btn is-locked" id="btn-switch-strix-qwen" onclick="switchModel('strix', 'qwen')">
+                  <span class="btn-pip" id="pip-strix-qwen"></span>
+                  <div class="btn-info">
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-strix-qwen">🔒</span> Qwen 3.8 Flash Gufo</span>
+                    <span class="btn-desc">Uncensored · 42 tok/s · 187K Ctx</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <!-- Aireward CUDA Engine Controls -->
+            <div class="matrix-group">
+              <div class="matrix-group-title">
+                <span class="mg-icon text-emerald">NV</span>
+                <span data-i18n="air_group">AIREWARD-LLM ACCELERATOR (RTX 3090 + 64GB DDR5)</span>
+              </div>
+              <div class="matrix-btn-row">
+                <button class="switch-btn is-locked" id="btn-switch-air-qwen" onclick="switchModel('aireward', 'qwen')">
+                  <span class="btn-pip" id="pip-air-qwen"></span>
+                  <div class="btn-info">
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-air-qwen">🔒</span> Qwen 3.8 Strata IQ3_S</span>
+                    <span class="btn-desc">⚡ 100 tok/s MTP · Native CUDA + P-cores</span>
+                  </div>
+                </button>
+                <button class="switch-btn is-locked" id="btn-switch-air-ds41" onclick="switchModel('aireward', 'deepseek')">
+                  <span class="btn-pip" id="pip-air-ds41"></span>
+                  <div class="btn-info">
+                    <span class="btn-title"><span class="btn-lock-tag" id="lock-tag-air-ds41">🔒</span> DeepSeek V4.1 Strata CUDA</span>
+                    <span class="btn-desc">IST-DAS 2.00bpw · Ampere 24GB</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="control-footer-status">
+            <span class="cfs-label" data-i18n="active_engines">ACTIVE ENGINES:</span>
+            <span class="cfs-val" id="cfs-active-summary">—</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- SECTION 3: DAILY PRODUCTION HISTOGRAM & LIVE INFERENCE SESSIONS -->
+    <!-- ================================================================= -->
+    <section class="hud-panel hud-activity-complex">
+      <div class="panel-header-bracket">
+        <div class="bracket-title">
+          <span class="sec-num">SEC.03</span>
+          <span class="sec-name" data-i18n="sec3_name">HISTORICAL PRODUCTION ANALYTICS & INFERENCE STREAM LOGS</span>
+        </div>
+        <div class="bracket-status">
+          <span class="status-pip live"></span>
+          <span class="status-msg"><span data-i18n="aggregated_tokens">AGGREGATED TOKENS:</span> <strong id="total-tokens-badge" class="text-cyan">—</strong></span>
+        </div>
+      </div>
+
+      <div class="activity-complex-grid">
+        <!-- Daily Production Bar Chart (Canvas) -->
+        <div class="chart-box-retro">
+          <div class="box-title-bar">
+            <span class="box-title" data-i18n="chart_title">DAILY TOKEN PRODUCTION BY MODEL</span>
+            <div class="chart-legend-retro">
+              <span class="legend-swatch swatch-ds"></span><span>DeepSeek V4.1</span>
+              <span class="legend-swatch swatch-qwen"></span><span>Qwen 3.8</span>
+            </div>
+          </div>
+          <div class="canvas-chart-holder">
+            <canvas id="tokens-chart" width="460" height="200"></canvas>
+          </div>
+        </div>
+
+        <!-- Anonymized Inference Sessions Stream Table -->
+        <div class="sessions-box-retro">
+          <div class="box-title-bar">
+            <span class="box-title" data-i18n="stream_title">REAL-TIME INFERENCE LOG STREAM</span>
+            <span class="box-meta" data-i18n="stream_meta">[ ZERO CLIENT IP EXPOSURE · AUTOMATIC ARBITRATION ]</span>
+          </div>
+
+          <div class="table-scroll-container">
+            <table class="hud-table">
+              <thead>
+                <tr>
+                  <th data-i18n="th_req_id">REQ ID</th>
+                  <th data-i18n="th_time">TIMESTAMP</th>
+                  <th data-i18n="th_client">CLIENT / USER</th>
+                  <th data-i18n="th_app">APPLICATION</th>
+                  <th data-i18n="th_model">MODEL SERVED</th>
+                  <th data-i18n="th_prompt">PROMPT</th>
+                  <th data-i18n="th_gen">GEN</th>
+                  <th data-i18n="th_duration">DURATION</th>
+                  <th data-i18n="th_velocity">VELOCITY</th>
+                  <th data-i18n="th_status">STATUS</th>
+                </tr>
+              </thead>
+              <tbody id="sessions-tbody">
+                <!-- Filled dynamically by app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Technical Chassis Footer -->
+  <footer class="hud-footer">
+    <div class="footer-left">
+      <span class="footer-bracket">[</span>
+      <span>YED1Z ADVANCED INFERENCE LABS</span>
+      <span class="footer-sep">//</span>
+      <span>DUAL AMD STRIX HALO GFX1151 RDNA 3.5</span>
+      <span class="footer-bracket">]</span>
+    </div>
+    <div class="footer-center">
+      <span>AUTONOMOUS ARBITRATION CONTROL PLANE · TAMPER-PROOF ACTIVE</span>
+    </div>
+    <div class="footer-right">
+      <span>SECURE LINK: <a href="https://inference.yed1z.ai" target="_blank" class="footer-link">inference.yed1z.ai</a></span>
+    </div>
+  </footer>
+
+  <!-- ================= CYBERPUNK ADMIN AUTHENTICATION MODAL ================= -->
+  <div class="admin-modal-overlay" id="admin-modal-overlay" style="display: none;">
+    <div class="admin-modal-backdrop" onclick="closeAdminModal()"></div>
+    <div class="admin-modal-box">
+      <!-- Aerospace corner reticles -->
+      <span class="modal-corner c-tl">+</span>
+      <span class="modal-corner c-tr">+</span>
+      <span class="modal-corner c-bl">+</span>
+      <span class="modal-corner c-br">+</span>
+
+      <div class="modal-header-bar">
+        <div class="modal-title-group">
+          <span class="modal-status-pip blink"></span>
+          <span class="modal-title-text" data-i18n="modal_title">SYSTEM OVERRIDE // ADMIN AUTHENTICATION</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeAdminModal()" title="Close (Esc)">&times;</button>
+      </div>
+
+      <div class="modal-body-content">
+        <div class="modal-notice">
+          <span class="notice-icon">🔒</span>
+          <div class="notice-text">
+            <strong data-i18n="modal_notice_strong">RESTRICTED ARBITRATION CONTROL PLANE</strong><br>
+            <span id="modal-notice-body" data-i18n="modal_notice_body">Live model switching and cluster control require cryptographic operator authorization. Enter your Bearer key (<code class="mono-code">sk-yed...</code>) to unlock execution privileges.</span>
+          </div>
+        </div>
+
+        <form id="admin-auth-form" onsubmit="event.preventDefault(); submitAdminAuth();">
+          <div class="modal-field">
+            <label for="admin-key-input" class="modal-field-label" data-i18n="modal_key_label">CRYPTOGRAPHIC OPERATOR KEY:</label>
+            <div class="modal-input-container">
+              <span class="modal-input-prefix">&gt;</span>
+              <input type="password" id="admin-key-input" class="modal-input-field" placeholder="sk-yed..." autocomplete="off" spellcheck="false" required>
+              <button type="button" class="modal-visibility-btn" id="btn-toggle-key-eye" onclick="toggleKeyVisibility()" title="Show/Hide Key">👁️</button>
+            </div>
+          </div>
+
+          <div class="modal-status-msg" id="admin-modal-msg" style="display: none;"></div>
+
+          <div class="modal-actions-bar">
+            <button type="button" class="modal-btn modal-btn-cancel" onclick="closeAdminModal()">
+              <span class="btn-bracket">[</span> <span data-i18n="modal_dismiss">DISMISS</span> <span class="btn-bracket">]</span>
+            </button>
+            <button type="submit" class="modal-btn modal-btn-confirm" id="btn-submit-auth">
+              <span class="btn-bracket">[</span> <span data-i18n="modal_authorize">🔓 AUTHORIZE OPERATOR</span> <span class="btn-bracket">]</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=29f74441c53772c4"></script>
+</body>
+</html>
