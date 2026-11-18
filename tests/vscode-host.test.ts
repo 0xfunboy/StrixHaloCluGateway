@@ -18,7 +18,7 @@ async function host(t:test.TestContext){
   let receive:(value:unknown)=>void=()=>{},disposeView:()=>void=()=>{};
   const uri=(value:string)=>({path:value,fsPath:value,toString:()=>value});
   const vscode={Uri:{joinPath:(base:{path:string},...parts:string[])=>uri([base.path,...parts].join('/')),parse:uri,file:uri},
-    workspace:{isTrusted:true,asRelativePath:()=> 'src/example.ts',fs:{readFile:async()=>Buffer.from('<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/style.css"></head><body><script type="module" src="/app.js"></script></body></html>'),writeFile:async(target:{path:string},bytes:Uint8Array)=>{writes.push({path:target.path,content:Buffer.from(bytes).toString('utf8')});}}},
+    workspace:{isTrusted:true,asRelativePath:()=> 'src/example.ts',fs:{readFile:async()=>Buffer.from('<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/style.css"></head><body><script type="module" src="/assets/app.js?v=123456789abcdef0"></script></body></html>'),writeFile:async(target:{path:string},bytes:Uint8Array)=>{writes.push({path:target.path,content:Buffer.from(bytes).toString('utf8')});}}},
     window:{showInputBox:async()=>inputs.shift(),showSaveDialog:async(_options:unknown)=>uri('/chosen/export.md'),showErrorMessage:(message:string)=>{errors.push(message);},showInformationMessage:()=>{},activeTextEditor:undefined as unknown},
     commands:{executeCommand:async(command:string)=>{commands.push(command);}},env:{openExternal:async(target:{toString():string})=>{external.push(target.toString());return true;}}};
   const context={extensionUri:uri(directory),globalState:{get:<T>(key:string,fallback:T)=>state.has(key)?state.get(key):fallback,update:async(key:string,value:unknown)=>{state.set(key,value);}},secrets:{get:async(key:string)=>secrets.get(key),store:async(key:string,value:string)=>{secrets.set(key,value);}},subscriptions:[]};
@@ -37,7 +37,7 @@ async function server(t:test.TestContext,handler:RequestListener){
   const app=createServer(handler);await new Promise<void>(resolve=>app.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise<void>(resolve=>app.close(()=>resolve())));const address=app.address();assert.ok(address&&typeof address!=='string');return`http://127.0.0.1:${address.port}`;
 }
 test('webview loads local shared UI under restrictive CSP and never embeds the gateway token',async t=>{
-  const h=await host(t);h.connect('https://yed1z.ai','secret-never-in-html');assert.match(h.webview.html,/connect-src 'none'/);assert.match(h.webview.html,/script-src 'nonce-/);assert.match(h.webview.html,/vscode-webview:\/\/fixture\/app.js/);assert.doesNotMatch(h.webview.html,/secret-never-in-html/);
+  const h=await host(t);h.connect('https://yed1z.ai','secret-never-in-html');assert.match(h.webview.html,/connect-src 'none'/);assert.match(h.webview.html,/script-src 'nonce-/);assert.match(h.webview.html,/vscode-webview:\/\/fixture\/app\.js\?v=123456789abcdef0"/);assert.doesNotMatch(h.webview.html,/secret-never-in-html/);
 });
 test('host proxy authenticates in SecretStorage and returns API shape without the token',async t=>{
   const h=await host(t);let auth='';const endpoint=await server(t,(req,res)=>{auth=req.headers.authorization??'';res.setHeader('Content-Type','application/json');res.end('{"projects":[]}');});h.connect(endpoint);

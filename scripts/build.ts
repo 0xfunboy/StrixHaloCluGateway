@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -15,6 +16,18 @@ await Promise.all([
 ]);
 for(const file of ['index.html','style.css','favicon.svg','cockpit.html','cockpit.css'])await cp(path.join(root,'web',file),path.join(root,'dist/web',file));
 await cp(path.join(root,'static'),path.join(root,'dist/classic'),{recursive:true});
+// Browsers and the CDN cache each JS/CSS URL independently of its HTML page.
+for (const page of ['web/index.html', 'web/cockpit.html', 'classic/index.html']) {
+  const filename = path.join(root, 'dist', page);
+  let html = await readFile(filename, 'utf8');
+  const assets = html.matchAll(/(href|src)="(\/(?:assets|static)\/([\w.-]+\.(?:js|css)))(?:\?[^"]*)?"/g);
+  for (const [reference, attribute, url, name] of assets) {
+    const bytes = await readFile(path.join(path.dirname(filename), name));
+    const version = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+    html = html.replace(reference, `${attribute}="${url}?v=${version}"`);
+  }
+  await writeFile(filename, html);
+}
 await cp(path.join(root,'dist/web'),path.join(root,'vscode/web'),{recursive:true});
 await cp(path.join(root,'LICENSE.md'),path.join(root,'vscode/LICENSE.md'));
 const manifest=JSON.parse(await readFile(path.join(root,'package.json'),'utf8'));

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { cp, mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -67,7 +68,18 @@ try {
     const response = await fetch(url + route);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-security-policy') ?? '', /script-src 'self';/);
-    assert.match(await response.text(), /src="\/assets\/app\.js"/);
+    assert.match(await response.text(), /src="\/assets\/app\.js\?v=[a-f0-9]{16}"/);
+  }
+  for (const page of ['/', '/control', '/cockpit']) {
+    const html = await (await fetch(url + page)).text();
+    const assets = [...html.matchAll(/(?:src|href)="(\/(?:assets|static)\/[\w.-]+\.(?:js|css)\?v=([a-f0-9]{16}))"/g)];
+    assert.equal(assets.length, 2, `Versioned JS and CSS on ${page}`);
+    for (const [, asset, version] of assets) {
+      const response = await fetch(url + asset);
+      assert.equal(response.status, 200);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.equal(createHash('sha256').update(bytes).digest('hex').slice(0, 16), version);
+    }
   }
   const head = await fetch(url, { method: 'HEAD' });
   assert.equal(head.status, 200);

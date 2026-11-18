@@ -174,7 +174,7 @@ var CommandView = class {
     const raw = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(assets, "index.html"))).toString("utf8");
     const nonce = (0, import_node_crypto.randomBytes)(18).toString("base64");
     const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${view.webview.cspSource} data:; font-src ${view.webview.cspSource}; style-src ${view.webview.cspSource}; style-src-attr 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'none'; form-action 'none'; base-uri 'none';">`;
-    view.webview.html = raw.replace(/<meta\s+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, "").replace(/<head(?:\s[^>]*)?>/i, (match) => match + csp).replace(/(href|src)="(?:\/|\.\/)?(?:assets\/|web\/)?(app\.js|style\.css|favicon\.svg)"/g, (_all, attribute, file) => `${attribute}="${view.webview.asWebviewUri(vscode.Uri.joinPath(assets, file))}"`).replace(/<script\b/g, `<script nonce="${nonce}"`);
+    view.webview.html = raw.replace(/<meta\s+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, "").replace(/<head(?:\s[^>]*)?>/i, (match) => match + csp).replace(/(href|src)="(?:\/|\.\/)?(?:assets\/|web\/)?(app\.js|style\.css|favicon\.svg)(\?v=[a-f0-9]{16})?"/g, (_all, attribute, file, version) => `${attribute}="${view.webview.asWebviewUri(vscode.Uri.joinPath(assets, file))}${version ?? ""}"`).replace(/<script\b/g, `<script nonce="${nonce}"`);
     const subscription = view.webview.onDidReceiveMessage((raw2) => {
       void this.message(raw2);
     });
