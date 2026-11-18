@@ -14,13 +14,13 @@ async function host(t:test.TestContext){
   const directory=await mkdtemp(path.join(os.tmpdir(),'yed1z-vscode-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   const {build}=require('esbuild') as {build:(options:unknown)=>Promise<unknown>};
   const bundle=path.join(directory,'extension.cjs');await build({entryPoints:[path.resolve(import.meta.dirname,'../vscode/src/extension.ts')],outfile:bundle,bundle:true,platform:'node',format:'cjs',target:'node20',external:['vscode'],logLevel:'silent'});
-  const posts:Record<string,unknown>[]=[],secrets=new Map<string,string>(),state=new Map<string,unknown>(),inputs:Array<string|undefined>=[],errors:string[]=[],commands:string[]=[],writes:Array<{path:string;content:string}>=[];
+  const external:string[]=[],posts:Record<string,unknown>[]=[],secrets=new Map<string,string>(),state=new Map<string,unknown>(),inputs:Array<string|undefined>=[],errors:string[]=[],commands:string[]=[],writes:Array<{path:string;content:string}>=[];
   let receive:(value:unknown)=>void=()=>{},disposeView:()=>void=()=>{};
   const uri=(value:string)=>({path:value,fsPath:value,toString:()=>value});
   const vscode={Uri:{joinPath:(base:{path:string},...parts:string[])=>uri([base.path,...parts].join('/')),parse:uri,file:uri},
     workspace:{isTrusted:true,asRelativePath:()=> 'src/example.ts',fs:{readFile:async()=>Buffer.from('<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/style.css"></head><body><script type="module" src="/app.js"></script></body></html>'),writeFile:async(target:{path:string},bytes:Uint8Array)=>{writes.push({path:target.path,content:Buffer.from(bytes).toString('utf8')});}}},
     window:{showInputBox:async()=>inputs.shift(),showSaveDialog:async(_options:unknown)=>uri('/chosen/export.md'),showErrorMessage:(message:string)=>{errors.push(message);},showInformationMessage:()=>{},activeTextEditor:undefined as unknown},
-    commands:{executeCommand:async(command:string)=>{commands.push(command);}},env:{openExternal:async()=>true}};
+    commands:{executeCommand:async(command:string)=>{commands.push(command);}},env:{openExternal:async(target:{toString():string})=>{external.push(target.toString());return true;}}};
   const context={extensionUri:uri(directory),globalState:{get:<T>(key:string,fallback:T)=>state.has(key)?state.get(key):fallback,update:async(key:string,value:unknown)=>{state.set(key,value);}},secrets:{get:async(key:string)=>secrets.get(key),store:async(key:string,value:string)=>{secrets.set(key,value);}},subscriptions:[]};
   const loader=Module as unknown as {_load:(...args:unknown[])=>unknown};const original=loader._load;
   loader._load=function(name:unknown,...args:unknown[]){if(name==='vscode')return vscode;return original.call(this,name,...args);};
@@ -31,7 +31,7 @@ async function host(t:test.TestContext){
   const wait=async(predicate:()=>boolean)=>{const until=Date.now()+3000;while(!predicate()){if(Date.now()>until)throw new Error('Host response timeout.');await new Promise(resolve=>setTimeout(resolve,5));}};
   const send=async(message:Record<string,unknown>)=>{receive(message);await wait(()=>posts.some(item=>item.id===message.id));return posts.find(item=>item.id===message.id)!;};
   const connect=(endpoint:string,token='host-private-key')=>{state.set('yed1z.endpoint',endpoint);secrets.set('yed1z.gateway.'+createHash('sha256').update(endpoint).digest('hex'),token);};
-  return{instance,webview,posts,secrets,state,inputs,errors,commands,writes,vscode,send,receive,wait,connect};
+  return{instance,webview,external,posts,secrets,state,inputs,errors,commands,writes,vscode,send,receive,wait,connect};
 }
 async function server(t:test.TestContext,handler:RequestListener){
   const app=createServer(handler);await new Promise<void>(resolve=>app.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise<void>(resolve=>app.close(()=>resolve())));const address=app.address();assert.ok(address&&typeof address!=='string');return`http://127.0.0.1:${address.port}`;
@@ -86,4 +86,14 @@ test('host permits PUT for scoped account delegates only',async t=>{
   assert.equal(permitted.ok,true);assert.equal(method,'PUT');assert.equal(target,'/api/accounts/acc-fixture/delegates');assert.deepEqual(body,{userIds:['u2'],shared:false});
   const denied=await h.send({type:'api',id:'wrong-put',method:'PUT',path:'/api/projects/p1',body:{name:'Denied'}});
   assert.equal(denied.ok,false);assert.equal(target,'/api/accounts/acc-fixture/delegates');
+});
+
+
+test('editor opens Control Room, classic hardware and fleet at their distinct gateway addresses',async t=>{
+  const h=await host(t);h.connect('https://portal.test');
+  h.receive({type:'open-portal'});
+  h.receive({type:'openCockpit',path:'/'});
+  h.receive({type:'openCockpit'});
+  await h.wait(()=>h.external.length===3);
+  assert.deepEqual(h.external,['https://portal.test/control','https://portal.test/','https://portal.test/cockpit']);
 });

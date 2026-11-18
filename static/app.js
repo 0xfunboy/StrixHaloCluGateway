@@ -1111,7 +1111,19 @@ function escapeHtml(str) {
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
+// RC1 shared project links originally used the home page; keep those bookmarks working.
+function openLinkedProject() {
+  const { pathname, hash } = window.location;
+  if ((pathname === '/' || pathname === '/index.html') && new URLSearchParams(hash.slice(1)).get('project')) {
+    window.location.replace('/control' + hash);
+    return true;
+  }
+  return false;
+}
+
+window.addEventListener('hashchange', openLinkedProject);
 document.addEventListener('DOMContentLoaded', () => {
+  if (openLinkedProject()) return;
   initThemeAndCrt();
   initLanguage();
   initInspectorSwitcher();

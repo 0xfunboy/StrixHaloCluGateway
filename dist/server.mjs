@@ -8985,18 +8985,27 @@ var Application = class {
   }
   static(pathname, method, res) {
     assert(method === "GET" || method === "HEAD", 405, "METHOD", "Metodo non consentito.");
-    if (["/", "/index.html", "/control", "/control/", "/control/index.html", "/cockpit", "/cockpit/classic"].includes(pathname)) {
-      const controlHtml = path15.resolve(this.staticDir, pathname === "/cockpit/classic" ? "../classic/index.html" : pathname === "/cockpit" ? "cockpit.html" : "index.html");
-      if (existsSync2(controlHtml)) {
-        res.writeHead(200, {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-cache",
-          "X-Content-Type-Options": "nosniff",
-          "Content-Security-Policy": pathname === "/cockpit/classic" ? historicCsp : webCsp
-        });
-        res.end(method === "HEAD" ? void 0 : readFileSync4(controlHtml));
-        return;
-      }
+    const pages = {
+      "/": "../classic/index.html",
+      "/index.html": "../classic/index.html",
+      "/cockpit/classic": "../classic/index.html",
+      "/cockpit": "cockpit.html",
+      "/control": "index.html",
+      "/control/": "index.html",
+      "/control/index.html": "index.html"
+    };
+    const page = pages[pathname];
+    if (page) {
+      const target = path15.resolve(this.staticDir, page);
+      assert(existsSync2(target), 503, "BUILD", "Interfaccia non compilata: esegui npm run build.");
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": page === "../classic/index.html" ? historicCsp : webCsp
+      });
+      res.end(method === "HEAD" ? void 0 : readFileSync4(target));
+      return;
     }
     const files = {
       "/static/style.css": ["../classic/style.css", "text/css; charset=utf-8"],

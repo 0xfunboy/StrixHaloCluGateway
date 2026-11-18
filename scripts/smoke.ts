@@ -51,11 +51,28 @@ try {
       if (match) { clearTimeout(timer); resolve(match[0]); }
     });
   });
-  const page = await fetch(url);
-  assert.equal(page.status, 200);
-  assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'self'/);
-  assert.match(await page.text(), /Control Room/);
-  for (const page of ['/control','/cockpit','/cockpit/classic','/assets/cockpit.js','/static/app.js','/static/assets/strix_halo_dual_cluster.jpg']) {
+  const dashboard = await fetch(url);
+  assert.equal(dashboard.status, 200);
+  const dashboardHtml = await dashboard.text();
+  assert.match(dashboardHtml, /DUAL_STRIX_HALO_WORKSTATION_HUD/);
+  assert.match(dashboardHtml, /href="\/control"/);
+  assert.match(dashboardHtml, /src="\/static\/app\.js/);
+  assert.match(dashboard.headers.get('content-security-policy') ?? '', /script-src 'self' 'unsafe-inline'/);
+  for (const alias of ['/index.html', '/cockpit/classic']) {
+    const response = await fetch(url + alias);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), dashboardHtml);
+  }
+  for (const route of ['/control', '/control/', '/control/index.html']) {
+    const response = await fetch(url + route);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-security-policy') ?? '', /script-src 'self';/);
+    assert.match(await response.text(), /src="\/assets\/app\.js"/);
+  }
+  const head = await fetch(url, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+  for (const page of ['/cockpit','/assets/cockpit.js','/static/style.css','/static/app.js','/static/assets/strix_halo_dual_cluster.jpg','/static/assets/strix_halo_die_schematic.jpg']) {
     const response = await fetch(url+page); assert.equal(response.status,200,page); await response.arrayBuffer();
   }
   const asset = await fetch(url + '/assets/app.js');

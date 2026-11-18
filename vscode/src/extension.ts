@@ -37,7 +37,11 @@ export class CommandView implements vscode.WebviewViewProvider,vscode.Disposable
     if(message.type==='configure'){await this.configure();return;}
     if(message.type==='host-context'){await this.postHost();return;}
     if(message.type==='open-portal'){await this.openPortal();return;}
-    if(message.type==='openCockpit'){await vscode.env.openExternal(vscode.Uri.parse(`${gatewayUrl(this.endpoint())}/cockpit`));return;}
+    if (message.type === 'openCockpit') {
+      const path = message.path === '/' ? '/' : '/cockpit';
+      await vscode.env.openExternal(vscode.Uri.parse(gatewayUrl(this.endpoint()) + path));
+      return;
+    }
     if(message.type==='copyText'&&typeof message.text==='string'&&message.text.length<=2000){await vscode.env.clipboard.writeText(message.text);return;}
     if (message.type === 'openDiff' && typeof message.text === 'string' && Buffer.byteLength(message.text) <= 2_000_000) {
       const document = await vscode.workspace.openTextDocument({ language: 'diff', content: message.text });
@@ -133,7 +137,7 @@ export class CommandView implements vscode.WebviewViewProvider,vscode.Disposable
     const content=editor.document.getText(editor.selection);if(Buffer.byteLength(content)>1_000_000){void vscode.window.showErrorMessage('La selezione supera 1 MB.');return;}
     await vscode.commands.executeCommand('haloforge.chat.focus');await this.post({type:'selection',name:vscode.workspace.asRelativePath(editor.document.uri),content});
   }
-  async openPortal(){await vscode.env.openExternal(vscode.Uri.parse(this.endpoint()));}
+  async openPortal(){await vscode.env.openExternal(vscode.Uri.parse(gatewayUrl(this.endpoint()) + '/control'));}
   dispose(){this.abortAll();}
 }
 export function activate(context:vscode.ExtensionContext){

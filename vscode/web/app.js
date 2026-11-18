@@ -127,7 +127,7 @@
       configure: () => host.postMessage({ type: "configure" }),
       attachSelection: () => host.postMessage({ type: "attachSelection" }),
       openAuth: (url) => host.postMessage({ type: "openAuth", url }),
-      openCockpit: () => host.postMessage({ type: "openCockpit" }),
+      openCockpit: (path) => host.postMessage({ type: "openCockpit", path }),
       copyText: (text) => host.postMessage({ type: "copyText", text }),
       openDiff: (text) => host.postMessage({ type: "openDiff", text }),
       saveFile(name, content, mime) {
@@ -2397,7 +2397,7 @@
       const origin = this.host?.endpoint ?? this.win.location.origin;
       const fragment = new URLSearchParams({ project: run.projectId, conversation: run.conversationId, run: run.id, view: "journey" });
       const { body } = this.modal("Collegamento alla missione", "Per aprire il percorso serve un account autorizzato a leggere la missione.");
-      const field = this.input("text", `${origin}/#${fragment.toString()}`);
+      const field = this.input("text", `${origin}/control#${fragment.toString()}`);
       field.readOnly = true;
       body.append(this.field("Indirizzo", field));
       field.focus();
@@ -2507,11 +2507,13 @@
         await this.refresh();
       }, { icon: "refresh" }));
       if (this.data?.user.id !== "guest") actions.append(this.button("Consumi", () => this.usageDialog(), { icon: "activity" }));
-      if (this.api.native && this.api.openCockpit) actions.append(this.button("Cockpit hardware", () => this.api.openCockpit?.(), { icon: "activity" }));
-      else if (!this.api.native) {
-        const cockpit = this.el("a", "button", "Cockpit hardware");
-        cockpit.href = "/cockpit";
-        actions.append(cockpit);
+      for (const [label, path] of [["Dashboard hardware", "/"], ["Fleet monitor", "/cockpit"]]) {
+        if (this.api.native && this.api.openCockpit) actions.append(this.button(label, () => this.api.openCockpit?.(path), { icon: "activity" }));
+        else if (!this.api.native) {
+          const link = this.el("a", "button", label);
+          link.href = path;
+          actions.append(link);
+        }
       }
       page.append(actions);
       page.append(this.createActivity(true));

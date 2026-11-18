@@ -211,7 +211,8 @@ var CommandView = class {
       return;
     }
     if (message.type === "openCockpit") {
-      await vscode.env.openExternal(vscode.Uri.parse(`${gatewayUrl(this.endpoint())}/cockpit`));
+      const path2 = message.path === "/" ? "/" : "/cockpit";
+      await vscode.env.openExternal(vscode.Uri.parse(gatewayUrl(this.endpoint()) + path2));
       return;
     }
     if (message.type === "copyText" && typeof message.text === "string" && message.text.length <= 2e3) {
@@ -404,7 +405,7 @@ var CommandView = class {
     await this.post({ type: "selection", name: vscode.workspace.asRelativePath(editor.document.uri), content });
   }
   async openPortal() {
-    await vscode.env.openExternal(vscode.Uri.parse(this.endpoint()));
+    await vscode.env.openExternal(vscode.Uri.parse(gatewayUrl(this.endpoint()) + "/control"));
   }
   dispose() {
     this.abortAll();

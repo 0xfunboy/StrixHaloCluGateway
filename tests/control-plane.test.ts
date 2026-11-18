@@ -142,7 +142,7 @@ test('HTTP object ownership, operator roles and static allowlist stay enforced',
   assert.equal((await f.api(`/api/conversations/${conversation.id}`,{token:f.bob.token})).status,404);assert.equal((await f.api(`/api/artifacts/${artifact.id}`,{token:f.bob.token})).status,404);assert.equal((await f.api('/api/users',{token:f.bob.token})).status,403);
   assert.equal((await f.api('/api/providers',{token:f.bob.token,body:{label:'Private host',kind:'openai-compatible',baseUrl:'http://127.0.0.1:1'}})).status,403);
   assert.equal((await f.api('/api/projects',{token:f.viewer.token,body:{name:'denied'}})).status,403);assert.equal((await f.api('/api/bootstrap',{token:f.viewer.token})).status,200);
-  const root=await fetch(f.url+'/');assert.equal(root.status,200);assert.match(root.headers.get('content-security-policy')??'',/script-src 'self'/);assert.equal((await fetch(f.url+'/state/master.key')).status,404);
+  const control=await fetch(f.url+'/control');assert.equal(control.status,200);assert.match(control.headers.get('content-security-policy')??'',/script-src 'self'/);assert.equal((await fetch(f.url+'/state/master.key')).status,404);
 });
 test('untrusted member cannot enter mission or native-CLI execution even with a project membership',async t=>{
   const f=await fixture(t),conversation=f.conversation(f.bob.user);

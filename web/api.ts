@@ -13,7 +13,7 @@ export interface ClientApi {
   configure?(): void;
   attachSelection?(): void;
   openAuth?(url: string): void;
-  openCockpit?(): void;
+  openCockpit?(path: '/' | '/cockpit'): void;
   copyText?(text: string): void;
   openDiff?(text: string): void;
   saveFile?(name: string, content: string, mime?: string): Promise<void>;
@@ -122,7 +122,7 @@ export function createNativeApi(win: Window, host: VsCodeHandle): ClientApi {
     configure: () => host.postMessage({ type: 'configure' }),
     attachSelection: () => host.postMessage({ type: 'attachSelection' }),
     openAuth: url => host.postMessage({ type: 'openAuth', url }),
-    openCockpit: () => host.postMessage({ type: 'openCockpit' }),
+    openCockpit: path => host.postMessage({ type: 'openCockpit', path }),
     copyText: text => host.postMessage({ type: 'copyText', text }),
     openDiff: text => host.postMessage({ type: 'openDiff', text }),
     saveFile(name, content, mime) {

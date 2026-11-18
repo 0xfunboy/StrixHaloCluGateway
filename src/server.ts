@@ -992,18 +992,27 @@ export class Application {
 
     static(pathname: string, method: string, res: ServerResponse): void {
         assert(method === 'GET' || method === 'HEAD', 405, 'METHOD', 'Metodo non consentito.');
-        if (['/', '/index.html', '/control', '/control/', '/control/index.html', '/cockpit', '/cockpit/classic'].includes(pathname)) {
-            const controlHtml = path.resolve(this.staticDir, pathname === '/cockpit/classic' ? '../classic/index.html' : pathname === '/cockpit' ? 'cockpit.html' : 'index.html');
-            if (existsSync(controlHtml)) {
-                res.writeHead(200, {
-                    'Content-Type': 'text/html; charset=utf-8',
-                    'Cache-Control': 'no-cache',
-                    'X-Content-Type-Options': 'nosniff',
-                    'Content-Security-Policy': pathname === '/cockpit/classic' ? historicCsp : webCsp
-                });
-                res.end(method === 'HEAD' ? undefined : readFileSync(controlHtml));
-                return;
-            }
+        const pages: Record<string, string> = {
+            '/': '../classic/index.html',
+            '/index.html': '../classic/index.html',
+            '/cockpit/classic': '../classic/index.html',
+            '/cockpit': 'cockpit.html',
+            '/control': 'index.html',
+            '/control/': 'index.html',
+            '/control/index.html': 'index.html'
+        };
+        const page = pages[pathname];
+        if (page) {
+            const target = path.resolve(this.staticDir, page);
+            assert(existsSync(target), 503, 'BUILD', 'Interfaccia non compilata: esegui npm run build.');
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': 'no-cache',
+                'X-Content-Type-Options': 'nosniff',
+                'Content-Security-Policy': page === '../classic/index.html' ? historicCsp : webCsp
+            });
+            res.end(method === 'HEAD' ? undefined : readFileSync(target));
+            return;
         }
 
         // Control Room Web Assets

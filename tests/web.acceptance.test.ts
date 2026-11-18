@@ -125,6 +125,8 @@ test('cockpit mostra tutti i nodi, distingue zero da misure ignote e non interpr
   assert.match(root.querySelector('.message-body')!.parentElement!.parentElement!.textContent!, /contesto da mantenere/);
   assert.match(root.querySelector('.response-metrics')!.textContent!, /in 0 token/);
   click('[data-view="infrastructure"]');
+  const hardwareLinks = Array.from(root.querySelectorAll<HTMLAnchorElement>('.cluster-actions a'), link => [link.textContent, link.getAttribute('href')]);
+  assert.deepEqual(hardwareLinks, [['Dashboard hardware', '/'], ['Fleet monitor', '/cockpit']]);
   assert.equal(root.querySelectorAll('.node-card').length, 3); assert.match(root.querySelector('#page-view')!.textContent!, /Configurato, da verificare/); assert.match(root.querySelector('#page-view')!.textContent!, /Dual Strix · modello distribuito/);
 });
 
@@ -576,8 +578,11 @@ test('il percorso apre eventi durevoli, filtra il grafo alla transizione selezio
     { id: 12, ownerId: 'u1', projectId: 'p1', runId: 'r1', taskId: 't1', type: 'task.updated', text: 'Analisi completata', createdAt: now, data: { status: 'succeeded' } },
     { id: 13, ownerId: 'u1', projectId: 'p1', runId: 'r1', taskId: 't2', type: 'task.updated', text: 'Sviluppo avviato', createdAt: now, data: { status: 'running' } },
   ];
-  const { root, click, flush, dom } = await setup(t, api);
+  const { root, click, buttonText, flush, dom } = await setup(t, api);
   click('[data-view="journey"]'); await flush();
+  buttonText('Copia collegamento').click();
+  assert.equal(root.querySelector<HTMLInputElement>('dialog input')?.value, 'https://portal.test/control#project=p1&conversation=c1&run=r1&view=journey');
+  root.querySelector<HTMLDialogElement>('dialog')!.close();
   assert.ok(api.calls.some(call => call.path === '/api/runs/r1/events?after=0'));
   assert.equal(root.querySelectorAll('.journey-graph .graph-task').length, 2);
   click('#journal-event-12');

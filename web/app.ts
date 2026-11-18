@@ -1118,7 +1118,7 @@ export class ControlRoom {
     const origin = this.host?.endpoint ?? this.win.location.origin;
     const fragment = new URLSearchParams({ project: run.projectId, conversation: run.conversationId, run: run.id, view: 'journey' });
     const { body } = this.modal('Collegamento alla missione', 'Per aprire il percorso serve un account autorizzato a leggere la missione.');
-    const field = this.input('text', `${origin}/#${fragment.toString()}`); field.readOnly = true;
+    const field = this.input('text', `${origin}/control#${fragment.toString()}`); field.readOnly = true;
     body.append(this.field('Indirizzo', field)); field.focus(); field.select();
     body.append(this.button('Copia', async () => {
       if (this.api.copyText) this.api.copyText(field.value);
@@ -1205,8 +1205,10 @@ export class ControlRoom {
     const actions = this.el('div', 'row cluster-actions');
     if (this.operator) actions.append(this.button('Aggiorna telemetria', async () => { await this.api.request('POST', '/api/telemetry/refresh', {}); await this.refresh(); }, { icon: 'refresh' }));
     if (this.data?.user.id !== 'guest') actions.append(this.button('Consumi', () => this.usageDialog(), { icon: 'activity' }));
-    if (this.api.native && this.api.openCockpit) actions.append(this.button('Cockpit hardware', () => this.api.openCockpit?.(), { icon: 'activity' }));
-    else if (!this.api.native) { const cockpit = this.el('a', 'button', 'Cockpit hardware'); cockpit.href = '/cockpit'; actions.append(cockpit); }
+    for (const [label, path] of [['Dashboard hardware', '/'], ['Fleet monitor', '/cockpit']] as const) {
+      if (this.api.native && this.api.openCockpit) actions.append(this.button(label, () => this.api.openCockpit?.(path), { icon: 'activity' }));
+      else if (!this.api.native) { const link = this.el('a', 'button', label); link.href = path; actions.append(link); }
+    }
     page.append(actions);
     page.append(this.createActivity(true));
     const grid = this.el('div', 'cards-grid');
