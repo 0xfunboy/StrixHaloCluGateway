@@ -100,6 +100,28 @@ test('embedding adapter restores input order and rejects duplicated indices', as
   } finally { await app.close(); }
 });
 
+test('opt-in embedding partition preserves CJK and surrogate pairs and pools weighted vectors across batches', async () => {
+  const leading = '知'.repeat(31);
+  const multiline = leading + '🌐' + '識'.repeat(30) + '後';
+  const accepted: string[][] = [];
+  const app = await server(async (req, res) => {
+    const { input } = await body(req) as { input: string[] };
+    assert(input.length <= 16 && input.every(part => part.length <= 32 && part.isWellFormed()));
+    accepted.push(input);
+    json(res, { model: 'test', usage: { prompt_tokens: input.length }, data: input.map((part, index) => ({ index, embedding: part.startsWith('知') ? [1, 0] : [0, 1] })).reverse() });
+  });
+  try {
+    const texts = [multiline, '知'.repeat(32 * 17), '短文'];
+    const result = await embed({ connection: conn(app.url + '/v1'), model: 'test', texts, signal: signal(), maxEmbeddingChars: 32 });
+    const parts = accepted.flat();
+    assert.deepEqual(parts.slice(0, 3), [leading, '🌐' + '識'.repeat(30), '後']);
+    assert.equal(parts.slice(0, 3).join(''), multiline);
+    assert.deepEqual(accepted.map(batch => batch.length), [16, 5]);
+    assert.equal(result.inputTokens, 21);
+    assert.deepEqual(result.vectors, [[31 / 64, 33 / 64], [1, 0], [0, 1]]);
+  } finally { await app.close(); }
+});
+
 test('Ollama embedding explicitly disables silent truncation', async () => {
   const app = await server(async (req, res) => { assert.equal(req.url, '/api/embed'); const payload = await body(req); assert.equal(payload.truncate, false); json(res, { model: 'embed', embeddings: [[0.2, -0.2]], prompt_eval_count: 7 }); });
   try { assert.equal((await embed({ connection: conn(app.url + '/api', 'ollama'), model: 'embed', texts: ['hello'], signal: signal() })).inputTokens, 7); } finally { await app.close(); }

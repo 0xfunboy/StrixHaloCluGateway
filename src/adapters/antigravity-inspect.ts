@@ -19,20 +19,20 @@ export async function inspectAntigravity(options: { connection: AdapterConnectio
   const run = async () => {
     const initialized = record(await rpc.request('initialize', {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: true } },
       clientInfo: { name: 'yed1z', title: 'yed1z Control Room', version: '0.4.0' }
     }, { signal: options.signal }));
     if (initialized.protocolVersion !== 1) throw new Error('Antigravity ACP version is unsupported. Update the official CLI or this adapter.');
     const authMethods = (Array.isArray(initialized.authMethods) ? initialized.authMethods : []).slice(0, 16)
-      .map(value => record(value)).map(value => ({ id: cleanLabel(value.id), label: cleanLabel(value.name) })).filter(value => value.id);
-    const capabilities = { modes: ['agent'], login: false, inspection: true, authMethods, approvalBoundary: 'official-runtime' };
+      .map(value => record(value)).map(value => ({ id: cleanLabel(value.id), label: cleanLabel(value.name), terminal: value.type === 'terminal' })).filter(value => value.id);
+    const capabilities = { modes: ['agent'], login: authMethods.some(method => method.terminal), inspection: true, authMethods, approvalBoundary: 'official-runtime' };
     let session: Record<string, unknown>;
     try {
       session = record(await rpc.request('session/new', { cwd: directory, mcpServers: [] }, { signal: options.signal }));
     } catch (error) {
       if (!(error instanceof RpcRemoteError) || error.code !== -32000) throw error;
       return { models: [], authenticated: false, quota: unknownQuota(), capabilities,
-        warnings: ['Accesso Antigravity richiesto. Sul coordinator, con lo stesso utente del servizio, esegui agy acp --login e poi Riprova.'] };
+        warnings: ['Accesso Antigravity richiesto. Completa il login ufficiale nel profilo indicato, poi verifica l’account.'] };
     }
     if (typeof session.sessionId !== 'string' || !session.sessionId) throw new Error('Antigravity did not confirm an ACP session.');
     const models = new Map<string, DiscoveredModel>();
@@ -60,7 +60,7 @@ export async function inspectAntigravity(options: { connection: AdapterConnectio
       models.set('current', { id: 'current', label: 'Modello corrente della CLI Antigravity', capabilities: ['chat', 'tools'], capabilitySource: 'unknown' });
       warnings.push('La CLI è autenticata ma non espone un selettore modelli: viene mantenuto il modello corrente della CLI.');
     }
-    warnings.push('Antigravity usa un solo profilo CLI del servizio. Quote numeriche e isolamento multiaccount non sono esposti da questo adapter.');
+    if (!options.connection.isolatedProfilePath) warnings.push('Profilo Antigravity del servizio preesistente. I nuovi account usano profili dedicati.');
     return { models: [...models.values()], authenticated: true, quota: unknownQuota(), capabilities, warnings };
   };
   try { return await bounded(run(), options.signal, timeoutMs * 2, 'Antigravity inspection', rpc.failure); }

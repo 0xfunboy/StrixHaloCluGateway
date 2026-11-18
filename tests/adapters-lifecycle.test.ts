@@ -45,3 +45,14 @@ test('readiness timeout and cancellation never report ready', async () => {
     await assert.rejects(waitEngineReady({ modelsUrl: app.url, expectedModel: 'qwen' }, controller.signal), /cancelled/);
   } finally { await app.close(); }
 });
+
+test('operator stop waits for a separately observed idle Strata engine',async t=>{
+  const {createServer}=await import('node:http'), {stopStrataEngine}=await import('../src/adapters/lifecycle.ts');
+  const requests:string[]=[];
+  const server=createServer((req,res)=>{requests.push(req.method+' '+req.url);res.setHeader('content-type','application/json');
+    res.end(JSON.stringify(req.method==='POST'?{ok:true}:{strata_state:'idle',active_model:'none'}));});
+  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
+  const address=server.address();assert.ok(address&&typeof address!=='string');const base='http://127.0.0.1:'+address.port;
+  await stopStrataEngine({url:base+'/stop',healthUrl:base+'/health'},AbortSignal.timeout(2000));
+  assert.deepEqual(requests,['POST /stop','GET /health']);
+});

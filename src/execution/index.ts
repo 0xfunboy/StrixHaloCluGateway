@@ -2,6 +2,7 @@ import { executeLocal } from './local.ts';
 import { executeRemote } from './remote.ts';
 import type { ExecutionRequest, ExecutionResult, ExecutionTarget, Operation, ToolCall, ToolDefinition } from './types.ts';
 export * from './types.ts';
+export { recipeDigest } from './local.ts';
 export { acquireWorkspace } from './leases.ts';
 export { sshArguments, quoteRemote, RemoteExecutionUncertainError } from './remote.ts';
 export { runProcess } from './process.ts';

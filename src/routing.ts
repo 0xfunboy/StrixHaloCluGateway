@@ -50,7 +50,8 @@ export class RouteRouter {
 
     private candidate(user: User, route: ModelRoute, options: RouteRequirements = {}): Candidate {
         const provider = this.catalog.store.require<Provider>('provider', route.providerId);
-        const account = this.catalog.store.require<Account>('account', route.accountId);
+        const stored = this.catalog.store.require<Account>('account', route.accountId);
+        const account = { ...stored, quota: this.catalog.effectiveQuota(stored) };
         // Every route must retain the provider's own resource constraints. A route
         // override cannot remove either node of a configured distributed engine.
         const hardware = routeResources({
@@ -65,7 +66,7 @@ export class RouteRouter {
         this.catalog.scheduler.ensureGroup({ id: accountGroup, label: 'Account · ' + account.label, nodeIds: [], capacity }, true);
         const candidate: Candidate = { route, provider, account, groups: [...new Set([...hardware, accountGroup])] };
         const deny = (code: string, reason: string, status: RouteAvailability['status'] = 'unavailable') => { candidate.unavailable = { code, reason, status }; return candidate; };
-        if (account.ownerId !== user.id && !account.shared) return deny('NOT_FOUND', 'Modello non disponibile.');
+        if (!this.catalog.canUseAccount(user,account)) return deny('NOT_FOUND', 'Modello non disponibile.');
         if (!route.enabled || !provider.enabled) return deny('DISABLED', 'Connessione disabilitata.', 'disabled');
         if (hardware.some(group => !this.catalog.scheduler.groups.has(group))) return deny('RESOURCE', 'Gruppo di risorse non configurato.');
         if (account.quota?.cooldownUntil && Date.parse(account.quota.cooldownUntil) > Date.now()) return deny('QUOTA', 'Account in attesa di ripristino quota.', 'cooldown');
@@ -75,6 +76,7 @@ export class RouteRouter {
         const required = new Set(options.requiredCapabilities ?? []);
         if (options.purpose === 'embedding') required.add('embedding');
         else if (options.purpose && !(route.capabilities.length === 0 && (!route.capabilitySource || route.capabilitySource === 'unknown'))) required.add('chat');
+        if (options.purpose === 'coder' && !native) required.add('tools');
         if ([...required].some(capability => !route.capabilities.includes(capability))) return deny('CAPABILITY', 'Capacità necessarie non dichiarate per questo modello.');
         if (options.minimumContextTokens !== undefined && (route.contextWindow ?? 16384) < options.minimumContextTokens)
             return deny('CONTEXT', 'Finestra di contesto insufficiente per questa richiesta.');
@@ -222,6 +224,24 @@ export class RouteRouter {
                     return available.status === 'available' ? 0 : available.status === 'unknown' ? 1 : 2;
                 };
                 eligible.sort((a, b) => rank(a) - rank(b));
+                // Compare measurements only inside equivalent provider/model slots. Routes to
+                // different engines retain their project order and unknown quotas remain in place.
+                const equivalent = new Map<string, Array<{ index: number; budget: number; entry: Candidate }>>();
+                const at = Date.now();
+                for (const [index, entry] of eligible.entries()) {
+                    const q = entry.account.quota;
+                    if (!q || at - Date.parse(q.observedAt) > 300000) continue;
+                    const windows = (q.windows ?? []).filter(w => w.usedPercent !== undefined && (!w.resetAt || Date.parse(w.resetAt) > at));
+                    const budget = windows.length ? Math.min(...windows.map(w => 100 - w.usedPercent!)) : q.remainingRequests;
+                    if (budget === undefined || !Number.isFinite(budget)) continue;
+                    const group = JSON.stringify([rank(entry), entry.provider.id, entry.route.model, windows.length ? 'percent' : 'requests']);
+                    const items = equivalent.get(group) ?? [];
+                    items.push({ index, budget, entry }); equivalent.set(group, items);
+                }
+                for (const items of equivalent.values()) {
+                    const byBudget = items.slice().sort((a, b) => b.budget - a.budget);
+                    items.forEach((item, i) => { eligible[item.index] = byBudget[i].entry; });
+                }
             }
             const lease = await this.catalog.scheduler.acquireAny(eligible.map(candidate => ({ id: candidate.route.id, groups: candidate.groups })), signal, {
                 priority: request.priority ?? (request.purpose === 'chat' ? 'interactive' : 'normal'),

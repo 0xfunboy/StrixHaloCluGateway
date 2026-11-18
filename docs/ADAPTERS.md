@@ -100,6 +100,14 @@ il supervisor lo consegna all'utente proprietario senza scriverlo in cronologia,
 log o memoria. Il risultato finale richiede la conferma di un account ChatGPT.
 Finestre di quota ufficiali restano separate: non sono un singolo saldo fungibile.
 
+Le missioni Codex usano gli strumenti di ispezione del workspace registrati da
+yed1z tramite app-server. Leggere, elencare e cercare file produce evidenze e
+applica gli stessi limiti del runner locale. Apps e plugin del runtime sono
+disabilitati per queste missioni. Se il profilo o il progetto configura un
+server MCP esterno attivo, il runtime segnala la configurazione richiesta prima
+di avviare il turno. Chat, login e discovery usano il percorso del profilo
+ordinario. Il round trip del tool locale è stato provato con Codex CLI 0.153.4.
+
 **Antigravity:** ACP della CLI ufficiale `agy acp --sandbox`. La discovery 0.4
 esegue realmente initialize/session e usa soltanto il catalogo o il modello
 corrente dichiarato dal runtime; non costruisce una lista di nomi Gemini.

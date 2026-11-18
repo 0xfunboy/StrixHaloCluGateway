@@ -1,15 +1,16 @@
 import { access, constants } from 'node:fs/promises';
 import path from 'node:path';
 import type { Account, ModelRoute, Project, Provider, Run, User } from './contracts.ts';
-import type { ConnectionDetection, ConnectionInput, ConnectionOptions, ConnectionPreset, ConnectionPresetId, ConnectionResult, PublicConnectionProvider } from './connection-types.ts';
+import type { ConnectionDetection, ConnectionInput, ConnectionOptions, ConnectionPreset, ConnectionPresetId, ConnectionResult, NativeLoginSnapshot, PublicConnectionProvider } from './connection-types.ts';
 import { Catalog } from './catalog.ts';
 import { discoverModels } from './adapters/index.ts';
 import { nativeAccountBusy } from './adapters/native.ts';
+import { antigravityLoginCommand } from './adapters/antigravity-profile.ts';
 import { AppError, assert, endpoint, hash, id, now, object, safeError, str, textList } from './util.ts';
 
 const PRESETS: ConnectionPreset[] = [
   { id: 'codex', label: 'Codex', kind: 'codex', authentication: 'device-login', docsUrl: 'https://developers.openai.com/codex/cli', description: 'Accesso ufficiale con un profilo privato per account.' },
-  { id: 'antigravity', label: 'Antigravity', kind: 'antigravity', authentication: 'runtime-login', docsUrl: 'https://antigravity.google/docs/ide/extensions/acp', description: 'Profilo ufficiale della CLI sul coordinator, con modelli rilevati via ACP.' },
+  { id: 'antigravity', label: 'Antigravity', kind: 'antigravity', authentication: 'runtime-login', docsUrl: 'https://antigravity.google/docs/ide/extensions/acp', description: 'Login ufficiale Google in un profilo CLI dedicato, con modelli rilevati via ACP.' },
   { id: 'openai', label: 'OpenAI API', kind: 'openai-responses', authentication: 'api-key', defaultUrl: 'https://api.openai.com/v1', description: 'Chiave API e discovery dei modelli.' },
   { id: 'gemini', label: 'Gemini API', kind: 'gemini', authentication: 'api-key', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta', description: 'Chiave API Google e catalogo Gemini.' },
   { id: 'ollama', label: 'Ollama', kind: 'ollama', authentication: 'optional-key', defaultUrl: 'http://127.0.0.1:11434', description: 'Modelli locali sul coordinator o su un endpoint configurato.' },
@@ -19,8 +20,15 @@ const PRESETS: ConnectionPreset[] = [
 ];
 const SCOPE = 'Solo Ollama e LM Studio su loopback del coordinator, più gli endpoint già configurati e visibili. Nessuna scansione della rete.';
 const NATIVE = new Set(['codex', 'antigravity']);
-const allowedFields = new Set(['preset', 'providerId', 'accountId', 'label', 'accountLabel', 'baseUrl', 'secret', 'shared', 'requestId', 'nodeIds', 'resourceGroupIds', 'modelIds']);
+const allowedFields = new Set(['preset', 'providerId', 'accountId', 'label', 'accountLabel', 'baseUrl', 'secret', 'shared', 'quotaDomain', 'requestId', 'nodeIds', 'resourceGroupIds', 'modelIds']);
 interface Enrollment { id: string; ownerId: string; providerId: string; accountId: string; createdAt: string; }
+interface NativeLogin {
+  snapshot: Exclude<NativeLoginSnapshot, { status: 'idle' }>;
+  controller: AbortController;
+  onState: (state: NativeLoginSnapshot) => void;
+  active: boolean;
+  respond?: (code:string)=>void;
+}
 const optional = (value: unknown, name: string, max = 200): string | undefined => value === undefined || value === '' ? undefined : str(value, name, max).trim();
 const operator = (user: User): boolean => user.role === 'admin' || user.role === 'operator';
 const publicProvider = ({ command, args, env, ...provider }: Provider): PublicConnectionProvider => provider;
@@ -53,6 +61,7 @@ async function executableAvailable(provider: Provider): Promise<boolean> {
 export class Connections {
   readonly catalog: Catalog;
   private readonly pending = new Map<string, { signature: string; promise: Promise<ConnectionResult> }>();
+  private readonly logins = new Map<string, NativeLogin>();
   constructor(catalog: Catalog) { this.catalog = catalog; }
   private visible(user: User): Provider[] {
     const accountProviders = new Set(this.catalog.accounts(user).map(account => account.providerId));
@@ -62,6 +71,67 @@ export class Connections {
     assert(user.role !== 'viewer', 403, 'FORBIDDEN', 'Il profilo lettore non può collegare account.');
     const accounts = this.catalog.accounts(user), models = this.catalog.models(user);
     return { presets: operator(user) ? structuredClone(PRESETS) : [], configured: this.visible(user).filter(p => operator(user) || !NATIVE.has(p.kind)).map(provider => ({ provider: publicProvider(provider), accounts: accounts.filter(a => a.providerId === provider.id), modelCount: models.filter(m => m.providerId === provider.id).length })), detectionScope: SCOPE };
+  }
+  nativeLogin(user: User, accountId: string): NativeLoginSnapshot {
+    assert(operator(user), 403, 'TRUSTED_EXECUTION', 'Le CLI sono riservate agli operatori fidati.');
+    this.catalog.store.own<Account>(user, 'account', accountId);
+    return this.logins.get(accountId)?.snapshot ?? { accountId, status: 'idle' };
+  }
+  startNativeLogin(user: User, accountId: string, signal: AbortSignal, onState: NativeLogin['onState']): NativeLoginSnapshot {
+    this.nativeLogin(user, accountId);
+    const account = this.catalog.store.require<Account>('account', accountId);
+    const provider = this.catalog.store.require<Provider>('provider', account.providerId);
+    assert(provider.enabled, 409, 'DISABLED', 'Questa connessione è disabilitata.');
+    assert(NATIVE.has(provider.kind), 409, 'NATIVE_LOGIN_TERMINAL', 'Completa il login ufficiale tramite le istruzioni di collegamento dell’account.');
+    const existing = this.logins.get(accountId);
+    if (existing?.active) return existing.snapshot;
+    assert(this.logins.size < 1000 || existing, 429, 'BUSY', 'Sono già in corso troppe operazioni di login.');
+    const operationId = id('login');
+    const login: NativeLogin = { snapshot: { accountId, operationId, status: 'starting' }, controller: new AbortController(), onState, active: true };
+    this.logins.set(accountId, login);
+    const scope = AbortSignal.any([signal, login.controller.signal]);
+    const authScope = AbortSignal.any([scope, AbortSignal.timeout(300000)]);
+    const update = (snapshot: NativeLogin['snapshot']): void => {
+      login.snapshot = snapshot;
+      try { login.onState(snapshot); } catch { /* A disconnected observer cannot change the login outcome. */ }
+    };
+    void this.catalog.login(user, accountId, event => {
+      if (authScope.aborted) return;
+      login.respond=event.respond;
+      update({ accountId, operationId, status:'pending', verificationUri:event.verificationUri,
+        ...(event.userCode ? { userCode:event.userCode } : {}), ...(event.respond ? { responseRequired:true } : {}) });
+    }, authScope).then(async () => {
+      const result = await this.catalog.discover(user, accountId, AbortSignal.any([scope, AbortSignal.timeout(30000)]));
+      scope.throwIfAborted();
+      assert(result.account.status === 'ready' || result.account.status === 'cooldown', 409, 'NATIVE_AUTH', 'Login completato, verifica di sessione e catalogo da ripetere.');
+      update({ accountId, operationId, status: 'complete', discovered: true, models: result.models, warnings: result.warnings });
+    }).catch(error => {
+      const cancelled = login.controller.signal.aborted;
+      update({ accountId, operationId, status: cancelled ? 'cancelled' : 'error', message: cancelled ? 'Login annullato.' : safeError(error) });
+    }).finally(() => {
+      login.active = false; delete login.respond;
+      const cleanup = setTimeout(() => { if (this.logins.get(accountId) === login) this.logins.delete(accountId); }, 300000);
+      cleanup.unref();
+    });
+    return login.snapshot;
+  }
+  respondNativeLogin(user:User,accountId:string,operationId:string,code:string):NativeLoginSnapshot {
+    const state=this.nativeLogin(user,accountId), login=this.logins.get(accountId);
+    assert(login?.active && state.status==='pending' && state.operationId===operationId && state.responseRequired && login.respond,409,'LOGIN_STATE','Richiesta di accesso scaduta o già conclusa.');
+    login.respond(code);
+    delete login.respond;
+    login.snapshot={accountId,operationId,status:'starting'};
+    login.onState(login.snapshot);
+    return login.snapshot;
+  }
+  cancelNativeLogin(user: User, accountId: string): NativeLoginSnapshot {
+    const snapshot = this.nativeLogin(user, accountId);
+    const login = this.logins.get(accountId);
+    if (!login?.active || snapshot.status === 'idle' || snapshot.status === 'complete') return snapshot;
+    const cancelled = { accountId, operationId: snapshot.operationId, status: 'cancelled' as const, message: 'Login annullato.' };
+    login.snapshot = cancelled;
+    login.controller.abort();
+    return cancelled;
   }
   private assertTopologyIdle(provider: Provider): void {
     const store = this.catalog.store;
@@ -122,12 +192,6 @@ export class Connections {
     if (provider && url) assert(endpoint(provider.baseUrl) === url, 409, 'ENDPOINT_CHANGED', 'L’endpoint è cambiato: avvia una nuova connessione per non modificare gli account già collegati.');
     if (!provider) provider = this.visible(user).find(p => p.kind === preset.kind && (native || p.baseUrl === url) && (native || p.ownerId === user.id || this.catalog.config.providers.some(seed => seed.id === p.id)));
     if (provider) assert(provider.enabled, 409, 'DISABLED', 'Questa connessione è disabilitata nella configurazione del servizio.');
-    if (preset.kind === 'antigravity') {
-      const other = store.all<Account>('account').find(a => store.get<Provider>('provider', a.providerId)?.kind === 'antigravity');
-      assert(!other || other.ownerId === user.id, 409, 'ISOLATION', 'Antigravity usa il profilo CLI già assegnato a un altro operatore del servizio.');
-      if (other) { account = other; provider = store.require<Provider>('provider', other.providerId); }
-      if (provider) assert(provider.ownerId === user.id, 403, 'ISOLATION', 'Il profilo Antigravity è gestito dall’operatore che lo ha configurato.');
-    }
     const reusedProvider = !!provider;
     const label = optional(body.label, 'Nome connessione', 120) ?? preset.label;
     const accountLabel = optional(body.accountLabel, 'Nome account', 120) ?? account?.label ?? 'Principale';
@@ -165,8 +229,18 @@ export class Connections {
     assert(!shared || operator(user), 403, 'FORBIDDEN', 'La condivisione di account richiede un operatore.');
     if (!account) {
       assert(store.all<Account>('account').filter(a => a.ownerId === user.id).length < 100, 413, 'LIMIT', 'Limite account raggiunto.');
-      account = { id: id('acc'), ownerId: user.id, providerId: provider.id, label: accountLabel, shared, hasSecret: !!secret, status: 'unknown' };
-    } else { account.label = accountLabel; account.shared = shared; }
+      account = { id: id('acc'), ownerId: user.id, providerId: provider.id, label: accountLabel, shared, hasSecret: !!secret, status: 'unknown', ...(native ? { nativeProfile: 'isolated' as const } : {}) };
+    } else {
+      account.label = accountLabel;
+      account.shared = shared;
+      if (native && account.nativeProfile === undefined) account.nativeProfile = preset.kind === 'codex' ? 'isolated' : 'service';
+    }
+    if (body.quotaDomain !== undefined) {
+      assert(operator(user), 403, 'FORBIDDEN', 'Il dominio quota è configurato dall’operatore proprietario.');
+      const domain = optional(body.quotaDomain, 'Dominio quota', 120)?.normalize('NFC') || undefined;
+      assert(!domain || !/[\x00-\x1f\x7f]/.test(domain), 400, 'INVALID', 'Dominio quota non valido.');
+      account.quotaDomain = domain;
+    }
     const manualIds = body.modelIds === undefined ? [] : textList(body.modelIds, 32).map(value => str(value.trim(), 'Modello', 200));
     if (secret && secret !== store.secret(account.id)) { account.hasSecret = true; account.status = 'unknown'; delete account.quota; }
     store.transaction(() => {
@@ -188,23 +262,28 @@ export class Connections {
     const bindingWarnings = ['ollama', 'lmstudio'].includes(selected) && !provider.nodeIds.length ? [this.catalog.config.providers.some(configured => configured.id === provider!.id)
       ? 'Questo endpoint locale non è associato a un nodo. Aggiorna nodi e risorse nel file di configurazione del coordinator e riavvia il servizio.'
       : 'Questo endpoint locale non è associato a un nodo noto. Assegna il nodo nelle opzioni avanzate per coordinare le risorse hardware condivise.'] : [];
-    const result = (status: ConnectionResult['status'], message: string, warnings: string[] = [], nextAction?: ConnectionResult['nextAction']): ConnectionResult => ({ provider: publicProvider(provider!), account: store.require<Account>('account', account!.id), models: store.all<ModelRoute>('model').filter(m => m.accountId === account!.id), status, message, warnings: [...warnings, ...bindingWarnings], reused: { provider: reusedProvider, account: reusedAccount }, ...(nextAction ? { nextAction } : {}) });
+    const result = (status: ConnectionResult['status'], message: string, warnings: string[] = [], nextAction?: ConnectionResult['nextAction']): ConnectionResult => ({ provider: publicProvider(provider!), account: this.catalog.accounts(user).find(item => item.id === account!.id)!, models: store.all<ModelRoute>('model').filter(m => m.accountId === account!.id), status, message, warnings: [...warnings, ...bindingWarnings], reused: { provider: reusedProvider, account: reusedAccount }, ...(nextAction ? { nextAction } : {}) });
     const retry: ConnectionResult['nextAction'] = { kind: 'retry', label: 'Riprova', accountId: account.id };
     const disableNative = () => { const current = store.require<Account>('account', account!.id); current.status = 'unknown'; store.put('account', current); for (const route of store.all<ModelRoute>('model').filter(m => m.accountId === current.id)) store.put('model', { ...route, enabled: false }); };
     if (native && !await executableAvailable(provider)) {
       disableNative();
       return result('setup-required', `La CLI ${preset.label} non è disponibile al processo del coordinator. Installa la CLI ufficiale o configura il percorso dell’eseguibile nel servizio.`, [], { kind: 'configure-runtime', label: 'Guida alla CLI', command: preset.kind === 'codex' ? 'codex --version' : 'agy acp --help', docsUrl: preset.docsUrl, accountId: account.id });
     }
-    if (native && await nativeAccountBusy(this.catalog.connection(provider, account))) return result('unavailable', 'Questo account CLI sta lavorando. Il collegamento è conservato: riprova la verifica quando il task termina.', [], retry);
     try {
+      const connection = native ? this.catalog.connection(provider, account) : undefined;
+      if (connection && await nativeAccountBusy(connection)) return result('unavailable', 'Questo account CLI sta lavorando. Il collegamento è conservato: riprova la verifica quando il task termina.', [], retry);
       const discovered = await this.catalog.discover(user, account.id, AbortSignal.any([signal, AbortSignal.timeout(10000)])) as Awaited<ReturnType<Catalog['discover']>> & { standby?: boolean };
       if (native && discovered.account.status !== 'ready' && discovered.account.status !== 'cooldown') {
         disableNative();
         if (discovered.warnings.some(warning => /Unable to inspect|unsupported|not negotiate/i.test(warning))) return result('setup-required', 'La CLI è presente ma non ha confermato il protocollo richiesto. Controlla la versione e la configurazione del servizio.', discovered.warnings, { kind: 'configure-runtime', label: 'Guida al runtime', docsUrl: preset.docsUrl, accountId: account.id });
-        return result('login-required', preset.kind === 'codex' ? 'Collegamento creato. Completa l’accesso ufficiale a Codex; i modelli saranno rilevati al termine.' : 'Completa l’accesso Google nella CLI del coordinator, poi premi Riprova.', discovered.warnings, preset.kind === 'codex' ? { kind: 'login', label: 'Accedi a Codex', accountId: account.id } : { kind: 'configure-runtime', label: 'Accedi nella CLI', command: 'agy acp --login', docsUrl: preset.docsUrl, accountId: account.id });
+        const nextAction: ConnectionResult['nextAction'] = preset.kind === 'codex'
+          ? { kind: 'login', label: 'Accedi a Codex', accountId: account.id }
+          : { kind: 'login', label: 'Accedi con Google', command: antigravityLoginCommand(connection!, provider.command && /^agy(?:\.exe)?$/.test(path.basename(provider.command)) ? provider.command : undefined), docsUrl: preset.docsUrl, accountId: account.id };
+        return result('login-required', preset.kind === 'codex' ? 'Completa l’accesso ufficiale a Codex; i modelli saranno rilevati al termine.' : 'Apri Google per questo account. Al termine il coordinator verifica la sessione e rileva i modelli.', discovered.warnings, nextAction);
       }
       if (discovered.standby) return result('standby', 'Modelli già configurati. Il motore è in standby e verrà attivato dalla sua ricetta alla prima richiesta.', discovered.warnings);
-      if (discovered.account.status === 'cooldown') return result('unavailable', 'Account collegato; la quota osservata richiede attesa prima di una nuova richiesta.', discovered.warnings, retry);
+      const cooldown = this.catalog.effectiveQuota(discovered.account)?.cooldownUntil;
+      if (discovered.account.status === 'cooldown' || (cooldown && Date.parse(cooldown) > Date.now())) return result('unavailable', 'Account collegato; la quota osservata dell’account o del suo dominio richiede attesa.', discovered.warnings, retry);
       if (!discovered.models.length && manualIds.length) { this.manualModels(provider, account, manualIds); return result('unverified', 'Modelli salvati manualmente. La prima richiesta verificherà il percorso di inferenza.', discovered.warnings); }
       return result('ready', discovered.models.length ? `${discovered.models.length} modelli rilevati. Scegli quello da usare.` : 'Endpoint raggiunto, ma il catalogo non contiene modelli. Carica un modello oppure inserisci gli ID nelle opzioni avanzate.', discovered.warnings);
     } catch (error) {
@@ -214,7 +293,7 @@ export class Connections {
       const upstreamStatus = (error as { upstreamStatus?: number } | undefined)?.upstreamStatus;
       const rejectedKey = upstreamStatus === 401 || upstreamStatus === 403 || /\bHTTP (401|403)\b/.test(message);
       if (native) disableNative();
-      if (native && /version.*unsupported|not negotiate|Executable not found/i.test(message)) return result('setup-required', 'Il runtime non ha confermato un protocollo compatibile. Controlla la CLI installata sul coordinator.', [message], { kind: 'configure-runtime', label: 'Guida al runtime', docsUrl: preset.docsUrl, accountId: account.id });
+      if (native && /version.*unsupported|not negotiate|Executable not found|isolated account|private \(0700\)|runtime exited/i.test(message)) return result('setup-required', 'Verifica il runtime ufficiale e la configurazione del suo profilo sul coordinator.', [message], { kind: 'configure-runtime', label: 'Guida al runtime', docsUrl: preset.docsUrl, accountId: account.id });
       if (!native && manualIds.length && !limited && !rejectedKey) { this.manualModels(provider, account, manualIds); return result('unverified', 'ID modello salvati. Il catalogo del provider non è stato verificato; nessuna inferenza è stata ancora eseguita.', [message], retry); }
       if (!limited) { const current = store.require<Account>('account', account.id); current.status = 'error'; store.put('account', current); }
       return result('unavailable', limited ? 'Quota esaurita o limite temporaneo del provider. Il collegamento è conservato.' : rejectedKey ? 'Il provider ha rifiutato la credenziale. Correggi la chiave e premi Riprova sullo stesso account.' : 'La connessione è salvata, ma la verifica non è riuscita. Controlla indirizzo, runtime o credenziali e riprova.', [message], retry);
@@ -223,7 +302,7 @@ export class Connections {
   private manualModels(provider: Provider, account: Account, models: string[]): void {
     const store = this.catalog.store, known = store.all<ModelRoute>('model').filter(m => m.accountId === account.id);
     store.transaction(() => {
-      for (const model of models) { const previous = known.find(m => m.model === model); store.put<ModelRoute>('model', { id: previous?.id ?? id('mdl'), providerId: provider.id, accountId: account.id, model, label: previous?.label ?? model, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: previous?.contextWindow, capabilities: previous?.capabilities ?? ['chat'], capabilitySource: previous?.capabilitySource ?? 'operator', enabled: provider.enabled }); }
+      for (const model of models) { const previous = known.find(m => m.model === model); store.put<ModelRoute>('model', { ...previous, id: previous?.id ?? id('mdl'), providerId: provider.id, accountId: account.id, model, label: previous?.label ?? model, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: previous?.contextWindow, capabilities: previous?.capabilities ?? ['chat'], capabilitySource: previous?.capabilitySource ?? 'operator', enabled: provider.enabled && !previous?.archived }); }
       const current = store.require<Account>('account', account.id); current.status = 'unknown'; store.put('account', current);
     });
   }

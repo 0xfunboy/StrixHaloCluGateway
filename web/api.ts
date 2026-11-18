@@ -13,11 +13,17 @@ export interface ClientApi {
   configure?(): void;
   attachSelection?(): void;
   openAuth?(url: string): void;
+  openCockpit?(): void;
+  copyText?(text: string): void;
+  openDiff?(text: string): void;
   saveFile?(name: string, content: string, mime?: string): Promise<void>;
   onSelection?(handler: (selection: { name: string; content: string }) => void): () => void;
   onConfigured?(handler: () => void): () => void;
+  onHost?(handler: (host: HostContext) => void): () => void;
   dispose?(): void;
 }
+
+interface HostContext { endpoint: string; host: string; workspace?: string; }
 
 type VsCodeHandle = { postMessage(message: unknown): void };
 type NativeWindow = Window & { acquireVsCodeApi?: () => VsCodeHandle };
@@ -68,6 +74,8 @@ export function createNativeApi(win: Window, host: VsCodeHandle): ClientApi {
   const selections = new Set<(selection: { name: string; content: string }) => void>();
   const configured = new Set<() => void>();
   const states = new Set<(connected: boolean) => void>();
+  const hosts = new Set<(host: HostContext) => void>();
+  let hostContext: HostContext | undefined;
   let saving: { resolve: () => void; reject: (error: Error) => void } | undefined;
   const listener = (message: MessageEvent) => {
     const value = message.data;
@@ -86,6 +94,9 @@ export function createNativeApi(win: Window, host: VsCodeHandle): ClientApi {
       for (const handler of selections) handler({ name: value.name, content: value.content });
     } else if (value.type === 'connection' && typeof value.connected === 'boolean') {
       for (const handler of states) handler(value.connected);
+    } else if (value.type === 'host-context' && typeof value.host === 'string' && typeof value.endpoint === 'string') {
+      hostContext = { endpoint: value.endpoint, host: value.host, ...(typeof value.workspace === 'string' ? { workspace: value.workspace } : {}) };
+      for (const handler of hosts) handler(hostContext);
     } else if (value.type === 'savedFile' && saving) {
       const pending = saving; saving = undefined;
       if (value.ok) pending.resolve(); else pending.reject(new Error(value.error ?? 'Esportazione non riuscita.'));
@@ -111,16 +122,20 @@ export function createNativeApi(win: Window, host: VsCodeHandle): ClientApi {
     configure: () => host.postMessage({ type: 'configure' }),
     attachSelection: () => host.postMessage({ type: 'attachSelection' }),
     openAuth: url => host.postMessage({ type: 'openAuth', url }),
+    openCockpit: () => host.postMessage({ type: 'openCockpit' }),
+    copyText: text => host.postMessage({ type: 'copyText', text }),
+    openDiff: text => host.postMessage({ type: 'openDiff', text }),
     saveFile(name, content, mime) {
       if (saving) return Promise.reject(new Error('Completa prima l’esportazione in corso.'));
       return new Promise<void>((resolve, reject) => { saving = { resolve, reject }; host.postMessage({ type: 'saveFile', name, content, mime }); });
     },
     onSelection(handler) { selections.add(handler); return () => selections.delete(handler); },
     onConfigured(handler) { configured.add(handler); return () => configured.delete(handler); },
+    onHost(handler) { hosts.add(handler); if (hostContext) handler(hostContext); else host.postMessage({ type: 'host-context' }); return () => hosts.delete(handler); },
     dispose() {
       win.removeEventListener('message', listener);
       for (const request of requests.values()) { clearTimeout(request.timeout); request.reject(new ApiError('La vista è stata chiusa.', 499, 'closed')); }
-      requests.clear(); events.clear(); selections.clear(); states.clear(); configured.clear();
+      requests.clear(); events.clear(); selections.clear(); states.clear(); configured.clear(); hosts.clear();
       saving?.reject(new Error('La vista è stata chiusa.')); saving = undefined;
       host.postMessage({ type: 'unsubscribe' });
     },

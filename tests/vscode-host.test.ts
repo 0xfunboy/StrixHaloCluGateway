@@ -43,10 +43,12 @@ test('host proxy authenticates in SecretStorage and returns API shape without th
   const h=await host(t);let auth='';const endpoint=await server(t,(req,res)=>{auth=req.headers.authorization??'';res.setHeader('Content-Type','application/json');res.end('{"projects":[]}');});h.connect(endpoint);
   const result=await h.send({type:'api',id:'boot',method:'GET',path:'/api/bootstrap'});assert.equal(auth,'Bearer host-private-key');assert.equal(result.type,'api.result');assert.equal(result.ok,true);assert.deepEqual(result.data,{projects:[]});assert.doesNotMatch(JSON.stringify(h.posts),/host-private-key/);
 });
-test('untrusted workspace blocks mutations before network and still permits history reads',async t=>{
+test('untrusted workspace blocks project mutations and permits history reads and personal appearance',async t=>{
   const h=await host(t);let calls=0;const endpoint=await server(t,(_req,res)=>{calls++;res.end('{}');});h.connect(endpoint);h.vscode.workspace.isTrusted=false;
   const denied=await h.send({type:'api',id:'mutate',method:'POST',path:'/api/conversations',body:{projectId:'p'}});assert.equal(denied.ok,false);assert.equal(calls,0);
   const read=await h.send({type:'api',id:'read',method:'GET',path:'/api/bootstrap'});assert.equal(read.ok,true);assert.equal(calls,1);
+  const preference=await h.send({type:'api',id:'preference',method:'PATCH',path:'/api/me/appearance',body:{theme:'light'}});assert.equal(preference.ok,true);assert.equal(calls,2);
+  const unsafe=await h.send({type:'api',id:'post-profile',method:'POST',path:'/api/me/appearance',body:{theme:'light'}});assert.equal(unsafe.ok,false);assert.equal(calls,2);
 });
 test('native account secret prompt sends key only to the configured server',async t=>{
   const h=await host(t);let body:Record<string,unknown>={};const endpoint=await server(t,(req,res)=>{let data='';req.on('data',chunk=>{data+=chunk;});req.on('end',()=>{body=JSON.parse(data);res.end('{"id":"account","hasSecret":true}');});});h.connect(endpoint);h.inputs.push('provider-private-key');
@@ -66,4 +68,22 @@ test('selected editor context is explicit and trust-gated',async t=>{
 test('native export writes only the destination selected in the save dialog',async t=>{
   const h=await host(t);h.receive({type:'saveFile',name:'../../outside.md',content:'# User export'});await h.wait(()=>h.posts.some(p=>p.type==='savedFile'));
   assert.deepEqual(h.writes,[{path:'/chosen/export.md',content:'# User export'}]);assert.deepEqual(h.posts.at(-1),{type:'savedFile',ok:true});
+});
+
+test('guided Antigravity code remains in the host and reaches only the chosen login request',async t=>{
+  const h=await host(t);let body:Record<string,unknown>={};
+  const endpoint=await server(t,(req,res)=>{let raw=''; req.on('data',chunk=>{raw+=chunk;}); req.on('end',()=>{body=JSON.parse(raw);res.end('{"status":"pending"}');});});
+  h.connect(endpoint);h.inputs.push('fixture-google-code');
+  const response=await h.send({type:'api',id:'login-code',method:'POST',path:'/api/accounts/antigravity-personale/login/respond',body:{operationId:'login-id',requestCode:true}});
+  assert.equal(response.ok,true);assert.deepEqual(body,{operationId:'login-id',code:'fixture-google-code'});assert.doesNotMatch(JSON.stringify(h.posts),/fixture-google-code/);
+});
+
+test('host permits PUT for scoped account delegates only',async t=>{
+  const h=await host(t);let method='',target='',body:Record<string,unknown>={};
+  const endpoint=await server(t,(req,res)=>{method=req.method??'';target=req.url??'';let raw='';req.on('data',chunk=>{raw+=chunk;});req.on('end',()=>{body=JSON.parse(raw);res.end('{}');});});
+  h.connect(endpoint);
+  const permitted=await h.send({type:'api',id:'account-delegates',method:'PUT',path:'/api/accounts/acc-fixture/delegates',body:{userIds:['u2'],shared:false}});
+  assert.equal(permitted.ok,true);assert.equal(method,'PUT');assert.equal(target,'/api/accounts/acc-fixture/delegates');assert.deepEqual(body,{userIds:['u2'],shared:false});
+  const denied=await h.send({type:'api',id:'wrong-put',method:'PUT',path:'/api/projects/p1',body:{name:'Denied'}});
+  assert.equal(denied.ok,false);assert.equal(target,'/api/accounts/acc-fixture/delegates');
 });

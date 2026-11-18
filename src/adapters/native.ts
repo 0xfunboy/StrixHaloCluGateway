@@ -5,6 +5,7 @@ import { AntigravityBackend } from './vendor/backends/antigravity.ts';
 import { inspectCodex } from './vendor/inspect.ts';
 import { loginCodex } from './vendor/login.ts';
 import { inspectAntigravity } from './antigravity-inspect.ts';
+import { googleLogin, type LoginPrompt } from './antigravity-login.ts';
 import { profile } from './inference.ts';
 import { cleanLabel, count, record, unknownQuota } from './http-utils.ts';
 import type { AdapterConnection, DiscoveryResult, NativeRequest, NativeResult, QuotaObservation } from './types.ts';
@@ -33,12 +34,12 @@ async function exclusive<T>(key: string, signal: AbortSignal, action: () => Prom
 }
 async function accountKey(connection: AdapterConnection): Promise<string> {
   if (connection.kind !== 'codex' && connection.kind !== 'antigravity') throw new Error('This is not an official CLI connection.');
-  if (connection.kind === 'antigravity') return 'antigravity-global-cli';
-  const configured = connection.env?.CODEX_HOME;
+  if (connection.kind === 'antigravity' && !connection.isolatedProfilePath) return 'antigravity-global-cli';
+  const configured = connection.kind === 'codex' ? connection.env?.CODEX_HOME : connection.isolatedProfilePath;
   if (!configured || !path.isAbsolute(configured)) throw new Error('Every Codex account requires an isolated absolute CODEX_HOME configured on the server.');
   const info = await lstat(configured); const real = await realpath(configured);
-  if (!info.isDirectory() || info.isSymbolicLink() || real !== path.resolve(configured) || (process.platform !== 'win32' && ((info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid())))) throw new Error('Codex account directory must be owned by the service user, private (0700) and not a symlink.');
-  return `codex:${real}`;
+  if (!info.isDirectory() || info.isSymbolicLink() || real !== path.resolve(configured) || (process.platform !== 'win32' && ((info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid())))) throw new Error('Native account directory must be owned by the service user, private (0700) and not a symlink.');
+  return `${connection.kind}:${real}`;
 }
 export async function nativeAccountBusy(connection: AdapterConnection): Promise<boolean> {
   return queues.has(await accountKey(connection));
@@ -64,7 +65,7 @@ export async function runNativeAgent(request: NativeRequest): Promise<NativeResu
   return exclusive(key, request.signal, async () => {
     const instance = request.connection.kind === 'codex' ? new CodexBackend({ requestTimeoutMs: request.requestTimeoutMs, turnTimeoutMs: request.turnTimeoutMs }) : new AntigravityBackend({ requestTimeoutMs: request.requestTimeoutMs, turnTimeoutMs: request.turnTimeoutMs });
     let quota = unknownQuota();
-    const result = await instance.run({ profile: profile(request.connection, request.model), cwd: request.cwd, prompt: request.prompt, readOnly: request.readOnly, signal: request.signal, resumeId: request.resumeId, approve: request.approve,
+    const result = await instance.run({ profile: profile(request.connection, request.model), cwd: request.cwd, prompt: request.prompt, readOnly: request.readOnly, workspaceTools: request.workspaceTools, signal: request.signal, resumeId: request.resumeId, approve: request.approve,
       onEvent: event => { if (event.type === 'quota') quota = normalizeNativeQuota(event.quota); request.onEvent(event); } });
     return { ...result, quota };
   });
@@ -81,9 +82,13 @@ export async function inspectNative(options: { connection: AdapterConnection; cw
     return { models, quota: normalizeNativeQuota(result.quota), warnings: Array.isArray(result.warnings) ? result.warnings.filter(v => typeof v === 'string') as string[] : [], authenticated: record(result.account).state === 'authenticated', capabilities: record(result.capabilities) };
   });
 }
-export async function loginNative(options: { connection: AdapterConnection; cwd: string; signal: AbortSignal; onAuth: (event: { verificationUrl: string; userCode: string; loginId: string }) => void; timeoutMs?: number }): Promise<{ authenticated: boolean; invalidateSessions: boolean }> {
+export async function loginNative(options: { connection: AdapterConnection; cwd: string; signal: AbortSignal; onAuth: (event: LoginPrompt & { loginId?: string }) => void; timeoutMs?: number }): Promise<{ authenticated: boolean; invalidateSessions: boolean }> {
   if (options.connection.kind === 'antigravity') {
-    throw new Error('Antigravity richiede il login ufficiale sul coordinator: agy acp --login. Dopo l’accesso premi Riprova; il bridge verifica la sessione ACP senza copiare credenziali.');
+    const signal=AbortSignal.any([options.signal,AbortSignal.timeout(options.timeoutMs ?? 5*60000)]);
+    return exclusive(await accountKey(options.connection),signal,async()=>{
+      await googleLogin(options.connection,options.cwd,signal,options.onAuth);
+      return {authenticated:true,invalidateSessions:false};
+    });
   }
   if (options.connection.kind !== 'codex') throw new Error('Guided device login is available only for the official Codex runtime.');
   const key = await accountKey(options.connection);

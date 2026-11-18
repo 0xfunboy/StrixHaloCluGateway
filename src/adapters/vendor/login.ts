@@ -2,7 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { Profile } from './core/types.ts';
 import { JsonRpcProcess, RpcMethodError, bounded, deferred, record, string } from './backends/rpc.ts';
-import { codexArgs } from './backends/codex-profile.ts';
+import { codexArgs, confirmCodexProfile } from './backends/codex-profile.ts';
 
 type Data = Record<string, unknown>;
 const OFFICIAL_LOGIN_HOSTS = new Set(['auth.openai.com', 'auth0.openai.com', 'chatgpt.com']);
@@ -52,12 +52,8 @@ export async function loginCodex(profile: Profile, cwd: string, signal: AbortSig
       clientInfo: { name: 'yed1z_harness', title: 'yed1z', version: '0.2.0' },
       capabilities: { experimentalApi: false, requestAttestation: false },
     }, { signal }));
-    if (initialized.codexHome !== home) throw new Error('Codex did not confirm the isolated account directory. Update or configure the official CLI.');
     rpc.notify('initialized');
-    const effective = record(record(await rpc.request('config/read', { includeLayers: false }, { signal })).config);
-    if (effective.cli_auth_credentials_store !== 'file' || effective.forced_login_method !== 'chatgpt') {
-      throw new Error('Codex did not confirm the isolated file credential store and ChatGPT login method.');
-    }
+    await confirmCodexProfile(rpc, initialized, home, signal, true);
     const result = record(await rpc.request('account/login/start', { type: 'chatgptDeviceCode' }, { signal }));
     loginId = string(result.loginId);
     if (!loginId || loginId.length > 512 || /[\x00-\x1f\x7f]/.test(loginId)) throw new Error('Codex returned an invalid login identifier.');

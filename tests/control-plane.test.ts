@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { createServer, type RequestListener } from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import { Application } from '../src/server.ts';
@@ -15,6 +17,11 @@ import type { Account, Approval, Conversation, Evidence, Memory, ModelRoute, Pro
 import type { InferenceRequest, InferenceResult } from '../src/adapters/types.ts';
 
 const signal=()=>new AbortController().signal;
+const execFileAsync = promisify(execFile);
+async function gitFixture(workspace: string, ...args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', ...args], { cwd: workspace });
+  return stdout.trim();
+}
 const result=(text:string):InferenceResult=>({text,toolCalls:[],finishReason:'stop',usage:{inputTokens:20,outputTokens:10},metrics:{totalMs:3,sources:{usage:'provider',ttft:'gateway',prefill:'unknown',decode:'unknown',context:'unknown'}},quota:{state:'unknown',source:'unknown',observedAt:now()}});
 const errorCode=(code:string)=>(error:unknown)=>(error as {code?:string}).code===code;
 async function eventually(predicate:()=>boolean,timeout=3000):Promise<void>{const end=Date.now()+timeout;while(!predicate()){if(Date.now()>end)throw new Error('Condition did not become true.');await new Promise(resolve=>setTimeout(resolve,5));}}
@@ -98,8 +105,29 @@ test('context packing preserves the current request and reports excluded sources
 test('restart marks work interrupted, expires approvals and never replays a side effect',async t=>{
   let calls=0;const f=await fixture(t,{completion:async()=>{calls++;return result('unexpected replay');}}),conversation=f.conversation(),run=persistedRun(f.project,conversation,f.routes.planner.id);
   run.tasks=[{id:'task',runId:run.id,label:'Write',role:'coder',instruction:'Write file',dependencies:[],routeId:f.routes.coder.id,status:'running',attempt:1,evidenceIds:[]}];conversation.messages.push({id:'partial',role:'assistant',text:'partial result',createdAt:now(),runId:run.id,status:'streaming'});f.app.store.put('conversation',conversation);f.app.store.put('run',run);
+  run.operations = [{ id: 'operation', taskId: 'task', kind: 'write', label: 'Write existing.txt', digest: 'a'.repeat(64), state: 'running', startedAt: now() }];
+  f.app.store.put('run', run);
   const approval:Approval={id:'approval',ownerId:f.alice.user.id,projectId:f.project.id,runId:run.id,kind:'write',title:'Write?',detail:'change',status:'pending',createdAt:now(),expiresAt:new Date(Date.now()+100_000).toISOString()};f.app.store.put('approval',approval);await writeFile(path.join(f.workspace,'existing.txt'),'once');await f.close();
-  const restarted=new Application({directory:f.directory,config:f.config,complete:async()=>{calls++;return result('replay');}});try{await new Promise(resolve=>setTimeout(resolve,25));assert.equal(calls,0);assert.equal(restarted.store.require<Run>('run',run.id).status,'interrupted');assert.equal(restarted.store.require<Run>('run',run.id).tasks[0].status,'blocked');assert.equal(restarted.store.require<Approval>('approval',approval.id).status,'expired');assert.equal(restarted.store.require<Conversation>('conversation',conversation.id).messages[0].status,'error');assert.equal(await readFile(path.join(f.workspace,'existing.txt'),'utf8'),'once');assert.equal(restarted.store.authenticate(f.alice.token)?.id,f.alice.user.id);}finally{await restarted.close();}
+  const restarted = new Application({ directory: f.directory, config: f.config, complete: async () => { calls++; return result('replay'); } });
+  try {
+    assert.equal(calls, 0);
+    const restored = restarted.store.require<Run>('run', run.id);
+    assert.equal(restored.status, 'interrupted');
+    assert.equal(restored.tasks[0].status, 'blocked');
+    assert.equal(restored.operations?.[0].state, 'uncertain');
+    assert.equal(restarted.store.require<Approval>('approval', approval.id).status, 'expired');
+    assert.equal(restarted.store.require<Conversation>('conversation', conversation.id).messages[0].status, 'error');
+    assert.equal(restarted.store.authenticate(f.alice.token)?.id, f.alice.user.id);
+    assert.throws(() => restarted.orchestrator.control(f.alice.user, run.id, 'resume'), errorCode('RECONCILIATION_REQUIRED'));
+    assert.throws(() => restarted.orchestrator.reconcile(f.bob.user, run.id, 'operation', 'applied', 'Read file on target'), errorCode('TRUSTED_EXECUTION'));
+    const reconciled = restarted.orchestrator.reconcile(f.alice.user, run.id, 'operation', 'applied', 'Read existing.txt in the workspace');
+    assert.equal(reconciled.operations?.[0].state, 'reconciled');
+    assert.equal(reconciled.operations?.[0].reconciliation?.actorId, f.alice.user.id);
+    assert.equal((await readFile(path.join(f.workspace, 'existing.txt'), 'utf8')), 'once');
+    assert.equal(calls, 0);
+  } finally {
+    await restarted.close();
+  }
 });
 test('real HTTP requires auth, rejects credential queries and gates cookie mutations by origin',async t=>{
   const f=await fixture(t);const guest=await f.api('/api/bootstrap',{token:null});assert.equal(guest.status,200);assert.equal(guest.data.user.id,'guest');assert.deepEqual(guest.data.accounts,[]);assert.deepEqual(guest.data.conversations,[]);assert.equal((await f.api('/api/projects',{token:null,body:{name:'denied'}})).status,401);assert.equal((await f.api('/api/bootstrap?token=secret',{token:null})).status,400);assert.equal((await f.api('/api/health',{token:null})).status,200);
@@ -157,7 +185,7 @@ test('planner rejects cyclic, missing and duplicate task dependencies',()=>{
   assert.deepEqual(parsePlan(JSON.stringify({tasks:[task('a',[]),task('b',['a'])]})).map(t=>t.id),['a','b']);
 });
 
-async function missionFixture(t:test.TestContext,options:{healthStatus?:number;badProduct?:boolean}={}){
+async function missionFixture(t:test.TestContext,options:{healthStatus?:number;badProduct?:boolean;worktree?:boolean}={}){
   const calls:Array<{model:string;role:string}>=[];
   const endpoint=await httpFixture(t,(req,res)=>{
     if(req.url==='/health'){res.statusCode=options.healthStatus??200;res.end(res.statusCode===200?'healthy':'down');return;}
@@ -172,6 +200,13 @@ async function missionFixture(t:test.TestContext,options:{healthStatus?:number;b
     });
   });
   const f=await fixture(t,{modelUrl:endpoint+'/v1',healthUrl:endpoint+'/health'}),conversation=f.conversation();
+  if (options.worktree) {
+    await gitFixture(f.workspace, 'init', '-q');
+    await writeFile(path.join(f.workspace, 'README.md'), '# Source fixture\n');
+    await gitFixture(f.workspace, 'add', 'README.md');
+    await gitFixture(f.workspace, 'commit', '-qm', 'Initial fixture');
+    assert.equal((await f.api(`/api/projects/${f.project.id}`, { method: 'PATCH', body: { workspaceIsolation: 'git-worktree' } })).status, 200);
+  }
   const response=await f.api(`/api/conversations/${conversation.id}/messages`,{body:{text:'Build and verify product.ts. Stop before release.',routeId:f.routes.planner.id,mode:'mission',permissions:{write:true,commands:true,deploy:false},maxIterations:1,maxParallel:3}});assert.equal(response.status,202);await f.app.orchestrator.idle(response.data.id);
   return{...f,runId:response.data.id as string,calls};
 }
@@ -179,13 +214,140 @@ test('real HTTP mission plans, changes files, reviews, verifies and waits for re
   const f=await missionFixture(t),run=f.app.store.require<Run>('run',f.runId);assert.equal(run.status,'awaiting_release');assert.equal(run.verificationPassed,true);assert.equal(await readFile(path.join(f.workspace,'product.ts'),'utf8'),'export const answer = 42;\n');await assert.rejects(readFile(path.join(f.workspace,'release.txt')));
   assert.deepEqual(f.calls.map(c=>c.model),['planner','coder','coder','reviewer']);assert.ok(f.app.store.all<Memory>('memory').some(m=>m.status==='candidate'&&m.kind==='method'));
   assert.equal((await f.api(`/api/projects/${f.project.id}`,{method:'PATCH',body:{workspace:'elsewhere'}})).status,409);
+  const usage = (await f.api('/api/usage')).data.missionCalls as Array<{ route:string; account:string; requests:number; inputTokens:number|null }>;
+  assert.equal(usage.reduce((sum,row) => sum + row.requests,0), 4);
+  assert.equal(usage.find(row => row.route === f.routes.coder.id)?.requests, 2);
+  assert.ok(usage.every(row => row.account === f.routes.coder.accountId));
+  assert.deepEqual((await f.api('/api/usage',{token:f.bob.token})).data.missionCalls,[]);
   const released=await f.api(`/api/runs/${f.runId}/release`,{body:{}});assert.equal(released.status,202);await f.app.orchestrator.idle(f.runId);const done=f.app.store.require<Run>('run',f.runId);assert.equal(done.status,'succeeded');assert.ok(done.releasedAt);assert.equal(await readFile(path.join(f.workspace,'release.txt'),'utf8'),'published');
   const evidence=f.app.store.all<Evidence>('evidence').find(e=>e.kind==='deployment')!;assert.equal(evidence.ok,true);assert.match(evidence.output,/Health verified: HTTP 200/);assert.equal(f.app.scheduler.snapshot()['strix01-memory'],0);
+});
+test('release authorization is tied to the verified revision, and drift resumes from the same plan', async t => {
+  const f = await missionFixture(t);
+  const pathToRun = `/api/runs/${f.runId}`;
+  const first = f.app.store.require<Run>('run', f.runId);
+  assert.ok(first.verification?.artifactId);
+  assert.ok(first.sourceMessageId);
+  const stale = await f.api(`${pathToRun}/release`, { body: { verificationDigest: '0'.repeat(64) } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.data.code, 'VERIFICATION_CHANGED');
+
+  await writeFile(path.join(f.workspace, 'new-input.txt'), 'external change');
+  assert.equal((await f.api(`${pathToRun}/release`, { body: { verificationDigest: first.verification.digest } })).status, 202);
+  await f.app.orchestrator.idle(f.runId);
+  const invalidated = f.app.store.require<Run>('run', f.runId);
+  assert.equal(invalidated.status, 'interrupted');
+  assert.equal(invalidated.verificationPassed, false);
+  await assert.rejects(readFile(path.join(f.workspace, 'release.txt')));
+
+  assert.equal((await f.api(`${pathToRun}/resume`, { body: {} })).status, 200);
+  await f.app.orchestrator.idle(f.runId);
+  const current = f.app.store.require<Run>('run', f.runId);
+  assert.equal(current.status, 'awaiting_release');
+  assert.equal(current.checkpoint?.plannerTaskId, first.checkpoint?.plannerTaskId);
+  assert.equal(f.calls.length, 4);
+  assert.ok(current.verification);
+  assert.notEqual(current.verification.digest, first.verification.digest);
+  assert.equal((await f.api(`${pathToRun}/release`, { body: { verificationDigest: current.verification.digest } })).status, 202);
+  await f.app.orchestrator.idle(f.runId);
+  const done = f.app.store.require<Run>('run', f.runId);
+  assert.equal(done.status, 'succeeded');
+  assert.equal(done.permissions.deploy, false);
+  const release = done.operations?.find(operation => operation.kind === 'deploy');
+  assert.equal(release?.state, 'succeeded');
+  const approval = f.app.store.require<Approval>('approval', release!.approvalIds![0]);
+  assert.equal(approval.digest, current.verification.digest);
+  assert.equal(approval.decidedBy, f.alice.user.id);
 });
 test('failed post-deployment health produces failed mission and observed rollback evidence',async t=>{
   const f=await missionFixture(t,{healthStatus:503});assert.equal(f.app.store.require<Run>('run',f.runId).status,'awaiting_release');await f.api(`/api/runs/${f.runId}/release`,{body:{}});await f.app.orchestrator.idle(f.runId);const done=f.app.store.require<Run>('run',f.runId);assert.equal(done.status,'failed');assert.equal(done.releasedAt,undefined);assert.equal(await readFile(path.join(f.workspace,'rollback.txt'),'utf8'),'restored');await assert.rejects(readFile(path.join(f.workspace,'release.txt')));
   const evidence=f.app.store.all<Evidence>('evidence').find(e=>e.kind==='deployment')!;assert.equal(evidence.ok,false);const execution=evidence.details?.execution as Array<{rollback?:string}>;assert.equal(execution.at(-1)?.rollback,'succeeded');
 });
+
+test('isolated Git run verifies a reviewable candidate, promotes a separate branch and refuses dirty cleanup', async t => {
+  const f = await missionFixture(t, { worktree: true });
+  const pathToRun = `/api/runs/${f.runId}`;
+  const run = f.app.store.require<Run>('run', f.runId);
+  assert.equal(run.status, 'awaiting_release', run.error);
+  assert.ok(run.verification && run.worktree?.candidateCommit && run.worktree.reviewArtifactId);
+  const base = await gitFixture(f.workspace, 'rev-parse', 'HEAD');
+  const branch = await gitFixture(f.workspace, 'symbolic-ref', 'HEAD');
+  assert.equal(base, run.worktree.baseCommit);
+  assert.equal(run.verification.gitCommit, run.worktree.candidateCommit);
+  assert.deepEqual(run.worktree.changedFiles, ['product.ts']);
+  assert.equal(await gitFixture(f.workspace, 'status', '--short'), '');
+  await assert.rejects(readFile(path.join(f.workspace, 'product.ts')));
+  const review = await f.api(`/api/artifacts/${run.worktree.reviewArtifactId}`);
+  assert.match(review.data.content, /diff --git a\/product.ts b\/product.ts/);
+
+  const earlyRelease = await f.api(`${pathToRun}/release`, { body: { verificationDigest: run.verification.digest } });
+  assert.equal(earlyRelease.status, 409);
+  assert.equal(earlyRelease.data.code, 'WORKTREE_PROMOTION');
+  const promoted = await f.api(`${pathToRun}/promote`, { body: { verificationDigest: run.verification.digest } });
+  assert.equal(promoted.status, 200, promoted.data.error);
+  assert.match(promoted.data.worktree.promotedRef, /^refs\/heads\/yed1z\//u);
+  assert.equal(await gitFixture(f.workspace, 'show', `${promoted.data.worktree.promotedRef}:product.ts`), 'export const answer = 42;');
+  assert.equal(await gitFixture(f.workspace, 'symbolic-ref', 'HEAD'), branch);
+  assert.equal(await gitFixture(f.workspace, 'rev-parse', 'HEAD'), base);
+  assert.equal((await f.api(`${pathToRun}/release`, { body: { verificationDigest: run.verification.digest } })).status, 202);
+  await f.app.orchestrator.idle(f.runId);
+  assert.equal(f.app.store.require<Run>('run', f.runId).status, 'succeeded');
+  const releaseMarker = path.join(f.workspace, run.worktree.workspace, 'release.txt');
+  assert.equal(await readFile(releaseMarker, 'utf8'), 'published');
+  const dirty = await f.api(`${pathToRun}/cleanup`, { body: {} });
+  assert.equal(dirty.status, 409);
+  assert.equal(dirty.data.code, 'WORKTREE_DIRTY');
+  await rm(releaseMarker);
+  const cleaned = await f.api(`${pathToRun}/cleanup`, { body: {} });
+  assert.equal(cleaned.status, 200, cleaned.data.error);
+  assert.equal(cleaned.data.worktree.state, 'removed');
+  assert.equal(await gitFixture(f.workspace, 'rev-parse', promoted.data.worktree.promotedRef), run.worktree.candidateCommit);
+  assert.equal(await gitFixture(f.workspace, 'status', '--short'), '');
+});
+
+test('worktree promotion rejects a conflicting delivery ref and source drift without writing the operator branch', async t => {
+  const f = await missionFixture(t, { worktree: true });
+  const run = f.app.store.require<Run>('run', f.runId);
+  assert.ok(run.verification && run.worktree?.candidateCommit);
+  const base = run.worktree.baseCommit;
+  const ref = `refs/heads/yed1z/${run.id}-${run.worktree.candidateCommit.slice(0, 12)}`;
+  await gitFixture(f.workspace, 'update-ref', ref, base);
+  const endpoint = `/api/runs/${run.id}/promote`;
+  const body = { verificationDigest: run.verification.digest };
+  const conflict = await f.api(endpoint, { body });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.data.code, 'WORKTREE_CONFLICT');
+  assert.equal(await gitFixture(f.workspace, 'rev-parse', ref), base);
+
+  await gitFixture(f.workspace, 'update-ref', '-d', ref, base);
+  await writeFile(path.join(f.workspace, 'README.md'), '# Operator advances the base\n');
+  await gitFixture(f.workspace, 'commit', '-qam', 'Advance source');
+  const advanced = await gitFixture(f.workspace, 'rev-parse', 'HEAD');
+  const drift = await f.api(endpoint, { body });
+  assert.equal(drift.status, 409);
+  assert.equal(drift.data.code, 'WORKTREE_DRIFT');
+  assert.equal(await gitFixture(f.workspace, 'rev-parse', 'HEAD'), advanced);
+  await assert.rejects(readFile(path.join(f.workspace, 'product.ts')));
+  assert.equal(await gitFixture(f.workspace, 'rev-parse', run.worktree.candidateRef!), run.worktree.candidateCommit);
+  assert.equal(await gitFixture(f.workspace, 'status', '--short'), '');
+});
 test('a model’s positive review cannot override failing executable verification',async t=>{
   const f=await missionFixture(t,{badProduct:true}),run=f.app.store.require<Run>('run',f.runId);assert.equal(run.status,'failed');assert.equal(run.verificationPassed,false);assert.equal(run.releasedAt,undefined);assert.ok(f.app.store.all<Evidence>('evidence').some(e=>e.kind==='review'&&e.ok));assert.ok(f.app.store.all<Evidence>('evidence').some(e=>e.kind==='test'&&!e.ok));assert.equal((await f.api(`/api/runs/${f.runId}/release`,{body:{}})).status,409);await assert.rejects(readFile(path.join(f.workspace,'release.txt')));
+});
+
+
+test('account appearance merges between Web and VS Code and belongs to the signed-in user', async t => {
+  const f = await fixture(t);
+  const patch = (token: string | null, body: unknown) => f.api('/api/me/appearance', { token, method: 'PATCH', body });
+  assert.equal((await f.api('/api/me/appearance', { token: null })).status, 401);
+  assert.deepEqual((await f.api('/api/me/appearance', { token: f.viewer.token })).data, {});
+  assert.equal((await patch(null, { theme: 'dark' })).status, 401);
+  assert.equal((await patch(f.viewer.token, { theme: 'bright' })).status, 400);
+  assert.equal((await patch(f.viewer.token, { userId: f.alice.user.id, theme: 'system' })).status, 400);
+  const results = await Promise.all([patch(f.viewer.token, { theme: 'light' }), patch(f.viewer.token, { motion: 'off' })]);
+  assert.ok(results.every(r => r.status === 200));
+  assert.deepEqual((await f.api('/api/bootstrap', { token: f.viewer.token })).data.user.appearance, { theme: 'light', motion: 'off' });
+  assert.deepEqual((await f.api('/api/me/appearance', { token: f.viewer.token })).data, { theme: 'light', motion: 'off' });
+  assert.deepEqual((await patch(f.viewer.token, { theme: 'system' })).data, { theme: 'system', motion: 'off' });
+  assert.equal((await f.api('/api/bootstrap')).data.user.appearance, undefined);
 });

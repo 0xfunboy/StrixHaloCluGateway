@@ -1,13 +1,25 @@
-import { Workspace, workspaceRoot, sha256, MAX_FILE_BYTES } from './workspace.ts';
+import { Workspace, workspaceRoot, workspaceDigest, sha256, MAX_FILE_BYTES } from './workspace.ts';
 import { lstat, mkdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { runProcess } from './process.ts';
-import type { CommandRecipe, DeploymentRecipe, ExecutionEvidence, ExecutionRequest, ExecutionResult } from './types.ts';
+import type { CommandRecipe, DeploymentRecipe, ExecutionEvidence, ExecutionRequest, ExecutionResult, ExecutionTarget, WorkspaceRevision } from './types.ts';
 
 function recipe(request: ExecutionRequest, id: string): CommandRecipe {
   const value = request.target.commands.find(item => item.id === id);
   if (!value) throw new Error('Command recipe is not configured for this target.');
   return value;
+}
+export function recipeDigest(target: ExecutionTarget, kind: 'verify' | 'deploy', recipeId: string): string {
+  const command = (key: string) => {
+    const value = target.commands.find(item => item.id === key);
+    if (!value) throw new Error('Command recipe is not configured for this target.');
+    return [value.id, value.argv, value.cwd ?? '.', value.timeoutMs ?? 90000, value.verification === true];
+  };
+  if (kind === 'verify') return sha256(JSON.stringify([target.id, target.workspaceRoot, command(recipeId)]));
+  const deployment = target.deployments?.find(item => item.id === recipeId);
+  if (!deployment) throw new Error('Deployment recipe is not configured for this target.');
+  const health = deployment.health;
+  return sha256(JSON.stringify([target.id, target.workspaceRoot, deployment.id, deployment.verify.map(command), deployment.steps.map(command), deployment.rollback?.map(command) ?? [], health.url, health.expectedStatus ?? 200, health.expectedText, health.timeoutMs ?? 5000, health.attempts ?? 3]));
 }
 async function runRecipe(request: ExecutionRequest, workspace: Workspace, command: CommandRecipe): Promise<ExecutionResult> {
   const cwd = await workspace.resolve(command.cwd ?? '.');
@@ -23,7 +35,14 @@ async function approval(request: ExecutionRequest, kind: 'write' | 'command' | '
 function result(request: ExecutionRequest, startedAt: string, output: string, data?: unknown): ExecutionResult {
   return { ok: true, output, data, evidence: [{ kind: request.operation.kind, targetId: request.target.id, workspace: request.workspace ?? '.', startedAt, finishedAt: new Date().toISOString(), outputSha256: sha256(output) }] };
 }
-function denied(): ExecutionResult { return { ok: false, output: 'Action denied. Do not retry it through another tool or target.', evidence: [] }; }
+function denied(): ExecutionResult { return { ok: false, denied: true, output: 'Action denied. Do not retry it through another tool or target.', evidence: [] }; }
+async function revision(workspace: Workspace): Promise<WorkspaceRevision> {
+  const git = await runProcess(['git', 'rev-parse', '--verify', 'HEAD'], { cwd: workspace.root, signal: workspace.signal, timeoutMs: 3000 })
+    .catch(() => undefined);
+  const gitCommit = git?.ok && /^[0-9a-f]{40,64}$/u.test(git.output.trim()) ? git.output.trim() : undefined;
+  const digest = sha256(JSON.stringify([gitCommit, await workspaceDigest(workspace)]));
+  return { digest, gitCommit };
+}
 export async function executeLocal(request: ExecutionRequest): Promise<ExecutionResult> {
   request.signal.throwIfAborted(); const startedAt = new Date().toISOString(), op = request.operation;
   if (op.kind === 'telemetry') {
@@ -46,6 +65,13 @@ export async function executeLocal(request: ExecutionRequest): Promise<Execution
     return result(request,startedAt,'Project workspace prepared.',{targetId:request.target.id,workspace:relative,created:true});
   }
   const root = await workspaceRoot(request.target.workspaceRoot, request.workspace), workspace = new Workspace(root, request.signal);
+  if ((op.kind === 'verify' || op.kind === 'deploy') && op.expectedRecipeDigest && recipeDigest(request.target, op.kind, op.recipeId) !== op.expectedRecipeDigest) {
+    return { ok: false, output: 'The recipe installed on the runner differs from the verified definition.', evidence: [] };
+  }
+  if (op.kind === 'snapshot') {
+    const data = await revision(workspace);
+    return result(request, startedAt, `Workspace SHA256 ${data.digest}`, data);
+  }
   if (op.kind === 'list') { const data = await workspace.list(op.directory); return result(request, startedAt, data.files.join('\n') + (data.truncated ? '\n[bounded listing truncated]' : ''), data); }
   if (op.kind === 'read') {
     const content = await workspace.read(op.path), lines = content.split('\n');
@@ -124,8 +150,15 @@ async function deploy(request: ExecutionRequest, workspace: Workspace, deploymen
     const verified = await runRecipe(request,workspace,recipe(request,id)); evidence.push(...verified.evidence); output.push(`[verify ${id}]\n${verified.output}`);
     if (!verified.ok) return {ok:false,output:output.join('\n'),evidence};
   }
-  const detail = `Target: ${request.target.id}\nWorkspace: ${request.workspace ?? '.'}\nRelease: ${deployment.label}\nVerification passed: ${deployment.verify.join(', ')}\nSteps: ${deployment.steps.map(id=>JSON.stringify(recipe(request,id).argv)).join('\n')}\nHealth: ${deployment.health.url}\nRollback on failure: ${(deployment.rollback ?? []).join(', ') || 'not configured'}`;
+  const expectedDigest = request.operation.kind === 'deploy' ? request.operation.expectedWorkspaceDigest : undefined;
+  const detail = `Target: ${request.target.id}\nWorkspace: ${request.workspace ?? '.'}\nRelease: ${deployment.label}\nWorkspace digest: ${expectedDigest ?? 'not specified'}\nVerification passed: ${deployment.verify.join(', ')}\nSteps: ${deployment.steps.map(id=>JSON.stringify(recipe(request,id).argv)).join('\n')}\nHealth: ${deployment.health.url}\nRollback on failure: ${(deployment.rollback ?? []).join(', ') || 'not configured'}`;
+  if (expectedDigest && (await revision(workspace)).digest !== expectedDigest) {
+    return { ok: false, output: 'Workspace changed after verification. Reverify the new revision before releasing.', evidence };
+  }
   if (!await approval(request,'deployment',`Deploy ${deployment.label}`,detail)) return {...denied(),evidence};
+  if (expectedDigest && (await revision(workspace)).digest !== expectedDigest) {
+    return { ok: false, output: 'Workspace changed during release approval. No deployment step ran.', evidence };
+  }
   let ok = true, healthStatus: number | undefined, rollback: ExecutionEvidence['rollback']='not-needed';
   try {
     for (const id of deployment.steps) { const step=await runRecipe(request,workspace,recipe(request,id));evidence.push(...step.evidence);output.push(`[deploy ${id}]\n${step.output}`);if(!step.ok){ok=false;break;} }

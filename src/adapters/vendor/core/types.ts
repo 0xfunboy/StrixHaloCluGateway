@@ -67,6 +67,10 @@ export interface ApprovalRequest {
   detail: string;
   kind: 'command' | 'write' | 'network' | 'other';
 }
+export interface ExternalWorkspaceTools {
+  definitions: ToolDefinition[];
+  execute: (tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<{ ok: boolean; output: string }>;
+}
 export interface ExternalRequest {
   profile: Profile;
   cwd: string;
@@ -74,6 +78,7 @@ export interface ExternalRequest {
   prompt: string;
   resumeId?: string;
   readOnly: boolean;
+  workspaceTools?: ExternalWorkspaceTools;
   signal: AbortSignal;
   onEvent: (event: RuntimeEvent) => void;
   approve: (request: ApprovalRequest) => Promise<boolean>;

@@ -39,7 +39,7 @@
       <div class="hud-telemetry-pill">
         <span class="pill-dot blink-slow"></span>
         <span class="pill-label" data-i18n="master_arbitration">MASTER ARBITRATION:</span>
-        <span id="active-model-title" class="pill-value text-cyan">DEEPSEEK V4.1 DUAL TP2</span>
+        <span id="active-model-title" class="pill-value text-cyan">—</span>
       </div>
     </div>
 
@@ -54,9 +54,9 @@
       <button id="crt-toggle-btn" class="hud-btn-retro" title="Toggle CRT Phosphor Scanlines">
         <span class="btn-bracket">[</span> <span data-i18n="crt_fx">CRT FX:</span> <span id="crt-mode-label">ON</span> <span class="btn-bracket">]</span>
       </button>
-      <button id="theme-toggle" class="hud-btn-retro" title="Toggle Cyber Dark / Light">
-        <span class="btn-bracket">[</span> <span id="theme-icon">DARK</span> <span class="btn-bracket">]</span>
-      </button>
+      <select id="theme-toggle" class="hud-btn-retro" aria-label="Tema / Theme">
+        <option value="system">Sistema / System</option><option value="light">Chiaro / Light</option><option value="dark">Scuro / Dark</option>
+      </select>
       <a href="/control" id="control-room-nav-btn" class="hud-btn-retro highlight" title="Open AI Chat & Control Room">
         <span class="btn-bracket">[</span> 💬 <span id="control-room-nav-label" data-i18n="control_room_btn">CONTROL ROOM</span> <span class="btn-bracket">]</span>
       </a>
@@ -142,7 +142,7 @@
               <div class="wf-node-body">
                 <div class="wf-stat-line"><span>ROUTER:</span> <strong class="text-cyan">AUTO-DEMAND</strong></div>
                 <div class="wf-stat-line"><span>MUTEX:</span> <strong class="text-emerald">FIFO DRAIN</strong></div>
-                <div class="wf-stat-line"><span>IN FLIGHT:</span> <strong id="wf-inflight-val" class="text-amber">0 REQ</strong></div>
+                <div class="wf-stat-line"><span>IN FLIGHT:</span> <strong id="wf-inflight-val" class="text-amber">—</strong></div>
               </div>
             </div>
 
@@ -194,9 +194,9 @@
                 <span class="wf-name">04. SPECULATIVE ENGINE</span>
               </div>
               <div class="wf-node-body">
-                <div class="wf-stat-line"><span>SPEED:</span> <strong id="wf-tps-val" class="text-cyan">51.4 tok/s</strong></div>
-                <div class="wf-stat-line"><span>DRAFT ACC:</span> <strong id="wf-acc-val" class="text-emerald">49.2%</strong></div>
-                <div class="wf-stat-line"><span>TTFT:</span> <strong id="wf-ttft-val" class="text-amber">185 ms</strong></div>
+                <div class="wf-stat-line"><span>SPEED:</span> <strong id="wf-tps-val" class="text-cyan">—</strong></div>
+                <div class="wf-stat-line"><span>DRAFT ACC:</span> <strong id="wf-acc-val" class="text-emerald">—</strong></div>
+                <div class="wf-stat-line"><span>TTFT:</span> <strong id="wf-ttft-val" class="text-amber">—</strong></div>
               </div>
             </div>
           </div>
@@ -215,15 +215,15 @@
           <div class="osc-telemetry-readouts">
             <div class="osc-readout-item">
               <span class="osc-ro-k">DECODE VELOCITY</span>
-              <span class="osc-ro-v text-cyan" id="osc-decode-val">51.4 <small>TPS</small></span>
+              <span class="osc-ro-v text-cyan" id="osc-decode-val">—</span>
             </div>
             <div class="osc-readout-item">
               <span class="osc-ro-k">PREFILL BURST</span>
-              <span class="osc-ro-v text-purple" id="osc-prefill-val">442.0 <small>TPS</small></span>
+              <span class="osc-ro-v text-purple" id="osc-prefill-val">—</span>
             </div>
             <div class="osc-readout-item">
               <span class="osc-ro-k">SPECULATIVE ACC</span>
-              <span class="osc-ro-v text-emerald" id="osc-acc-val">49.2%</span>
+              <span class="osc-ro-v text-emerald" id="osc-acc-val">—</span>
             </div>
           </div>
         </div>
@@ -255,7 +255,7 @@
               <span class="pod-hostname">01-EVO-X3</span>
             </div>
             <div class="pod-role-tag">[ COORDINATOR · RANK 0 ]</div>
-            <span class="alert-pill-retro alert-healthy" id="node01-alert-pill">HEALTHY</span>
+            <span class="alert-pill-retro alert-healthy" id="node01-alert-pill">—</span>
           </div>
 
           <!-- Analog Dials Row -->
@@ -267,7 +267,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">APU TCTL</span>
-                <span class="dial-val" id="node01-temp-val">42.4°C</span>
+                <span class="dial-val" id="node01-temp-val">—</span>
               </div>
             </div>
 
@@ -278,7 +278,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">SMART EC FAN</span>
-                <span class="dial-val" id="node01-fan-val">1934 RPM</span>
+                <span class="dial-val" id="node01-fan-val">—</span>
               </div>
             </div>
 
@@ -289,7 +289,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">PPT POWER</span>
-                <span class="dial-val" id="node01-power-val">10.1 W</span>
+                <span class="dial-val" id="node01-power-val">—</span>
               </div>
             </div>
           </div>
@@ -298,11 +298,11 @@
           <div class="sensor-readout-strip">
             <div class="strip-item">
               <span class="strip-k">GPU EDGE TEMP:</span>
-              <span class="strip-v" id="node01-gpu-temp">41.0°C</span>
+              <span class="strip-v" id="node01-gpu-temp">—</span>
             </div>
             <div class="strip-item">
               <span class="strip-k">NVME COMPOSITE:</span>
-              <span class="strip-v" id="node01-nvme-temp">35.9°C</span>
+              <span class="strip-v" id="node01-nvme-temp">—</span>
             </div>
             <div class="strip-item">
               <span class="strip-k">CORE CLOCK (SCLK):</span>
@@ -310,7 +310,7 @@
             </div>
             <div class="strip-item">
               <span class="strip-k">GPU BUSY LOAD:</span>
-              <span class="strip-v text-emerald" id="node01-gpu-load">0%</span>
+              <span class="strip-v text-emerald" id="node01-gpu-load">—</span>
             </div>
           </div>
 
@@ -320,7 +320,7 @@
             <div class="vu-meter-group">
               <div class="vu-label-line">
                 <span class="vu-title">UNIFIED LPDDR5X (256-BIT)</span>
-                <span class="vu-stats" id="node01-ram-text">104.3 / 122.2 GiB (85%)</span>
+                <span class="vu-stats" id="node01-ram-text">—</span>
               </div>
               <div class="vu-led-bar" id="node01-ram-leds">
                 <!-- Dynamically populated 20 LED pips -->
@@ -331,7 +331,7 @@
             <div class="vu-meter-group">
               <div class="vu-label-line">
                 <span class="vu-title">NVME SSD STORAGE</span>
-                <span class="vu-stats" id="node01-disk-text">1190.4 / 1831.7 GiB (65%)</span>
+                <span class="vu-stats" id="node01-disk-text">—</span>
               </div>
               <div class="vu-led-bar" id="node01-disk-leds">
                 <!-- Dynamically populated 20 LED pips -->
@@ -348,7 +348,7 @@
               <span class="pod-hostname">02-evo-x3-tb</span>
             </div>
             <div class="pod-role-tag">[ WORKER · RANK 1 ]</div>
-            <span class="alert-pill-retro alert-healthy" id="node02-alert-pill">HEALTHY</span>
+            <span class="alert-pill-retro alert-healthy" id="node02-alert-pill">—</span>
           </div>
 
           <!-- Analog Dials Row -->
@@ -360,7 +360,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">APU TCTL</span>
-                <span class="dial-val" id="node02-temp-val">49.8°C</span>
+                <span class="dial-val" id="node02-temp-val">—</span>
               </div>
             </div>
 
@@ -371,7 +371,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">SMART EC FAN</span>
-                <span class="dial-val" id="node02-fan-val">2401 RPM</span>
+                <span class="dial-val" id="node02-fan-val">—</span>
               </div>
             </div>
 
@@ -382,7 +382,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">PPT POWER</span>
-                <span class="dial-val" id="node02-power-val">13.1 W</span>
+                <span class="dial-val" id="node02-power-val">—</span>
               </div>
             </div>
           </div>
@@ -391,11 +391,11 @@
           <div class="sensor-readout-strip">
             <div class="strip-item">
               <span class="strip-k">GPU EDGE TEMP:</span>
-              <span class="strip-v" id="node02-gpu-temp">45.0°C</span>
+              <span class="strip-v" id="node02-gpu-temp">—</span>
             </div>
             <div class="strip-item">
               <span class="strip-k">NVME COMPOSITE:</span>
-              <span class="strip-v" id="node02-nvme-temp">30.9°C</span>
+              <span class="strip-v" id="node02-nvme-temp">—</span>
             </div>
             <div class="strip-item">
               <span class="strip-k">CORE CLOCK (SCLK):</span>
@@ -403,7 +403,7 @@
             </div>
             <div class="strip-item">
               <span class="strip-k">GPU BUSY LOAD:</span>
-              <span class="strip-v text-emerald" id="node02-gpu-load">0%</span>
+              <span class="strip-v text-emerald" id="node02-gpu-load">—</span>
             </div>
           </div>
 
@@ -413,7 +413,7 @@
             <div class="vu-meter-group">
               <div class="vu-label-line">
                 <span class="vu-title">UNIFIED LPDDR5X (256-BIT)</span>
-                <span class="vu-stats" id="node02-ram-text">102.5 / 122.2 GiB (84%)</span>
+                <span class="vu-stats" id="node02-ram-text">—</span>
               </div>
               <div class="vu-led-bar" id="node02-ram-leds">
                 <!-- Dynamically populated 20 LED pips -->
@@ -424,7 +424,7 @@
             <div class="vu-meter-group">
               <div class="vu-label-line">
                 <span class="vu-title">NVME SSD STORAGE</span>
-                <span class="vu-stats" id="node02-disk-text">1443.9 / 1831.7 GiB (79%)</span>
+                <span class="vu-stats" id="node02-disk-text">—</span>
               </div>
               <div class="vu-led-bar" id="node02-disk-leds">
                 <!-- Dynamically populated 20 LED pips -->
@@ -441,7 +441,7 @@
               <span class="pod-hostname">aireward-llm</span>
             </div>
             <div class="pod-role-tag">[ CUDA ACCEL · RTX 3090 24GB ]</div>
-            <span class="alert-pill-retro alert-healthy" id="aireward-alert-pill">HEALTHY</span>
+            <span class="alert-pill-retro alert-healthy" id="aireward-alert-pill">—</span>
           </div>
 
           <!-- Analog Dials Row -->
@@ -453,7 +453,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">GPU TEMP</span>
-                <span class="dial-val" id="aireward-gpu-temp-val">56.0°C</span>
+                <span class="dial-val" id="aireward-gpu-temp-val">—</span>
               </div>
             </div>
 
@@ -464,7 +464,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">CPU TCTL</span>
-                <span class="dial-val" id="aireward-cpu-temp-val">45.0°C</span>
+                <span class="dial-val" id="aireward-cpu-temp-val">—</span>
               </div>
             </div>
 
@@ -475,7 +475,7 @@
               </div>
               <div class="dial-caption">
                 <span class="dial-name">GPU POWER</span>
-                <span class="dial-val" id="aireward-power-val">158.0 W</span>
+                <span class="dial-val" id="aireward-power-val">—</span>
               </div>
             </div>
           </div>
@@ -488,15 +488,15 @@
             </div>
             <div class="strip-item">
               <span class="strip-k">CUDA BUSY LOAD:</span>
-              <span class="strip-v text-emerald" id="aireward-gpu-load">62%</span>
+              <span class="strip-v text-emerald" id="aireward-gpu-load">—</span>
             </div>
             <div class="strip-item">
               <span class="strip-k">AXIAL FAN SPEED:</span>
-              <span class="strip-v" id="aireward-fan-val">65%</span>
+              <span class="strip-v" id="aireward-fan-val">—</span>
             </div>
             <div class="strip-item">
               <span class="strip-k">NVME PRO SSD:</span>
-              <span class="strip-v" id="aireward-nvme-temp">57.9°C</span>
+              <span class="strip-v" id="aireward-nvme-temp">—</span>
             </div>
           </div>
 
@@ -506,7 +506,7 @@
             <div class="vu-meter-group">
               <div class="vu-label-line">
                 <span class="vu-title">RTX 3090 VRAM (24GB GDDR6X)</span>
-                <span class="vu-stats" id="aireward-vram-text">22.4 / 24.0 GiB (93%)</span>
+                <span class="vu-stats" id="aireward-vram-text">—</span>
               </div>
               <div class="vu-led-bar" id="aireward-vram-leds">
                 <!-- Dynamically populated 20 LED pips -->
@@ -517,7 +517,7 @@
             <div class="vu-meter-group">
               <div class="vu-label-line">
                 <span class="vu-title">DDR5 SYSTEM MEMORY</span>
-                <span class="vu-stats" id="aireward-ram-text">57.4 / 61.6 GiB (93%)</span>
+                <span class="vu-stats" id="aireward-ram-text">—</span>
               </div>
               <div class="vu-led-bar" id="aireward-ram-leds">
                 <!-- Dynamically populated 20 LED pips -->
@@ -574,7 +574,7 @@
             </div>
             <div class="ic-item">
               <span class="ic-key">USB4 RTT:</span>
-              <span class="ic-val text-emerald" id="link-rtt-val">0.163 ms</span>
+              <span class="ic-val text-emerald" id="link-rtt-val">—</span>
             </div>
             <div class="ic-item">
               <span class="ic-key">LAN ACCEL:</span>
@@ -582,7 +582,7 @@
             </div>
             <div class="ic-item">
               <span class="ic-key">LAN RTT:</span>
-              <span class="ic-val text-emerald" id="lan-rtt-val">0.450 ms</span>
+              <span class="ic-val text-emerald" id="lan-rtt-val">—</span>
             </div>
           </div>
         </div>
@@ -604,7 +604,7 @@
                   <span class="btn-bracket">[</span> <span id="btn-auth-label" data-i18n="btn_unlock">🔓 UNLOCK</span> <span class="btn-bracket">]</span>
                 </button>
               </div>
-              <span class="alert-pill-retro alert-healthy" id="control-status-pill">ONLINE</span>
+              <span class="alert-pill-retro alert-healthy" id="control-status-pill">—</span>
             </div>
           </div>
 
@@ -660,7 +660,7 @@
 
           <div class="control-footer-status">
             <span class="cfs-label" data-i18n="active_engines">ACTIVE ENGINES:</span>
-            <span class="cfs-val" id="cfs-active-summary">STRIX: STANDBY | AIREWARD: STANDBY</span>
+            <span class="cfs-val" id="cfs-active-summary">—</span>
           </div>
         </div>
       </div>
@@ -677,7 +677,7 @@
         </div>
         <div class="bracket-status">
           <span class="status-pip live"></span>
-          <span class="status-msg"><span data-i18n="aggregated_tokens">AGGREGATED TOKENS:</span> <strong id="total-tokens-badge" class="text-cyan">48,314</strong></span>
+          <span class="status-msg"><span data-i18n="aggregated_tokens">AGGREGATED TOKENS:</span> <strong id="total-tokens-badge" class="text-cyan">—</strong></span>
         </div>
       </div>
 

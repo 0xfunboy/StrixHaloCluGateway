@@ -99,18 +99,71 @@ export async function embed(request: EmbedRequest): Promise<EmbeddingResult> {
   if (!['ollama', 'cluster', 'gemrouter', 'openai-compatible', 'openai-responses'].includes(request.connection.kind)) throw new AdapterError('This connection has no embedding adapter. Select an Ollama or OpenAI-compatible embedding model.');
   if (!request.model || request.model.length > 300 || !Array.isArray(request.texts) || request.texts.length < 1 || request.texts.length > 128 || request.texts.some(text => typeof text !== 'string' || text.length > 500_000) || Buffer.byteLength(JSON.stringify(request.texts)) > 4 * 1024 * 1024) throw new AdapterError('Invalid or oversized embedding batch.');
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(120_000)]);
+  const limit = request.maxEmbeddingChars;
+  if (limit === undefined) return embedBatch(request, request.texts, signal);
+  if (!Number.isInteger(limit) || limit < 32 || limit > 4096) throw new AdapterError('Invalid embedding input character limit.');
+  if (request.texts.every(text => text.length <= limit)) return embedBatch(request, request.texts, signal);
+
+  const vectors: number[][] = []; let model: string | undefined, dimensions = 0, inputTokens: number | undefined = 0;
+  let batch: EmbeddingPart[] = [];
+  for (const part of embeddingParts(request.texts, limit)) {
+    batch.push(part);
+    if (batch.length === 16) {
+      await consume(batch);
+      batch = [];
+    }
+  }
+  if (batch.length) await consume(batch);
+  if (vectors.some(vector => vector.some(value => !Number.isFinite(value)))) throw new AdapterError('Embedding pooling produced a non-finite value.');
+  return { model: model ?? request.model, dimensions, vectors, ...(inputTokens !== undefined ? { inputTokens } : {}) };
+
+  async function consume(parts: EmbeddingPart[]) {
+    const result = await embedBatch(request, parts.map(part => part.text), signal);
+    if (model !== undefined && (result.model !== model || result.dimensions !== dimensions)) throw new AdapterError('Embedding response changed model or dimensions between batches.');
+    model = result.model;
+    dimensions = result.dimensions;
+    inputTokens = inputTokens === undefined || result.inputTokens === undefined ? undefined : inputTokens + result.inputTokens;
+    for (const [index, part] of parts.entries()) {
+      const vector = result.vectors[index];
+      const pooled = vectors[part.input];
+      if (!pooled) vectors[part.input] = vector.map(value => value * part.weight);
+      else for (let i = 0; i < vector.length; i++) pooled[i] += vector[i] * part.weight;
+    }
+  }
+}
+
+interface EmbeddingPart { input: number; text: string; weight: number; }
+
+function* embeddingParts(texts: string[], limit: number): Generator<EmbeddingPart> {
+  for (const [input, text] of texts.entries()) {
+    if (text.length <= limit) {
+      yield { input, text, weight: 1 };
+      continue;
+    }
+    let start = 0;
+    while (start < text.length) {
+      let end = Math.min(start + limit, text.length);
+      // Keep a UTF-16 surrogate pair together at the boundary.
+      if (/^[\uDC00-\uDFFF]/u.test(text.slice(end, end + 1))) end--;
+      yield { input, text: text.slice(start, end), weight: (end - start) / text.length };
+      start = end;
+    }
+  }
+}
+
+async function embedBatch(request: EmbedRequest, texts: string[], signal: AbortSignal): Promise<EmbeddingResult> {
   const ollama = request.connection.kind === 'ollama';
   const { data } = await checkedJSON(request.connection, ollama ? '/api/embed' : '/embeddings', request.secret, signal,
-    { model: request.model, input: request.texts, ...(ollama ? { truncate: false } : { encoding_format: 'float' }) });
+    { model: request.model, input: texts, ...(ollama ? { truncate: false } : { encoding_format: 'float' }) });
   const raw = record(data); let vectors: unknown[];
   if (ollama) vectors = Array.isArray(raw.embeddings) ? raw.embeddings : [];
   else {
     const rows = Array.isArray(raw.data) ? raw.data.map(record) : [];
-    if (rows.length !== request.texts.length || rows.some(row => integer(row.index) === undefined) || new Set(rows.map(row => row.index)).size !== rows.length || rows.some(row => Number(row.index) >= rows.length)) throw new AdapterError('Embedding response has invalid input indices.');
+    if (rows.length !== texts.length || rows.some(row => integer(row.index) === undefined) || new Set(rows.map(row => row.index)).size !== rows.length || rows.some(row => Number(row.index) >= rows.length)) throw new AdapterError('Embedding response has invalid input indices.');
     vectors = rows.sort((a, b) => Number(a.index) - Number(b.index)).map(row => row.embedding);
   }
   const dimensions = Array.isArray(vectors[0]) ? vectors[0].length : 0;
-  if (vectors.length !== request.texts.length || dimensions < 1 || dimensions > 65_536 || vectors.some(vector => !Array.isArray(vector) || vector.length !== dimensions || vector.some(n => typeof n !== 'number' || !Number.isFinite(n)))) throw new AdapterError('Embedding response has invalid dimensions or non-finite values.');
+  if (vectors.length !== texts.length || dimensions < 1 || dimensions > 65_536 || vectors.some(vector => !Array.isArray(vector) || vector.length !== dimensions || vector.some(n => typeof n !== 'number' || !Number.isFinite(n)))) throw new AdapterError('Embedding response has invalid dimensions or non-finite values.');
   const usage = record(raw.usage); const inputTokens = integer(ollama ? raw.prompt_eval_count : usage.prompt_tokens ?? usage.total_tokens);
   return { model: cleanLabel(raw.model, request.model), dimensions, vectors: vectors as number[][], ...(inputTokens !== undefined ? { inputTokens } : {}) };
 }

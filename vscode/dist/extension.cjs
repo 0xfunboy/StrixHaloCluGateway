@@ -50,7 +50,14 @@ function apiPath(raw) {
   if (typeof raw !== "string" || raw.length > 1800 || !raw.startsWith("/api/") || /[\\%#\s]/.test(raw) || raw.split(/[/?]/).some((part) => part === "." || part === "..")) throw new Error("Percorso API non consentito.");
   const url = new URL(raw, "https://yed1z.invalid");
   if (url.origin !== "https://yed1z.invalid" || !/^\/api\/[a-zA-Z0-9_\/-]+$/.test(url.pathname)) throw new Error("Percorso API non consentito.");
-  if (url.search && (url.pathname !== "/api/events" || ![...url.searchParams.keys()].every((key) => key === "after") || url.searchParams.getAll("after").length !== 1 || !/^\d{1,15}$/.test(url.searchParams.get("after") ?? ""))) throw new Error("Parametri API non consentiti.");
+  if (url.search) {
+    const fields = [...url.searchParams.keys()];
+    const eventPath = url.pathname === "/api/events" || /^\/api\/runs\/[a-zA-Z0-9_-]+\/events$/.test(url.pathname);
+    const eventCursor = eventPath && fields.length === 1 && fields[0] === "after" && /^\d{1,15}$/.test(url.searchParams.get("after") ?? "");
+    const sourcePath = /^\/api\/projects\/[a-zA-Z0-9_-]+\/knowledge\/sources\/[a-zA-Z0-9_-]+$/.test(url.pathname);
+    const sourceHash = sourcePath && /^[a-f0-9]{64}$/i.test(url.searchParams.get("hash") ?? "") && url.searchParams.getAll("hash").length === 1 && (fields.length === 1 || fields.length === 2 && /^\d{1,10}$/.test(url.searchParams.get("revision") ?? ""));
+    if (!eventCursor && !sourceHash) throw new Error("Parametri API non consentiti.");
+  }
   return url.pathname + url.search;
 }
 async function boundedJson(response) {
@@ -129,10 +136,12 @@ var GatewayClient = class {
     this.token = token;
   }
   async request(method, path2, body, signal) {
-    if (!["GET", "POST", "PATCH", "DELETE"].includes(method)) throw new Error("Metodo API non consentito.");
+    const target = apiPath(path2);
+    const delegateUpdate = method === "PUT" && /^\/api\/accounts\/[a-zA-Z0-9_-]+\/delegates$/.test(target);
+    if (!delegateUpdate && !["GET", "POST", "PATCH", "DELETE"].includes(method)) throw new Error("Metodo API non consentito.");
     const text = method === "GET" ? void 0 : JSON.stringify(body ?? {});
     if (text && Buffer.byteLength(text) > 3e6) throw new Error("Richiesta troppo grande.");
-    return await fetch(this.endpoint + apiPath(path2), { method, signal, redirect: "error", headers: { Authorization: "Bearer " + this.token, "Content-Type": "application/json", "X-Client-App": "yed1z-vscode" }, ...text === void 0 ? {} : { body: text } });
+    return await fetch(this.endpoint + target, { method, signal, redirect: "error", headers: { Authorization: "Bearer " + this.token, "Content-Type": "application/json", "X-Client-App": "yed1z-vscode" }, ...text === void 0 ? {} : { body: text } });
   }
 };
 
@@ -152,6 +161,11 @@ var CommandView = class {
   }
   post(message) {
     return this.view?.webview.postMessage(message);
+  }
+  postHost() {
+    const workspace2 = vscode.workspace.workspaceFolders?.map((folder) => folder.name).join(", ");
+    const host = vscode.env.remoteName ? `Host remoto (${vscode.env.remoteName})` : "Host locale";
+    return this.post({ type: "host-context", endpoint: this.endpoint(), host, workspace: workspace2 });
   }
   async resolveWebviewView(view) {
     this.view = view;
@@ -188,8 +202,25 @@ var CommandView = class {
       await this.configure();
       return;
     }
+    if (message.type === "host-context") {
+      await this.postHost();
+      return;
+    }
     if (message.type === "open-portal") {
       await this.openPortal();
+      return;
+    }
+    if (message.type === "openCockpit") {
+      await vscode.env.openExternal(vscode.Uri.parse(`${gatewayUrl(this.endpoint())}/cockpit`));
+      return;
+    }
+    if (message.type === "copyText" && typeof message.text === "string" && message.text.length <= 2e3) {
+      await vscode.env.clipboard.writeText(message.text);
+      return;
+    }
+    if (message.type === "openDiff" && typeof message.text === "string" && Buffer.byteLength(message.text) <= 2e6) {
+      const document = await vscode.workspace.openTextDocument({ language: "diff", content: message.text });
+      await vscode.window.showTextDocument(document, { preview: true });
       return;
     }
     if (message.type === "attachSelection") {
@@ -229,7 +260,7 @@ var CommandView = class {
     if (message.type === "openAuth" && typeof message.url === "string") {
       try {
         const url = new URL(message.url);
-        if (url.protocol === "https:" && !url.username && !url.password && ["auth.openai.com", "auth0.openai.com", "chatgpt.com"].includes(url.hostname)) await vscode.env.openExternal(vscode.Uri.parse(url.href));
+        if (url.protocol === "https:" && !url.port && !url.username && !url.password && ["auth.openai.com", "auth0.openai.com", "chatgpt.com", "accounts.google.com"].includes(url.hostname)) await vscode.env.openExternal(vscode.Uri.parse(url.href));
       } catch {
       }
       return;
@@ -240,7 +271,8 @@ var CommandView = class {
     try {
       if (this.requests.size > 16) throw new Error("Troppe richieste contemporanee.");
       const path2 = apiPath(message.path), method = typeof message.method === "string" ? message.method : "GET";
-      if (method !== "GET" && !vscode.workspace.isTrusted && path2 !== "/api/logout") throw new Error("Rendi attendibile il workspace prima di inviare attivit\xE0 o file al gateway.");
+      const personalAppearance = method === "PATCH" && path2 === "/api/me/appearance";
+      if (method !== "GET" && !vscode.workspace.isTrusted && path2 !== "/api/logout" && !personalAppearance) throw new Error("Rendi attendibile il workspace prima di inviare attivit\xE0 o file al gateway.");
       let body = message.body;
       if (method === "POST" && ["/api/accounts", "/api/connections"].includes(path2) && body && typeof body === "object" && !Array.isArray(body)) {
         const account = { ...body };
@@ -251,6 +283,16 @@ var CommandView = class {
         }
         delete account.requestSecret;
         body = account;
+      }
+      if (method === "POST" && /^\/api\/accounts\/[a-zA-Z0-9_-]+\/login\/respond$/.test(path2) && body && typeof body === "object" && !Array.isArray(body)) {
+        const response2 = { ...body };
+        if (response2.requestCode === true) {
+          const code = await vscode.window.showInputBox({ title: "yed1z \xB7 Risposta di autorizzazione", prompt: "Incolla il codice o URL restituito dal provider dopo il login.", password: true, ignoreFocusOut: true, validateInput: (value) => value.trim().length > 4096 ? "Risposta troppo lunga." : null });
+          if (!code?.trim()) throw new Error("Inserimento del codice annullato.");
+          response2.code = code.trim();
+        }
+        delete response2.requestCode;
+        body = response2;
       }
       const response = await (await this.client()).request(method, path2, body, controller.signal);
       let data;
@@ -276,12 +318,13 @@ var CommandView = class {
       try {
         const response = await (await this.client()).request("GET", `/api/events?after=${cursor}`, void 0, controller.signal);
         if (!response.ok) throw new Error(`Streaming HTTP ${response.status}.`);
+        await this.post({ type: "connection", connected: true });
         await consumeEvents(response, (event) => {
           if (Number.isSafeInteger(event.id) && Number(event.id) > cursor) cursor = Number(event.id);
           void this.post({ type: "event", event });
         }, controller.signal);
       } catch (error) {
-        if (!controller.signal.aborted) await this.post({ type: "connection", status: "disconnected", message: error instanceof Error ? error.message : "Connessione interrotta." });
+        if (!controller.signal.aborted) await this.post({ type: "connection", connected: false, message: error instanceof Error ? error.message : "Connessione interrotta." });
       }
       if (controller.signal.aborted) break;
       await new Promise((resolve) => {
@@ -308,7 +351,15 @@ var CommandView = class {
     }
   }
   async doConfigure() {
-    const value = await vscode.window.showInputBox({ title: "yed1z \xB7 Collega Control Room", value: this.endpoint(), prompt: "Lo stesso gateway del browser. Con Remote SSH, localhost indica il server remoto.", ignoreFocusOut: true, validateInput: (value2) => {
+    const saved = this.context.globalState.get("yed1z.endpoints", []);
+    let value;
+    if (saved.length && typeof vscode.window.showQuickPick === "function") {
+      const choices = saved.map((endpoint2) => ({ label: endpoint2, description: endpoint2 === this.endpoint() ? "Gateway in uso" : "Gateway salvato", endpoint: endpoint2 }));
+      const pick = await vscode.window.showQuickPick([...choices, { label: "Aggiungi un gateway", description: "", endpoint: "" }], { title: "yed1z \xB7 Gateway dell\u2019editor" });
+      if (!pick) return;
+      value = pick.endpoint || void 0;
+    }
+    if (!value) value = await vscode.window.showInputBox({ title: "yed1z \xB7 Collega Control Room", value: this.endpoint(), prompt: "Indirizzo del portale yed1z. In Remote SSH, localhost indica l\u2019host remoto dell\u2019estensione.", ignoreFocusOut: true, validateInput: (value2) => {
       try {
         gatewayUrl(value2);
         return null;
@@ -329,6 +380,8 @@ var CommandView = class {
       this.abortAll();
       await this.context.secrets.store(keyName(endpoint), token);
       await this.context.globalState.update("yed1z.endpoint", endpoint);
+      await this.context.globalState.update("yed1z.endpoints", [endpoint, ...saved.filter((item) => item !== endpoint)].slice(0, 25));
+      await this.postHost();
       await this.post({ type: "configured" });
       void vscode.window.showInformationMessage("yed1z collegato: progetti, conversazioni e squadre sono condivisi con il portale.");
     } catch (error) {

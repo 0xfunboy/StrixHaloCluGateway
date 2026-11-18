@@ -150,8 +150,10 @@ test('OpenAI model IDs without declared capabilities can attempt chat without cl
 
 test('all native models of one account serialize and private semaphores stay out of the fleet snapshot', async t => {
     const f = await fixture(t);
-    const secondRoute = f.store.put<ModelRoute>('model', { ...f.routes.native, id: id('mdl'), model: 'second-native-model' });
-    const first = await f.router.reserve({ user: f.owner, preferredRouteId: f.routes.native.id, purpose: 'coder', nativeAllowed: true, signal: signal() });
+    assert.equal(f.routes.native.enabled, false, 'a configured native model is inactive before authenticated discovery');
+    const verified = f.store.put<ModelRoute>('model', { ...f.routes.native, enabled: true, discoveryStatus: 'present' });
+    const secondRoute = f.store.put<ModelRoute>('model', { ...verified, id: id('mdl'), model: 'second-native-model' });
+    const first = await f.router.reserve({ user: f.owner, preferredRouteId: verified.id, purpose: 'coder', nativeAllowed: true, signal: signal() });
     assert.ok(first.connection.env?.CODEX_HOME?.includes(first.account.id));
     await assert.rejects(f.router.reserve({ user: f.owner, preferredRouteId: secondRoute.id, purpose: 'coder', nativeAllowed: true, signal: signal(), maxWaitMs: 10 }), code('QUEUE_TIMEOUT'));
     const availability = f.router.availability(f.owner).find(row => row.routeId === secondRoute.id)!;
@@ -213,4 +215,16 @@ test('resource changes during a queue wait require a new atomic grant before exe
     assert.equal(f.scheduler.snapshot().c, 1);
     heldC(); const second = await waiting;
     assert.equal(f.scheduler.snapshot().c, 1); second.release();
+});
+
+test('auto prefers a fresher larger budget among equivalent authorized accounts and pinned retains identity', async t => {
+    const f = await fixture(t), selected = f.routes.cloud, base = f.store.require<Account>('account', selected.accountId);
+    const second = f.store.put('account', { ...base, id: 'additional-account', label: 'Second' });
+    const alternate = f.store.put('model', { ...selected, id: 'additional-route', accountId: second.id });
+    for (const [a,n] of [[base,3],[second,90]] as const)
+        f.catalog.quota(a, { source: 'provider-headers', state: 'known', observedAt: now(), remainingRequests:n });
+    for (const [strategy, expected] of [['auto',alternate.id], ['pinned',selected.id]] as const) {
+        const lease = await f.router.reserve({ user:f.owner, preferredRouteId:selected.id, alternativeRouteIds:[alternate.id], purpose:'chat', strategy, signal:signal() });
+        assert.equal(lease.chosenRouteId,expected); lease.release();
+    }
 });

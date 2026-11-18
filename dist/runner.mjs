@@ -196,9 +196,10 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readlink, realpath } from "node:fs/promises";
 var MAX_FILE_BYTES = 5e5;
-var EXCLUDED = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "venv", ".next", "dist", "build", ".ssh", ".aws", ".azure", ".gnupg", ".cloudflared", ".codex"]);
+var WORKTREE_DIRECTORY = "yed1z-worktrees";
+var EXCLUDED = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "venv", ".next", "dist", "build", ".ssh", ".aws", ".azure", ".gnupg", ".cloudflared", ".codex", WORKTREE_DIRECTORY]);
 var sha256 = (value2) => createHash("sha256").update(value2).digest("hex");
 function protectedPath(relative) {
   return relative.split(/[\\/]/).some((part) => EXCLUDED.has(part) || /^\.env(?:\.|$)/i.test(part) && !/^\.env\.(?:example|sample|template)$/i.test(part) || /^(?:id_rsa|id_ed25519|credentials|auth\.json|secrets?\.(?:json|ya?ml|toml))$/i.test(part) || /\.(?:pem|p12|pfx|key)$/i.test(part));
@@ -211,10 +212,15 @@ function relativePath(value2, label = "path") {
 }
 async function workspaceRoot(configuredRoot, workspace = ".") {
   if (!path.isAbsolute(configuredRoot)) throw new Error("The operator must configure an absolute workspace root.");
-  relativePath(workspace, "workspace");
   const root = await realpath(configuredRoot), target = path.resolve(root, workspace);
-  const check = new Workspace(root, new AbortController().signal);
-  await check.resolve(workspace);
+  if (/(?:^|\/)\.git\/yed1z-worktrees\/run_[a-f0-9]{32}$/u.test(workspace)) {
+    if (path.isAbsolute(workspace) || workspace.includes("\\") || workspace.split("/").includes("..") || !target.startsWith(root + path.sep)) throw new Error("Managed worktree is outside the configured root.");
+    if (await realpath(target) !== target) throw new Error("Managed worktree must not use a symlink.");
+  } else {
+    relativePath(workspace, "workspace");
+    const check = new Workspace(root, new AbortController().signal);
+    await check.resolve(workspace);
+  }
   if (!(await lstat(target)).isDirectory()) throw new Error("Configured workspace is not a directory.");
   return target;
 }
@@ -310,6 +316,56 @@ var Workspace = class {
     }
   }
 };
+async function workspaceDigest(workspace) {
+  const manifest = createHash("sha256");
+  let entries = 0;
+  let bytes = 0;
+  async function visit(directory, depth) {
+    workspace.signal.throwIfAborted();
+    if (depth > 64) throw new Error("Workspace exceeds the verification snapshot depth limit.");
+    await workspace.resolve(path.relative(workspace.root, directory) || ".");
+    const children = (await readdir(directory)).sort();
+    for (const name of children) {
+      const absolute = path.join(directory, name);
+      const relative = path.relative(workspace.root, absolute).split(path.sep).join("/");
+      if (protectedPath(relative)) continue;
+      workspace.signal.throwIfAborted();
+      if (++entries > 3e4) throw new Error("Workspace exceeds the verification snapshot entry limit.");
+      const info = await lstat(absolute);
+      if (info.isDirectory()) {
+        manifest.update(JSON.stringify(["directory", relative, info.mode & 511]));
+        await visit(absolute, depth + 1);
+        continue;
+      }
+      if (info.isSymbolicLink()) {
+        manifest.update(JSON.stringify(["symlink", relative, await readlink(absolute)]));
+        continue;
+      }
+      if (!info.isFile()) throw new Error("Workspace contains an unsupported entry for a verification snapshot.");
+      bytes += info.size;
+      if (bytes > 512 * 1024 * 1024) throw new Error("Workspace exceeds the verification snapshot byte limit.");
+      const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const opened = await file.stat();
+        if (!opened.isFile() || opened.ino !== info.ino || opened.dev !== info.dev) throw new Error("Workspace entry changed during verification.");
+        const content = createHash("sha256");
+        if (info.size > 0) {
+          const stream = file.createReadStream({ autoClose: false, signal: workspace.signal, end: info.size - 1 });
+          for await (const chunk of stream) content.update(chunk);
+        }
+        const after = await lstat(absolute);
+        if (after.ino !== info.ino || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.mode !== info.mode) {
+          throw new Error("Workspace changed while creating the verification snapshot. Retry the check.");
+        }
+        manifest.update(JSON.stringify(["file", relative, info.mode & 511, content.digest("hex")]));
+      } finally {
+        await file.close();
+      }
+    }
+  }
+  await visit(workspace.root, 0);
+  return manifest.digest("hex");
+}
 
 // src/execution/local.ts
 import { lstat as lstat2, mkdir as mkdir2, realpath as realpath2 } from "node:fs/promises";
@@ -417,6 +473,18 @@ function recipe(request, id) {
   if (!value2) throw new Error("Command recipe is not configured for this target.");
   return value2;
 }
+function recipeDigest(target, kind, recipeId) {
+  const command = (key) => {
+    const value2 = target.commands.find((item) => item.id === key);
+    if (!value2) throw new Error("Command recipe is not configured for this target.");
+    return [value2.id, value2.argv, value2.cwd ?? ".", value2.timeoutMs ?? 9e4, value2.verification === true];
+  };
+  if (kind === "verify") return sha256(JSON.stringify([target.id, target.workspaceRoot, command(recipeId)]));
+  const deployment = target.deployments?.find((item) => item.id === recipeId);
+  if (!deployment) throw new Error("Deployment recipe is not configured for this target.");
+  const health = deployment.health;
+  return sha256(JSON.stringify([target.id, target.workspaceRoot, deployment.id, deployment.verify.map(command), deployment.steps.map(command), deployment.rollback?.map(command) ?? [], health.url, health.expectedStatus ?? 200, health.expectedText, health.timeoutMs ?? 5e3, health.attempts ?? 3]));
+}
 async function runRecipe(request, workspace, command) {
   const cwd = await workspace.resolve(command.cwd ?? ".");
   request.onEvent?.({ type: "execution", targetId: request.target.id, kind: command.verification ? "verify" : "command", message: command.label });
@@ -433,7 +501,13 @@ function result(request, startedAt, output, data) {
   return { ok: true, output, data, evidence: [{ kind: request.operation.kind, targetId: request.target.id, workspace: request.workspace ?? ".", startedAt, finishedAt: (/* @__PURE__ */ new Date()).toISOString(), outputSha256: sha256(output) }] };
 }
 function denied() {
-  return { ok: false, output: "Action denied. Do not retry it through another tool or target.", evidence: [] };
+  return { ok: false, denied: true, output: "Action denied. Do not retry it through another tool or target.", evidence: [] };
+}
+async function revision(workspace) {
+  const git = await runProcess(["git", "rev-parse", "--verify", "HEAD"], { cwd: workspace.root, signal: workspace.signal, timeoutMs: 3e3 }).catch(() => void 0);
+  const gitCommit = git?.ok && /^[0-9a-f]{40,64}$/u.test(git.output.trim()) ? git.output.trim() : void 0;
+  const digest = sha256(JSON.stringify([gitCommit, await workspaceDigest(workspace)]));
+  return { digest, gitCommit };
 }
 async function executeLocal(request) {
   request.signal.throwIfAborted();
@@ -467,6 +541,13 @@ The operator-configured parent must already exist.`;
     return result(request, startedAt, "Project workspace prepared.", { targetId: request.target.id, workspace: relative, created: true });
   }
   const root = await workspaceRoot(request.target.workspaceRoot, request.workspace), workspace = new Workspace(root, request.signal);
+  if ((op.kind === "verify" || op.kind === "deploy") && op.expectedRecipeDigest && recipeDigest(request.target, op.kind, op.recipeId) !== op.expectedRecipeDigest) {
+    return { ok: false, output: "The recipe installed on the runner differs from the verified definition.", evidence: [] };
+  }
+  if (op.kind === "snapshot") {
+    const data = await revision(workspace);
+    return result(request, startedAt, `Workspace SHA256 ${data.digest}`, data);
+  }
   if (op.kind === "list") {
     const data = await workspace.list(op.directory);
     return result(request, startedAt, data.files.join("\n") + (data.truncated ? "\n[bounded listing truncated]" : ""), data);
@@ -604,14 +685,22 @@ async function deploy(request, workspace, deployment, startedAt) {
 ${verified.output}`);
     if (!verified.ok) return { ok: false, output: output.join("\n"), evidence };
   }
+  const expectedDigest = request.operation.kind === "deploy" ? request.operation.expectedWorkspaceDigest : void 0;
   const detail = `Target: ${request.target.id}
 Workspace: ${request.workspace ?? "."}
 Release: ${deployment.label}
+Workspace digest: ${expectedDigest ?? "not specified"}
 Verification passed: ${deployment.verify.join(", ")}
 Steps: ${deployment.steps.map((id) => JSON.stringify(recipe(request, id).argv)).join("\n")}
 Health: ${deployment.health.url}
 Rollback on failure: ${(deployment.rollback ?? []).join(", ") || "not configured"}`;
+  if (expectedDigest && (await revision(workspace)).digest !== expectedDigest) {
+    return { ok: false, output: "Workspace changed after verification. Reverify the new revision before releasing.", evidence };
+  }
   if (!await approval(request, "deployment", `Deploy ${deployment.label}`, detail)) return { ...denied(), evidence };
+  if (expectedDigest && (await revision(workspace)).digest !== expectedDigest) {
+    return { ok: false, output: "Workspace changed during release approval. No deployment step ran.", evidence };
+  }
   let ok = true, healthStatus, rollback = "not-needed";
   try {
     for (const id of deployment.steps) {

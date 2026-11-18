@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0-rc.1 · 18 novembre 2026
+
+Il progetto collega chat, percorso degli agenti ed evidenze verificabili sul Web e in VS Code. Il router gestisce profili, quote, motori locali e remoti e la facciata Responses. La Knowledge accetta un encoder locale per la ricerca con citazioni. L’handoff descrive la migrazione sulla porta 8081, il collaudo sui diversi provider e i limiti osservati. [Consegna RC1](docs/CONSEGNA-1.0-RC1.md)
+
 ## 0.4.0 · 17 novembre 2026
 
 ### Base della modifica

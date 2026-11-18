@@ -33,15 +33,20 @@ export interface ExecutionTarget {
   commands: CommandRecipe[];
   deployments?: DeploymentRecipe[];
 }
+export interface WorkspaceRevision {
+  digest: string;
+  gitCommit?: string;
+}
 export type Operation =
   | { kind: 'prepare' }
+  | { kind: 'snapshot' }
   | { kind: 'list'; directory?: string }
   | { kind: 'read'; path: string; startLine?: number; endLine?: number }
   | { kind: 'search'; query: string; directory?: string }
   | { kind: 'write'; path: string; content: string; expectedSha256?: string }
   | { kind: 'command'; recipeId: string }
-  | { kind: 'verify'; recipeId: string }
-  | { kind: 'deploy'; recipeId: string }
+  | { kind: 'verify'; recipeId: string; expectedRecipeDigest?: string }
+  | { kind: 'deploy'; recipeId: string; expectedWorkspaceDigest?: string; expectedRecipeDigest?: string }
   | { kind: 'telemetry' };
 export interface ExecutionApproval {
   kind: 'write' | 'command' | 'deployment';
@@ -76,6 +81,7 @@ export interface ExecutionResult {
   changedFiles?: string[];
   evidence: ExecutionEvidence[];
   data?: unknown;
+  denied?: boolean;
 }
 export interface ExecutionRequest {
   target: ExecutionTarget;

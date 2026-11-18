@@ -9,6 +9,7 @@ export interface Activation {
     targetId?: string;
     recipeId?: string;
     switchUrl?: string;
+    stop?: { url: string; healthUrl: string };
     body?: Record<string, unknown>;
     modelsUrl: string;
     expectedModel: string;
@@ -18,14 +19,18 @@ export interface SeedProvider extends Omit<Provider, 'ownerId' | 'createdAt'> {
     models?: Array<{
         model: string;
         label: string;
+        aliases?: string[];
         contextWindow?: number;
         capabilities?: string[];
     }>;
     secretEnv?: string;
+    sharedAccount?: boolean;
     loadProbe?: LoadProbe;
     activation?: Activation;
+    maxEmbeddingChars?: number;
 }
 export interface Config {
+    defaultEmbeddingProviderId?: string;
     bind: string;
     port: number;
     publicOrigin?: string;
@@ -87,15 +92,23 @@ export function loadConfig(file: string): Config {
     for (const p of cfg.providers) {
         if (p.loadProbe) validateLoadProbe(p.loadProbe);
         if (p.maxConcurrent !== undefined) p.maxConcurrent = integer(p.maxConcurrent, 4, 1, 16);
+        if (p.maxEmbeddingChars !== undefined)
+            assert(Number.isInteger(p.maxEmbeddingChars) && p.maxEmbeddingChars >= 32 && p.maxEmbeddingChars <= 4096, 400, 'CONFIG', 'maxEmbeddingChars deve essere un intero tra 32 e 4096.');
         assert(['openai-compatible', 'openai-responses', 'ollama', 'gemini', 'codex', 'antigravity'].includes(p.kind), 400, 'CONFIG', 'Provider non valido.');
         if (p.baseUrl)
             p.baseUrl = endpoint(p.baseUrl);
+        for (const model of p.models ?? []) if (model.aliases !== undefined)
+            model.aliases = textList(model.aliases,64).map(alias=>str(alias,'Alias modello',200));
         p.nodeIds = textList(p.nodeIds);
         p.resourceGroupIds = textList(p.resourceGroupIds);
         assert(p.nodeIds.every(n => nodes.has(n)) && p.resourceGroupIds.every(g => groups.has(g)), 400, 'CONFIG', 'Risorse provider non valide.');
     }
     for (const p of cfg.providers)
         if (p.activation) {
+            if (p.activation.stop) {
+                p.activation.stop.url=endpoint(p.activation.stop.url);
+                p.activation.stop.healthUrl=endpoint(p.activation.stop.healthUrl);
+            }
             const covered = cfg.resourceGroups.filter(g => p.resourceGroupIds.includes(g.id) || g.nodeIds.some(n => p.nodeIds.includes(n)));
             assert(covered.length > 0 && covered.every(g => g.capacity === 1), 400, 'CONFIG', 'Gli engine commutabili richiedono risorse esclusive capacity:1.');
             if (p.activation.recipeId) {

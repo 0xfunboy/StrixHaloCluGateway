@@ -89,3 +89,20 @@ export async function ensureHttpEngine(spec: HttpEngineSpec, signal: AbortSignal
     await waitEngineReady(spec, scoped, onStatus);
   } catch (error) { signal.throwIfAborted(); if (scoped.aborted) throw new AdapterError('Engine activation exceeded its deadline.'); throw error; }
 }
+
+/** The Strata node agent acknowledges the stop, then independently reports idle via health. */
+export async function stopStrataEngine(spec: { url:string; healthUrl:string },signal:AbortSignal):Promise<void> {
+  const stop=url(spec.url), health=url(spec.healthUrl);
+  const scope=AbortSignal.any([signal,AbortSignal.timeout(30000)]);
+  const response=await pinnedFetch(stop,{method:'POST',headers:{'content-type':'application/json'},body:'{}',signal:scope});
+  if(!response.ok){await response.body?.cancel();throw new AdapterError('Il nodo non ha accettato l’arresto del motore.',response.status);}
+  if(record(await readJSON(response,scope,65536)).ok!==true) throw new AdapterError('Arresto non confermato.');
+  while(true) {
+    const checked=await pinnedFetch(health,{signal:scope});
+    if(checked.ok) {
+      const data=record(await readJSON(checked,scope,65536));
+      if(data.strata_state==='idle' && (data.active_model===null || data.active_model==='none')) return;
+    } else await checked.body?.cancel();
+    await delay(350,undefined,{signal:scope});
+  }
+}

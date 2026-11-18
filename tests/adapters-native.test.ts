@@ -40,6 +40,29 @@ test('read-only Codex turn never asks user to approve a write-capable runtime ac
   } finally { await a.close(); }
 });
 
+test('Codex workspace tools replace ambient connectors and stay within the active task', async () => {
+  const a = await account('workspace-tools');
+  const readCalls: unknown[] = [];
+  try {
+    const result = await runNativeAgent({ connection: a.connection, model: { id: 'fixture-model' }, cwd: a.home, prompt: 'Read the fixture.', readOnly: true, signal: signal(),
+      workspaceTools: {
+        definitions: [{ name: 'read_file', description: 'Read workspace text', parameters: { type: 'object', properties: { path: { type: 'string' } } } }],
+        execute: async (name, args) => { readCalls.push([name, args]); return { ok: true, output: 'fixture file content' }; }
+      }, approve: async () => { assert.fail('Read-only workspace tools must not request an execution approval.'); }, onEvent: () => {} });
+    assert.equal(result.text, 'fixture file content');
+    assert.deepEqual(readCalls, [['read_file', { path: 'index.js' }]]);
+  } finally { await a.close(); }
+});
+
+test('a Codex workspace turn refuses a configured external MCP server', async () => {
+  const a = await account('workspace-external-mcp');
+  try {
+    await assert.rejects(runNativeAgent({ connection: a.connection, model: { id: 'fixture-model' }, cwd: a.home, prompt: 'Read the fixture.', readOnly: true, signal: signal(),
+      workspaceTools: { definitions: [], execute: async () => { assert.fail('Workspace tool must not run.'); } },
+      approve: async () => false, onEvent: () => {} }), /did not confirm restricted workspace tools/u);
+  } finally { await a.close(); }
+});
+
 test('guided device login forwards ephemeral official URL/code and requires authenticated confirmation', async () => {
   const a = await account(); const auth: unknown[] = [];
   try {
@@ -57,6 +80,18 @@ test('CLI account isolation is mandatory and runtime sandbox downgrade is reject
   await assert.rejects(inspectNative({ connection: { id: 'no-home', kind: 'codex', label: 'Unsafe' }, cwd: tmpdir(), signal: signal() }), /isolated absolute CODEX_HOME/);
   const a = await account('unsafe');
   try { await assert.rejects(runNativeAgent({ connection: a.connection, model: { id: 'fixture' }, cwd: a.home, prompt: 'Inspect', readOnly: true, signal: signal(), approve: async () => true, onEvent: () => {} }), /sandbox policy/); } finally { await a.close(); }
+});
+
+test('Codex rejects a runtime which does not confirm the managed home or file auth store', async () => {
+  for (const mode of ['wrong-home', 'wrong-store']) {
+    const a = await account(mode);
+    try {
+      const inspected = await inspectNative({ connection: a.connection, cwd: a.home, signal: signal() });
+      assert.equal(inspected.authenticated, false);
+      assert.deepEqual(inspected.models, []);
+      await assert.rejects(runNativeAgent({ connection: a.connection, model: { id: 'fixture-model' }, cwd: a.home, prompt: 'Output only.', readOnly: true, signal: signal(), approve: async () => false, onEvent: () => {} }), /did not confirm the isolated/);
+    } finally { await a.close(); }
+  }
 });
 
 test('active native turn is interruptible and returns no success on cancellation', async () => {

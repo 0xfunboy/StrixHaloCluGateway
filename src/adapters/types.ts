@@ -13,6 +13,8 @@ export interface AdapterConnection {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Service-managed native profile directory, never supplied by a client. */
+  isolatedProfilePath?: string;
 }
 export interface ModelSelection { id: string; contextWindow?: number; maxOutputTokens?: number; temperature?: number; }
 export interface DiscoveredModel {
@@ -67,6 +69,7 @@ export interface EmbedRequest {
   secret?: string;
   texts: string[];
   signal: AbortSignal;
+  maxEmbeddingChars?: number;
 }
 export interface EmbeddingResult { model: string; dimensions: number; vectors: number[][]; inputTokens?: number; }
 export interface NativeRequest {
@@ -75,6 +78,7 @@ export interface NativeRequest {
   cwd: string;
   prompt: string;
   readOnly: boolean;
+  workspaceTools?: import('./vendor/core/types.ts').ExternalWorkspaceTools;
   signal: AbortSignal;
   approve: (request: ApprovalRequest) => Promise<boolean>;
   onEvent: (event: RuntimeEvent) => void;
@@ -82,4 +86,12 @@ export interface NativeRequest {
   requestTimeoutMs?: number;
   turnTimeoutMs?: number;
 }
-export interface NativeResult { text: string; sessionId: string; usage?: Usage; quota: QuotaObservation; }
+export interface NativeResult {
+  text: string;
+  sessionId: string;
+  usage?: Usage;
+  quota: QuotaObservation;
+  thinking?: string;
+  thinkingMs?: number;
+  actions?: Array<{ title: string; kind?: 'command' | 'tool' | 'file' | 'status'; detail?: string; status?: string }>;
+}

@@ -55,6 +55,9 @@ try {
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'self'/);
   assert.match(await page.text(), /Control Room/);
+  for (const page of ['/control','/cockpit','/cockpit/classic','/assets/cockpit.js','/static/app.js','/static/assets/strix_halo_dual_cluster.jpg']) {
+    const response = await fetch(url+page); assert.equal(response.status,200,page); await response.arrayBuffer();
+  }
   const asset = await fetch(url + '/assets/app.js');
   assert.equal(asset.status, 200);
   assert.ok((await asset.text()).length > 10000);

@@ -1,7 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Account, Artifact, Bootstrap, Conversation, Evidence, Memory, ModelRoute, Project, Provider, Role, Run, RunEvent, User } from './contracts.ts';
@@ -13,138 +11,21 @@ import { Knowledge } from './knowledge.ts';
 import { Connections } from './connections.ts';
 import type { ConnectionInput } from './connection-types.ts';
 import { routingPreferences } from './request-policy.ts';
+import { aliasRoutes } from './model-aliases.ts';
+import { accountUsage } from './usage.ts';
+import { fromResponses, ResponsesOutput } from './responses-facade.ts';
 import { RouteRouter } from './routing.ts';
 import { publicBootstrap, publicTelemetry, guestUser } from './public-dashboard.ts';
 import type { RoutingPreferences, RequestedMode } from './contracts.ts';
 import { Orchestrator, type Completion } from './orchestrator.ts';
-import { complete } from './adapters/index.ts';
+import { stopStrataEngine } from './adapters/lifecycle.ts';
+import { isEngineReady } from './adapters/index.ts';
 import { execute } from './execution/index.ts';
 import { AppError, assert, endpoint, id, integer, now, object, safeError, str, textList } from './util.ts';
 
-const execFileAsync = promisify(execFile);
-
-interface NodeSensors {
-    hostname?: string;
-    role?: string;
-    status: string;
-    alert_level?: string;
-    temps?: Record<string, number>;
-    cooling?: Record<string, unknown>;
-    gpu?: Record<string, unknown>;
-    cpu?: Record<string, unknown>;
-    ram?: { used_gb: number; total_gb: number; free_gb: number; pct: number };
-    disk?: { used_gb: number; total_gb: number; free_gb: number; pct: number };
-    [key: string]: unknown;
-}
-
-interface ClusterTelemetryState {
-    node01: NodeSensors;
-    node02: NodeSensors;
-    aireward: NodeSensors;
-    tb_link: { rtt_ms: number; status: string; bandwidth: string; ip_mesh?: string };
-    lan_link: { rtt_ms: number; status: string; bandwidth: string };
-    last_updated: number;
-}
-
-const defaultClusterTelemetry: ClusterTelemetryState = {
-    node01: {
-        hostname: '01-EVO-X3',
-        role: 'Coordinator (Rank 0)',
-        status: 'online',
-        alert_level: 'healthy',
-        temps: { cpu_c: 42.0, gpu_c: 41.0, nvme_c: 32.0 },
-        gpu: { load_pct: 0, sclk_mhz: 605, power_w: 11.0, arch: 'gfx1151 / RDNA 3.5' },
-        cooling: { fan_rpm: 1940, fan_pwm_pct: 40, profile: 'Smart Thermal EC' },
-        ram: { used_gb: 100.9, total_gb: 122.2, free_gb: 21.3, pct: 83 },
-        disk: { used_gb: 522.6, total_gb: 1831.7, free_gb: 1216.0, pct: 29 }
-    },
-    node02: {
-        hostname: '02-evo-x3-tb',
-        role: 'Worker (Rank 1)',
-        status: 'online',
-        alert_level: 'healthy',
-        temps: { cpu_c: 29.2, gpu_c: 27.0, nvme_c: 23.9 },
-        gpu: { load_pct: 0, sclk_mhz: 600, power_w: 5.1, arch: 'gfx1151 / RDNA 3.5' },
-        cooling: { fan_rpm: 1800, fan_pwm_pct: 38, profile: 'Smart Thermal EC' },
-        ram: { used_gb: 2.0, total_gb: 122.2, free_gb: 120.2, pct: 2 },
-        disk: { used_gb: 426.7, total_gb: 1831.7, free_gb: 1311.9, pct: 23 }
-    },
-    aireward: {
-        hostname: 'aireward-llm',
-        role: 'CUDA MoE Accelerator (RTX 3090)',
-        status: 'online',
-        alert_level: 'healthy',
-        temps: { cpu_c: 33.0, gpu_c: 36.0, nvme_c: 37.9 },
-        gpu: { name: 'NVIDIA GeForce RTX 3090', load_pct: 0, sclk_mhz: 210, power_w: 13.1, vram_used_gb: 0.0, vram_total_gb: 24.0, arch: 'GA102 / Ampere 24GB' },
-        cooling: { gpu_fan_pct: 0, profile: 'Dual Axial Dynamic' },
-        ram: { used_gb: 1.9, total_gb: 61.6, free_gb: 59.7, pct: 3 },
-        disk: { used_gb: 542.6, total_gb: 1829.7, free_gb: 1194.0, pct: 30 }
-    },
-    tb_link: { rtt_ms: 0.42, status: 'active', bandwidth: '40 Gbps USB4 Mesh', ip_mesh: '10.55.0.0/30' },
-    lan_link: { rtt_ms: 0.52, status: 'active', bandwidth: '1 Gbps Ethernet LAN' },
-    last_updated: Date.now()
-};
-
-function recordRequestMetric(
-    modelId: string,
-    promptToks: number | undefined,
-    compToks: number | undefined,
-    durationS: number,
-    rateDurationS: number,
-    userName: string,
-    clientApp: string,
-    overrideTps?: number
-): void {
-    const statsPath = path.resolve('data/stats.json');
-    let stats: any = { totals: { total_tokens: 0, total_requests: 0, deepseek_tokens: 0, qwen_tokens: 0 }, daily_tokens: {}, recent_sessions: [] };
-    if (existsSync(statsPath)) {
-        try {
-            stats = JSON.parse(readFileSync(statsPath, 'utf8'));
-        } catch {}
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const nowTime = new Date().toTimeString().slice(0, 8);
-    const tps = overrideTps !== undefined ? overrideTps : (compToks && rateDurationS > 0 ? Math.round((compToks / rateDurationS) * 10) / 10 : undefined);
-    const modKey = (modelId.includes('ds41') || modelId.includes('deepseek')) ? 'deepseek' : 'qwen';
-
-    stats.totals = stats.totals || {};
-    stats.totals.total_requests = (stats.totals.total_requests || 0) + 1;
-    if (compToks !== undefined && compToks > 0) {
-        stats.totals.total_tokens = (stats.totals.total_tokens || 0) + compToks;
-        const tokKey = `${modKey}_tokens`;
-        stats.totals[tokKey] = (stats.totals[tokKey] || 0) + compToks;
-        stats.daily_tokens = stats.daily_tokens || {};
-        if (!stats.daily_tokens[today]) {
-            stats.daily_tokens[today] = { total: 0, deepseek: 0, qwen: 0 };
-        }
-        stats.daily_tokens[today].total += compToks;
-        stats.daily_tokens[today][modKey] = (stats.daily_tokens[today][modKey] || 0) + compToks;
-    }
-
-    const shortId = `req-${Math.random().toString(16).slice(2, 7)}`;
-    const sessionRecord = {
-        id: shortId,
-        time: nowTime,
-        user: userName,
-        app: clientApp,
-        model: modelId.includes('qwen') ? 'Qwen 3.8' : (modelId.includes('ds41') ? 'DeepSeek V4.1' : modelId),
-        prompt: promptToks || 0,
-        gen: compToks || 0,
-        duration: `${Math.round(durationS * 100) / 100}s`,
-        velocity: tps !== undefined ? `${tps} tok/s` : '—',
-        status: 'COMPLETED'
-    };
-    stats.recent_sessions = stats.recent_sessions || [];
-    stats.recent_sessions.unshift(sessionRecord);
-    if (stats.recent_sessions.length > 50) {
-        stats.recent_sessions = stats.recent_sessions.slice(0, 50);
-    }
-    try {
-        writeFileSync(statsPath, JSON.stringify(stats, null, 2), 'utf8');
-    } catch {}
-}
-
-const VERSION = '0.4.0';
+const VERSION = '1.0.0-rc.1';
+const webCsp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+const historicCsp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 const closed = new Set(['succeeded', 'failed', 'cancelled']);
 
 function json(res: ServerResponse, status: number, data: unknown): void {
@@ -197,11 +78,29 @@ export class Application {
     shutdown = new AbortController();
     timer?: NodeJS.Timeout;
     loadTimer?: NodeJS.Timeout;
-    probeTimer?: NodeJS.Timeout;
     streams = new Map<string, Set<ServerResponse>>();
     failures = new Map<string, { count: number; until: number }>();
-    clusterTelemetry: ClusterTelemetryState = { ...defaultClusterTelemetry };
     inFlightCount = 0;
+    readiness = new Map<string, { ready: boolean; observedAt: number }>();
+    samplingEngines = false;
+
+    async refreshEngines() {
+        if (this.samplingEngines) return;
+        this.samplingEngines = true;
+        try {
+            await Promise.allSettled(this.config.providers.filter(p => p.enabled && p.activation).map(async p => {
+                const ready = await isEngineReady(p.activation!, this.shutdown.signal);
+                this.readiness.set(p.id, { ready, observedAt: Date.now() });
+            }));
+        } finally { this.samplingEngines = false; }
+    }
+
+    engineStatus(providerId: string) {
+        const sampled = this.readiness.get(providerId);
+        if (sampled && Date.now() - sampled.observedAt <= this.config.telemetryIntervalMs * 2 + 5000)
+            return sampled.ready ? 'ready' : 'standby';
+        return 'unknown';
+    }
 
     constructor(options: {
         directory: string;
@@ -271,26 +170,33 @@ export class Application {
         return { user, session, isGuest: false };
     }
 
+    acceptsOrigin(req: IncomingMessage): boolean {
+        const origin=req.headers.origin;
+        if (origin===(this.config.publicOrigin ?? 'http://'+req.headers.host)) return true;
+        if (!origin || !req.headers.host || !['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) return false;
+        try {
+            const local=new URL(origin);
+            return local.origin===origin && ['http:','https:'].includes(local.protocol) && ['localhost','127.0.0.1','[::1]'].includes(local.hostname) && local.host===req.headers.host;
+        } catch { return false; }
+    }
+
     csrf(req: IncomingMessage, session?: string): void {
         if (!session || ['GET', 'HEAD'].includes(req.method ?? '')) return;
-        const origin = req.headers.origin;
-        const expected = this.config.publicOrigin ?? `http://${req.headers.host}`;
-        assert(origin === expected, 403, 'ORIGIN', 'Origine della richiesta non autorizzata.');
+        assert(this.acceptsOrigin(req), 403, 'ORIGIN', 'Origine della richiesta non autorizzata.');
     }
 
     bootstrap(user: User): Bootstrap {
         if (user.id === 'guest') return publicBootstrap(VERSION, this.config, this.catalog, this.store);
-        const isGuest = false;
-        const projects = isGuest ? [] : this.store.all<Project>('project').filter(p => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === 'admin');
+        const projects = this.store.all<Project>('project').filter(p => p.ownerId === user.id || p.memberIds.includes(user.id) || user.role === 'admin');
         const ids = new Set(projects.map(p => p.id));
-        const accounts = isGuest ? [] : this.catalog.accounts(user), providerIds = new Set(accounts.map(a => a.providerId));
-        const providers = isGuest ? this.store.all<Provider>('provider').map(p => { const { env, command, args, ...publicProvider } = p; return publicProvider; }) : this.store.all<Provider>('provider').filter(p => p.ownerId === user.id || providerIds.has(p.id)).map(p => { const { env, command, args, ...publicProvider } = p; return publicProvider; });
-        const models = isGuest ? this.store.all<ModelRoute>('model').filter(m => m.enabled) : this.catalog.models(user);
+        const accounts = this.catalog.accounts(user), providerIds = new Set(accounts.map(a => a.providerId));
+        const providers = this.store.all<Provider>('provider').filter(p => p.ownerId === user.id || providerIds.has(p.id)).map(p => { const { env, command, args, ...publicProvider } = p; return publicProvider; });
+        const models = this.catalog.models(user);
         return {
             version: VERSION,
             user,
             projects,
-            conversations: isGuest ? [] : this.store.all<Conversation>('conversation').filter(c => c.ownerId === user.id && ids.has(c.projectId)),
+            conversations: this.store.all<Conversation>('conversation').filter(c => c.ownerId === user.id && ids.has(c.projectId)),
             providers,
             accounts,
             models,
@@ -298,11 +204,11 @@ export class Application {
             links: this.config.links,
             resourceGroups: this.config.resourceGroups,
             telemetry: [...this.catalog.telemetry.values()],
-            runs: isGuest ? [] : this.store.all<Run>('run').filter(r => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200),
-            approvals: isGuest ? [] : this.store.all<Bootstrap['approvals'][number]>('approval').filter(a => a.ownerId === user.id),
-            memories: isGuest ? [] : this.store.all<Memory>('memory').filter(m => ids.has(m.projectId) && (m.ownerId === user.id || m.scope === 'project')),
-            artifacts: isGuest ? [] : this.store.all<Artifact>('artifact').filter(a => a.ownerId === user.id && ids.has(a.projectId)),
-            evidence: isGuest ? [] : this.store.all<Evidence & { ownerId: string }>('evidence').filter(e => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1000),
+            runs: this.store.all<Run>('run').filter(r => r.ownerId === user.id && ids.has(r.projectId)).slice(0, 200),
+            approvals: this.store.all<Bootstrap['approvals'][number]>('approval').filter(a => a.ownerId === user.id),
+            memories: this.knowledge.visibleMemories(user, ids),
+            artifacts: this.store.all<Artifact>('artifact').filter(a => a.ownerId === user.id && ids.has(a.projectId)),
+            evidence: this.store.all<Evidence & { ownerId: string }>('evidence').filter(e => e.ownerId === user.id && ids.has(e.projectId)).slice(0, 1000),
             targets: this.config.targets.map(t => ({
                 id: t.id,
                 label: t.id,
@@ -318,6 +224,13 @@ export class Application {
         };
     }
 
+    activeEngines() {
+        const loaded = this.catalog.loadMonitor.snapshot(this.config.providers);
+        return this.config.providers.filter(p => ['local','cluster'].includes(p.tag ?? '') && (this.engineStatus(p.id) === 'ready' || loaded.some(l =>
+            l.providerId === p.id && (l.status === 'available' || l.status === 'busy') && l.expiresAt && Date.parse(l.expiresAt) > Date.now())))
+            .map(p => ({ providerId: p.id, label: p.label }));
+    }
+
     publicDashboard(): Record<string, unknown> {
         const state = publicBootstrap(VERSION, this.config, this.catalog, this.store);
         return {
@@ -329,102 +242,49 @@ export class Application {
             telemetry: state.telemetry,
             models: state.models,
             resourceUsage: state.resourceUsage,
-            stats: { totals: { total_tokens: null }, source: 'unavailable' }
+            engines: this.config.providers.filter(p => ['local', 'cluster'].includes(p.tag ?? '') && p.enabled).map(p => ({
+                id: p.id, label: p.label, nodeIds: p.nodeIds, switchable: Boolean(p.activation), canStop: Boolean(p.activation?.stop), status: this.engineStatus(p.id),
+                load: this.catalog.loadMonitor.snapshot(this.config.providers).find(l => l.providerId === p.id)?.status ?? 'unknown'
+            })),
+            stats: { totals: this.store.db.prepare('SELECT count(*) AS total_requests, CASE WHEN count(input_tokens)+count(output_tokens)>0 THEN coalesce(sum(input_tokens),0)+coalesce(sum(output_tokens),0) END AS total_tokens FROM inference_usage').get(),
+                source: 'gateway', scope: 'gateway_api', latest: this.store.db.prepare('SELECT created,total_ms,ttft_ms,decode_tps,prefill_tps FROM inference_usage ORDER BY created DESC LIMIT 1').get() ?? null }
         };
     }
 
     changed(user: User, projectId?: string): void {
         this.store.emit({ ownerId: user.id, projectId, type: 'state.changed' });
     }
-
-    identifyClientUser(req: IncomingMessage, user?: User): { user: string; app: string } {
-        let clientUser = user?.name || user?.id || 'funboy';
-        const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
-        const xUser = req.headers['x-user'] as string;
-        if (xUser) {
-            clientUser = xUser;
-        } else if (clientIp.includes('37.118.7.208')) {
-            clientUser = 'cooper';
-        } else {
-            const authHeader = req.headers.authorization;
-            if (authHeader?.startsWith('Bearer ')) {
-                const key = authHeader.slice(7);
-                const apiKeysPath = path.resolve('data/api_keys.json');
-                if (existsSync(apiKeysPath)) {
-                    try {
-                        const keysData = JSON.parse(readFileSync(apiKeysPath, 'utf8'));
-                        for (const [uname, uinfo] of Object.entries<any>(keysData.users || {})) {
-                            if (uinfo.key === key || (Array.isArray(uinfo.keys) && uinfo.keys.includes(key))) {
-                                clientUser = uname;
-                                break;
-                            }
-                        }
-                    } catch {}
-                }
-            }
+    private changedSharedMemory(user: User, projectId: string): void {
+        const project = this.store.projectFor(user, projectId);
+        const recipients = new Set([project.ownerId, ...project.memberIds]);
+        recipients.delete(user.id);
+        for (const ownerId of recipients) {
+            this.store.emit({ ownerId, projectId, type: 'state.changed', data: { knowledgeChanged: true } });
         }
-        let clientApp = 'API / Agent';
-        const ua = req.headers['user-agent'] || '';
-        if (ua.includes('GitHubCopilot') || ua.includes('Copilot')) {
-            clientApp = 'Copilot Chat';
-        } else if (ua.includes('Mozilla') || ua.includes('Chrome')) {
-            clientApp = 'Web GUI';
-        } else if (ua) {
-            clientApp = ua.slice(0, 30);
-        }
-        return { user: clientUser, app: clientApp };
     }
 
-    async sampleClusterHardware(): Promise<void> {
-        try {
-            const n1Script = '/home/funboy/scripts/node01-sensors.sh';
-            if (existsSync(n1Script)) {
-                const { stdout } = await execFileAsync(n1Script, [], { timeout: 2500 });
-                const parsed = JSON.parse(stdout);
-                this.clusterTelemetry.node01 = { ...this.clusterTelemetry.node01, ...parsed };
+    private indexing = new Map<string,{pending:boolean; done:Promise<void>}>();
+
+    private indexLocalSources(user:User, projectId:string):void {
+        const providerId=this.config.defaultEmbeddingProviderId;
+        if(!providerId || this.shutdown.signal.aborted) return;
+        const seed=this.config.providers.find(p=>p.id===providerId && p.tag==='local');
+        if(!seed?.baseUrl || !['127.0.0.1','localhost','[::1]'].includes(new URL(seed.baseUrl).hostname)) return;
+        const key=user.id+'/'+projectId, existing=this.indexing.get(key);
+        if(existing){existing.pending=true;return;}
+        const job={pending:true,done:Promise.resolve()};
+        this.indexing.set(key,job);
+        job.done=(async()=>{
+            while(job.pending && !this.shutdown.signal.aborted) {
+                job.pending=false;
+                const project=this.store.projectFor(user,projectId), routeId=project.routes.embedding;
+                if(!routeId || this.store.get<ModelRoute>('model',routeId)?.providerId!==providerId) break;
+                const signal=AbortSignal.any([this.shutdown.signal,AbortSignal.timeout(120000)]);
+                await this.knowledge.reindex(user,project,routeId,this.catalog.embedder(user,routeId),signal);
             }
-        } catch {}
-
-        try {
-            const { stdout } = await execFileAsync('ssh', ['-o', 'ConnectTimeout=1', '-o', 'BatchMode=yes', '02-evo-x3-tb', '/home/funboy/scripts/node02-sensors.sh'], { timeout: 2500 });
-            const parsed = JSON.parse(stdout);
-            this.clusterTelemetry.node02 = { ...this.clusterTelemetry.node02, ...parsed };
-        } catch {}
-
-        try {
-            const ac = new AbortController();
-            const tm = setTimeout(() => ac.abort(), 1800);
-            const resp = await fetch('http://192.168.1.50:8080/health', { signal: ac.signal });
-            clearTimeout(tm);
-            if (resp.ok) {
-                const data = await resp.json() as any;
-                this.clusterTelemetry.aireward = {
-                    ...this.clusterTelemetry.aireward,
-                    status: 'online',
-                    gpu: { ...this.clusterTelemetry.aireward.gpu, ...data.gpu }
-                };
-            }
-        } catch {}
-
-        try {
-            const t0 = Date.now();
-            await execFileAsync('ping', ['-c', '1', '-W', '1', '10.55.0.2'], { timeout: 1500 });
-            this.clusterTelemetry.tb_link = {
-                rtt_ms: Math.round((Date.now() - t0) * 10) / 10,
-                status: 'active',
-                bandwidth: '40 Gbps USB4 Mesh',
-                ip_mesh: '10.55.0.0/30'
-            };
-        } catch {
-            this.clusterTelemetry.tb_link = {
-                rtt_ms: 0,
-                status: 'inactive',
-                bandwidth: '40 Gbps USB4 Mesh',
-                ip_mesh: '10.55.0.0/30'
-            };
-        }
-
-        this.clusterTelemetry.last_updated = Date.now();
+        })().catch(()=>{
+            if(!this.shutdown.signal.aborted) this.store.emit({ownerId:user.id,projectId,type:'knowledge.index_deferred',text:'Indicizzazione semantica da riprovare. Ricerca testuale disponibile.'});
+        }).finally(()=>this.indexing.delete(key));
     }
 
     async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -432,7 +292,7 @@ export class Application {
         assert(![...url.searchParams.keys()].some(k => /key|token|password|secret/i.test(k)), 400, 'AUTH', 'Credenziali nella query non ammesse.');
 
         if ((pathname === '/health' || pathname === '/api/health') && method === 'GET') {
-            const active_model = 'qwen';
+            const active_model = this.activeEngines()[0]?.label ?? null;
             json(res, 200, { ok: true, status: 'healthy', version: VERSION, active_model });
             return;
         }
@@ -445,32 +305,27 @@ export class Application {
 
         if (pathname === '/api/telemetry' && method === 'GET') {
             if (this.config.publicDashboard === false) this.user(req);
-            const statsPath = path.resolve('data/stats.json');
-            let stats = { totals: { total_tokens: 0, total_requests: 0, deepseek_tokens: 0, qwen_tokens: 0 }, daily_tokens: {}, recent_sessions: [] };
-            if (existsSync(statsPath)) {
-                try {
-                    stats = JSON.parse(readFileSync(statsPath, 'utf8'));
-                } catch {}
-            }
-            const active_strix = 'qwen';
-            const active_aireward = null;
-            const active_model = active_strix;
-            json(res, 200, {
-                active_model,
-                active_strix,
-                active_aireward,
-                in_flight: this.inFlightCount,
-                speeds: {
-                    decode_tps: 42.4,
-                    prefill_tps: 177,
-                    ttft_ms: 280,
-                    dspark_acc: 49.2
-                },
-                telemetry: this.clusterTelemetry,
-                stats,
-                server_time: new Date().toISOString(),
-                upstreamTelemetry: publicTelemetry([...this.catalog.telemetry.values()])
-            });
+            const state = this.publicDashboard();
+            const active = this.activeEngines();
+            const strix = active.find(e => e.providerId.startsWith('strix-'))?.providerId.slice(6);
+            const cuda = active.find(e => e.providerId.startsWith('cuda-'))?.providerId.slice(5);
+            const latest = this.store.db.prepare('SELECT ttft_ms,decode_tps,prefill_tps FROM inference_usage ORDER BY created DESC LIMIT 1').get();
+            const actor = this.guestOrUser(req);
+            const stats = state.stats as Record<string, unknown>;
+            stats.daily_tokens = Object.fromEntries(this.store.db.prepare(`
+                SELECT substr(u.created,1,10) AS day,sum(coalesce(input_tokens,0)+coalesce(output_tokens,0)) AS total,
+                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%qwen%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS qwen,
+                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%deepseek%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS deepseek
+                FROM inference_usage u LEFT JOIN entities e ON e.id=u.route WHERE u.created>=date('now','-30 days') AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+                GROUP BY 1 ORDER BY 1`).all().map(r => [String(r.day), r]));
+            stats.recent_sessions = actor.isGuest ? [] : this.store.db.prepare(`
+                SELECT substr(u.created,12,8) AS time,json_extract(e.data,'$.label') AS model,u.input_tokens AS prompt,u.output_tokens AS gen,u.total_ms/1000.0 AS duration,u.decode_tps AS velocity
+                FROM inference_usage u LEFT JOIN entities e ON e.id=u.route WHERE u.owner=? ORDER BY u.created DESC LIMIT 15`).all(actor.user.id)
+                .map(row => ({ ...row, user: actor.user.name, app: 'API', status: 'COMPLETED' }));
+            json(res, 200, { ...state, active_model: strix ?? cuda ?? active[0]?.label ?? null, activeEngines: active,
+                active_strix: strix ?? null, active_aireward: cuda === 'qwen' ? 'qwen38-strata' : cuda === 'deepseek' ? 'ds41-strata' : null,
+                speeds: { decode_tps: latest?.decode_tps ?? null, prefill_tps: latest?.prefill_tps ?? null, ttft_ms: latest?.ttft_ms ?? null, dspark_acc: null },
+                in_flight: this.inFlightCount, server_time: now(), upstreamTelemetry: state.telemetry });
             return;
         }
 
@@ -479,76 +334,10 @@ export class Application {
             return;
         }
 
-        if (pathname === '/api/auth/verify' && method === 'POST') {
-            const b = await body(req);
-            const token = str(b.key || b.token || '', 'Chiave', 1024);
-            let user = this.store.authenticate(token, 'key');
-            if (!user) {
-                const apiKeysPath = path.resolve('data/api_keys.json');
-                if (existsSync(apiKeysPath)) {
-                    try {
-                        const keysData = JSON.parse(readFileSync(apiKeysPath, 'utf8'));
-                        for (const [uname, uinfo] of Object.entries<any>(keysData.users || {})) {
-                            if (uinfo.key === token || (Array.isArray(uinfo.keys) && uinfo.keys.includes(token))) {
-                                const role = uname === 'funboy' ? 'admin' : (uinfo.role || 'operator');
-                                user = { id: uname, name: uname, role: role as Role, createdAt: now() };
-                                break;
-                            }
-                        }
-                    } catch {}
-                }
-            }
-            if (!user) {
-                throw new AppError(401, 'UNAUTHORIZED', 'Chiave non valida.');
-            }
-            const session = this.store.session(user);
-            res.setHeader('Set-Cookie', `yed1z_session=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${this.config.secureCookies ? '; Secure' : ''}`);
-            json(res, 200, { ok: true, user: { id: user.id, name: user.name, role: user.role } });
-            return;
-        }
-
-        if (pathname === '/api/switch' && method === 'POST') {
-            const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
-            const session = bearer ? undefined : cookie(req);
-            let u = bearer ? this.store.authenticate(bearer, 'key') : session ? this.store.authenticate(session, 'session') : undefined;
-            if (!u && bearer) {
-                const apiKeysPath = path.resolve('data/api_keys.json');
-                if (existsSync(apiKeysPath)) {
-                    try {
-                        const keysData = JSON.parse(readFileSync(apiKeysPath, 'utf8'));
-                        for (const [uname, uinfo] of Object.entries<any>(keysData.users || {})) {
-                            if (uinfo.key === bearer || (Array.isArray(uinfo.keys) && uinfo.keys.includes(bearer))) {
-                                const role = uname === 'funboy' ? 'admin' : (uinfo.role || 'operator');
-                                u = { id: uname, name: uname, role: role as Role, createdAt: now() };
-                                break;
-                            }
-                        }
-                    } catch {}
-                }
-            }
-            assert(u && ['admin', 'operator'].includes(u.role), 403, 'FORBIDDEN', 'Operazione riservata agli operatori.');
-            const b = await body(req);
-            const target = str(b.target || b.model || '', 'Target model', 128);
-            const clusterModel = '/home/funboy/.local/bin/cluster-model';
-            let output = '';
-            if (existsSync(clusterModel)) {
-                try {
-                    const res = await execFileAsync(clusterModel, [target], { timeout: 30000 });
-                    output = res.stdout + res.stderr;
-                } catch (err: any) {
-                    output = err.message || String(err);
-                }
-            } else {
-                output = `cluster-model script not found at ${clusterModel}`;
-            }
-            json(res, 200, { ok: true, target, output });
-            return;
-        }
-
-        if (pathname === '/api/login' && method === 'POST') {
+        if (['/api/login', '/api/auth/verify'].includes(pathname) && method === 'POST') {
             const input = await body(req), ip = req.socket.remoteAddress ?? 'unknown', prior = this.failures.get(ip);
             assert(!prior || prior.until < Date.now() || prior.count < 12, 429, 'RATE_LIMIT', 'Troppi tentativi. Attendi un minuto.');
-            const token = str(input.token, 'Chiave', 1024), user = this.store.authenticate(token, 'key');
+            const token = str(input.token ?? input.admin_key ?? input.key ?? req.headers.authorization?.match(/^Bearer (.+)$/)?.[1], 'Chiave', 1024), user = this.store.authenticate(token, 'key');
             if (!user) {
                 if (this.failures.size > 5000)
                     this.failures.clear();
@@ -556,11 +345,11 @@ export class Application {
                 throw new AppError(401, 'UNAUTHORIZED', 'Chiave non valida.');
             }
             if (req.headers.origin)
-                assert(req.headers.origin === (this.config.publicOrigin ?? `http://${req.headers.host}`), 403, 'ORIGIN', 'Origine non autorizzata.');
+                assert(this.acceptsOrigin(req), 403, 'ORIGIN', 'Origine non autorizzata.');
             this.failures.delete(ip);
             const session = this.store.session(user);
             res.setHeader('Set-Cookie', `yed1z_session=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${this.config.secureCookies ? '; Secure' : ''}`);
-            json(res, 200, { user });
+            json(res, 200, { ok: true, user });
             return;
         }
 
@@ -592,14 +381,61 @@ export class Application {
         }
 
         assert(!isGuest, 401, 'UNAUTHORIZED', 'Accedi con una chiave personale per modificare o accedere a queste risorse.');
-        assert(method === 'GET' || user.role !== 'viewer', 403, 'FORBIDDEN', 'Il profilo lettore non può modificare dati.');
-
+        if (pathname === '/api/me/appearance' && method === 'GET') {
+            json(res, 200, user.appearance ?? {});
+            return;
+        }
+        if (pathname === '/api/me/appearance' && method === 'PATCH') {
+            const input = await body(req);
+            assert(Object.keys(input).length > 0 && Object.keys(input).every(field => field === 'theme' || field === 'motion'), 400, 'PREFERENCES', 'Preferenza di visualizzazione sconosciuta.');
+            const { theme, motion } = input;
+            assert(theme === undefined || theme === 'light' || theme === 'dark' || theme === 'system', 400, 'PREFERENCES', 'Tema non valido.');
+            assert(motion === undefined || motion === 'on' || motion === 'off', 400, 'PREFERENCES', 'Preferenza movimento non valida.');
+            // Re-read after receiving the body so overlapping partial updates merge.
+            const current = this.store.get<User>('user', user.id);
+            assert(current, 401, 'UNAUTHORIZED', 'Account non disponibile.');
+            current.appearance = { ...current.appearance, ...(theme ? { theme } : {}), ...(motion ? { motion } : {}) };
+            this.store.put('user', current);
+            this.changed(current);
+            json(res, 200, current.appearance);
+            return;
+        }
         const segments = pathname.split('/').filter(Boolean), key = segments[2];
+        const knowledgeSearch = method === 'POST' && segments[1] === 'projects' && segments.length === 5 && segments[3] === 'knowledge' && segments[4] === 'search';
+        assert(method === 'GET' || knowledgeSearch || user.role !== 'viewer', 403, 'FORBIDDEN', 'Il profilo lettore non può modificare dati.');
+
+        if (pathname === '/api/usage' && method === 'GET') {
+            json(res,200,accountUsage(this.store,user)); return;
+        }
+
+        if (pathname === '/api/switch' && method === 'POST') {
+            operator(user);
+            const input = await body(req);
+            const target = input.target === 'aireward' ? 'cuda' : input.target;
+            const stopping=input.action==='stop' || input.model==='stop';
+            const providerId = input.providerId === undefined ? (stopping && target==='cuda' ? this.config.providers.find(p=>p.id.startsWith('cuda-') && p.activation?.stop)?.id : [target, input.model].join('-')) : str(input.providerId, 'Provider');
+            const stop=this.config.providers.find(p=>p.id===providerId)?.activation?.stop;
+            if (stopping) assert(stop,400,'ACTIVATION','Arresto non configurato per questo motore.');
+            assert(this.config.providers.some(p => p.id === providerId && p.activation), 400, 'ACTIVATION', 'Nessuna attivazione configurata per il motore selezionato.');
+            const route = this.catalog.models(user).find(m => m.providerId === providerId && m.enabled);
+            assert(route, 404, 'MODEL', 'Nessuna rotta disponibile per questo motore.');
+            const controller = new AbortController();
+            res.once('close', () => controller.abort());
+            const signal = AbortSignal.any([controller.signal, this.shutdown.signal, AbortSignal.timeout(600000)]);
+            const lease = await new RouteRouter(this.catalog).reserve({ user, preferredRouteId: route.id, signal, strategy: 'pinned', maxWaitMs: 10000 });
+            try {
+                if (stopping && stop) await stopStrataEngine(stop,signal); else await this.catalog.activate(route.providerId,signal);
+                await this.refreshEngines();
+            }
+            finally { lease.release(); }
+            json(res, 200, { ok: true, providerId, model: stopping ? null : route.model, stopped:stopping });
+            return;
+        }
 
         if (pathname === '/api/projects' && method === 'POST') {
             const b = await body(req);
             assert(this.store.all<Project>('project').filter(p => p.ownerId === user.id).length < 100, 413, 'LIMIT', 'Limite progetti raggiunto.');
-            const project: Project = { id: id('prj'), ownerId: user.id, memberIds: [], name: str(b.name, 'Nome', 120), description: b.description === undefined ? '' : str(b.description, 'Descrizione', 12000, true), routes: {}, verifyRecipeIds: [], createdAt: now(), updatedAt: now() };
+            const project: Project = { id: id('prj'), ownerId: user.id, memberIds: [], name: str(b.name, 'Nome', 120), description: b.description === undefined ? '' : str(b.description, 'Descrizione', 12000, true), routes: this.catalog.initialProjectRoutes(user), verifyRecipeIds: [], createdAt: now(), updatedAt: now() };
             this.configureProject(user, project, b);
             await this.prepareProject(project);
             this.store.put('project', project);
@@ -623,10 +459,38 @@ export class Application {
             return;
         }
 
+        if (knowledgeSearch) {
+            const project = this.store.projectFor(user, key), input = await body(req);
+            const query = str(input.query, 'Ricerca', 12000);
+            const modelKey = user.role === 'viewer' ? undefined : project.routes.embedding;
+            const controller = new AbortController();
+            res.once('close', () => controller.abort());
+            const signal = AbortSignal.any([controller.signal, this.shutdown.signal]);
+            const result = await this.knowledge.search(user, project.id, query, {
+                signal, limit: integer(input.limit, 8, 1, 24), maxChars: integer(input.maxChars, 6400, 128, 12000),
+                ...(modelKey ? { modelKey, embed: this.catalog.embedder(user, modelKey) } : {}),
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            json(res, 200, result);
+            return;
+        }
+
+        if (segments[1] === 'projects' && segments.length === 6 && segments[3] === 'knowledge' && segments[4] === 'sources' && method === 'GET') {
+            const revision = url.searchParams.get('revision');
+            const sourceHash = url.searchParams.get('hash') ?? undefined;
+            assert(revision === null || /^\d{1,12}$/.test(revision), 400, 'SOURCE', 'Revisione non valida.');
+            assert(sourceHash === undefined || /^[a-f0-9]{64}$/.test(sourceHash), 400, 'SOURCE', 'Hash sorgente non valido.');
+            const result = this.knowledge.source(user, key, segments[5], { revision: revision === null ? undefined : Number(revision), sourceHash });
+            res.setHeader('Cache-Control', 'no-store');
+            json(res, 200, result);
+            return;
+        }
+
         if (segments[1] === 'projects' && segments[3] === 'reindex' && method === 'POST') {
             const p = this.store.projectFor(user, key);
             assert(p.routes.embedding, 409, 'EMBEDDING', 'Scegli un modello embedding nelle impostazioni del progetto.');
-            const result = await this.knowledge.reindex(user, p, p.routes.embedding, this.catalog.embedder(user, p.routes.embedding), AbortSignal.timeout(120000));
+            const force = url.searchParams.get('force') === '1';
+            const result = await this.knowledge.reindex(user, p, p.routes.embedding, this.catalog.embedder(user, p.routes.embedding), AbortSignal.timeout(120000), force);
             this.changed(user, p.id);
             json(res, 200, result);
             return;
@@ -641,6 +505,37 @@ export class Application {
             this.store.put('conversation', c);
             this.changed(user, c.projectId);
             json(res, 201, c);
+            return;
+        }
+
+        if (segments[1] === 'conversations' && segments.length === 4 && segments[3] === 'branch' && method === 'POST') {
+            const parent = this.store.own<Conversation>(user, 'conversation', key);
+            this.store.projectFor(user, parent.projectId);
+            const input = await body(req);
+            const messageId = str(input.messageId, 'Messaggio');
+            const index = parent.messages.findIndex(message => message.id === messageId);
+            assert(index >= 0, 404, 'MESSAGE', 'Messaggio non trovato in questa conversazione.');
+            const messages = parent.messages.slice(0, index + 1);
+            assert(messages.every(message => message.status !== 'streaming'), 409, 'STREAMING', 'Attendi il completamento del turno prima di creare un ramo.');
+            assert(this.store.all<Conversation>('conversation').filter(c => c.ownerId === user.id && c.projectId === parent.projectId).length < 250, 413, 'LIMIT', 'Limite conversazioni raggiunto.');
+            const createdAt = now();
+            const branch: Conversation = { ...parent, id: id('conv'), createdAt, updatedAt: createdAt, messages,
+                title: input.title === undefined ? ('Ramo · ' + parent.title).slice(0, 200) : str(input.title, 'Titolo', 200),
+                branch: { conversationId: parent.id, messageId, createdAt } };
+            this.store.put('conversation', branch);
+            this.changed(user, parent.projectId);
+            json(res, 201, branch);
+            return;
+        }
+
+        if (segments[1] === 'runs' && segments.length === 4 && segments[3] === 'events' && method === 'GET') {
+            const run = this.store.own<Run>(user, 'run', key);
+            this.store.projectFor(user, run.projectId);
+            const after = Number(url.searchParams.get('after') ?? 0);
+            assert(Number.isSafeInteger(after) && after >= 0, 400, 'CURSOR', 'Cursore non valido.');
+            const rows = this.store.db.prepare('SELECT id,data FROM events WHERE owner=? AND run=? AND id>? ORDER BY id LIMIT 201').all(user.id, key, after);
+            const events = rows.slice(0, 200).map(row => ({ ...JSON.parse(String(row.data)), id: Number(row.id) }));
+            json(res, 200, { events, nextCursor: rows.length > 200 ? events.at(-1)!.id : null });
             return;
         }
 
@@ -663,6 +558,8 @@ export class Application {
             const b = await body(req);
             assert(b.mode === undefined || b.mode === 'auto' || b.mode === 'chat' || b.mode === 'mission', 400, 'MODE', 'Modalità non valida.');
             const p = b.permissions === undefined ? {} : object(b.permissions);
+            const workspaceIsolation = b.workspaceIsolation;
+            assert(workspaceIsolation === undefined || workspaceIsolation === 'shared' || workspaceIsolation === 'git-worktree', 400, 'INVALID', 'Modalità workspace non valida.');
             for (const field of ['write', 'commands', 'deploy'])
                 assert(p[field] === undefined || typeof p[field] === 'boolean', 400, 'INVALID', 'Permesso non valido.');
             const run = this.orchestrator.start(user, key, {
@@ -673,7 +570,9 @@ export class Application {
                 attachmentIds: b.attachmentIds === undefined ? [] : textList(b.attachmentIds, 12),
                 permissions: p,
                 maxIterations: integer(b.maxIterations, 3, 1, 6),
-                maxParallel: integer(b.maxParallel, 3, 1, 6)
+                maxParallel: integer(b.maxParallel, 3, 1, 6),
+                parentRunId: b.parentRunId === undefined ? undefined : str(b.parentRunId, 'Missione di origine', 120),
+                workspaceIsolation
             });
             json(res, 202, run);
             return;
@@ -697,7 +596,28 @@ export class Application {
                 return;
             }
             if (action === 'release') {
-                json(res, 202, await this.orchestrator.release(user, key));
+                const b = (Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding']) ? await body(req) : {};
+                const digest = b.verificationDigest === undefined ? undefined : str(b.verificationDigest, 'Digest di verifica', 64);
+                assert(!digest || /^[0-9a-f]{64}$/u.test(digest), 400, 'INVALID', 'Digest di verifica non valido.');
+                json(res, 202, await this.orchestrator.release(user, key, digest));
+                return;
+            }
+            if (action === 'reconcile') {
+                const b = await body(req);
+                const outcome = b.outcome;
+                assert(outcome === 'applied' || outcome === 'not_applied' || outcome === 'rolled_back', 400, 'INVALID', 'Esito di riconciliazione non valido.');
+                json(res, 200, this.orchestrator.reconcile(user, key, str(b.operationId, 'Operazione', 120), outcome, str(b.note, 'Evidenza osservata', 12000)));
+                return;
+            }
+            if (action === 'promote') {
+                const b = await body(req);
+                const digest = str(b.verificationDigest, 'Digest di verifica', 64);
+                assert(/^[0-9a-f]{64}$/u.test(digest), 400, 'INVALID', 'Digest di verifica non valido.');
+                json(res, 200, await this.orchestrator.manageWorktree(user, key, 'promote', digest));
+                return;
+            }
+            if (action === 'cleanup') {
+                json(res, 200, await this.orchestrator.manageWorktree(user, key, 'cleanup'));
                 return;
             }
         }
@@ -769,6 +689,28 @@ export class Application {
             return;
         }
 
+        if (segments[1]==='accounts' && segments.length===4 && segments[3]==='delegates' && ['GET','PUT'].includes(method)) {
+            operator(user);
+            const account=this.store.own<Account>(user,'account',key);
+            const provider=this.store.require<Provider>('provider',account.providerId);
+            const native=['antigravity','codex'].includes(provider.kind);
+            const team=new Set(this.store.all<Project>('project').filter(p=>p.ownerId===user.id || p.memberIds.includes(user.id)).flatMap(p=>[p.ownerId,...p.memberIds]));
+            const eligible=this.store.all<User>('user').filter(u=>u.id!==user.id && u.role!=='viewer' && (user.role==='admin' || team.has(u.id)) &&
+                (!native || ['operator','admin'].includes(u.role))).map(({id,name,role})=>({id,name,role}));
+            if (method==='PUT') {
+                const input=await body(req), allowed=new Set(eligible.map(u=>u.id));
+                const userIds=[...new Set(textList(input.userIds,128))];
+                assert(typeof input.shared==='boolean' && !(input.shared && native),400,'ACCOUNT','Per una CLI nativa scegli gli operatori autorizzati.');
+                assert(userIds.every(id=>allowed.has(id)),400,'ACCOUNT','Membro del team non disponibile per questo account.');
+                const before=new Set(account.grantedUserIds ?? []), oldShared=account.shared;
+                account.grantedUserIds=userIds; account.shared=input.shared;
+                this.store.put('account',account); this.changed(user);
+                const updated=oldShared!==account.shared ? this.store.all<User>('user').map(u=>u.id) : [...before,...userIds];
+                for(const ownerId of new Set(updated)) if(ownerId!==user.id) this.store.emit({ownerId,type:'state.changed'});
+            }
+            json(res,200,{eligible,userIds:account.grantedUserIds ?? [],shared:account.shared}); return;
+        }
+
         if (segments[1] === 'accounts' && segments[3] === 'discover' && method === 'POST') {
             const result = await this.catalog.discover(user, key, AbortSignal.timeout(45000));
             this.changed(user);
@@ -776,17 +718,20 @@ export class Application {
             return;
         }
 
-        if (segments[1] === 'accounts' && segments[3] === 'login' && method === 'POST') {
-            this.store.own<Account>(user, 'account', key);
-            const operationId = id('login');
-            const emit = (data: Record<string, unknown>) => this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'account.login', createdAt: now(), data: { operationId, accountId: key, ...data } });
-            operator(user);
-            void this.catalog.login(user, key, event => emit({ ...event, status: 'pending' }), AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(300000)])).then(async () => {
-                const result = await this.catalog.discover(user, key, AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(30000)]));
-                emit({ status: 'complete', discovered: true, models: result.models, warnings: result.warnings });
-                this.changed(user);
-            }).catch(e => emit({ status: 'error', message: safeError(e) }));
-            json(res, 202, { operationId });
+        if (segments[1] === 'accounts' && segments[3] === 'login' && segments[4] === 'respond' && segments.length === 5 && method === 'POST') {
+            const input=await body(req);
+            json(res,202,this.connections.respondNativeLogin(user,key,str(input.operationId,'Richiesta'),str(input.code,'Codice di autorizzazione',16384)));
+            return;
+        }
+
+        if (segments[1] === 'accounts' && segments[3] === 'login' && segments.length === 4 && ['GET', 'POST', 'DELETE'].includes(method)) {
+            res.setHeader('Cache-Control', 'no-store');
+            if (method === 'GET') json(res, 200, this.connections.nativeLogin(user, key));
+            else if (method === 'DELETE') json(res, 200, this.connections.cancelNativeLogin(user, key));
+            else json(res, 202, this.connections.startNativeLogin(user, key, this.shutdown.signal, state => {
+                this.store.events.emit('event', { id: 0, ownerId: user.id, type: 'account.login', createdAt: now(), data: { ...state } });
+                if (state.status === 'complete') this.changed(user);
+            }));
             return;
         }
 
@@ -799,9 +744,12 @@ export class Application {
             const account = this.store.require<Account>('account', accountId);
             this.store.own<Account>(user, 'account', account.id);
             const modelName = str(b.model, 'ID modello', 200);
-            const label = optional(b.label, 'Nome', 200) ?? modelName;
-            const contextWindow = b.contextWindow ? integer(b.contextWindow, 131072, 4096, 2000000) : 131072;
-            const capabilities = b.capabilities ? textList(b.capabilities) : ['chat', 'tools'];
+            assert(account.providerId === providerId, 400, 'ACCOUNT', 'Account e provider devono corrispondere.');
+            assert(!this.store.all<ModelRoute>('model').some(m => m.accountId === accountId && m.model === modelName), 409, 'MODEL_EXISTS', 'Modello già registrato. Modifica la rotta esistente.');
+            const label = b.label === undefined ? modelName : str(b.label, 'Nome', 200);
+            const contextWindow = b.contextWindow === undefined ? undefined : integer(b.contextWindow, 16384, 4096, 2000000);
+            const capabilities = b.capabilities ? textList(b.capabilities) : [];
+            assert(capabilities.every(c => ['chat', 'tools', 'embedding', 'vision'].includes(c)), 400, 'CAPABILITY', 'Capacità non valida.');
             const m = this.store.put<ModelRoute>('model', {
                 id: id('mdl'),
                 providerId,
@@ -812,7 +760,7 @@ export class Application {
                 resourceGroupIds: provider.resourceGroupIds,
                 contextWindow,
                 capabilities,
-                capabilitySource: 'operator',
+                capabilitySource: capabilities.length ? 'operator' : 'unknown',
                 enabled: true
             });
             this.changed(user);
@@ -827,12 +775,18 @@ export class Application {
             const b = await body(req);
             if (b.label !== undefined)
                 m.label = str(b.label, 'Nome', 200);
+            if (b.enabled !== undefined) {
+                assert(typeof b.enabled === 'boolean', 400, 'MODEL', 'Stato modello non valido.');
+                m.enabled = b.enabled;
+                m.archived = !b.enabled;
+            }
             if (b.contextWindow !== undefined)
                 m.contextWindow = integer(b.contextWindow, 16384, 4096, 2000000);
             if (b.capabilities !== undefined) {
                 m.capabilities = textList(b.capabilities);
                 assert(m.capabilities.every(x => ['chat', 'tools', 'embedding', 'vision'].includes(x)), 400, 'CAPABILITY', 'Capacità non valida.');
                 m.capabilitySource = 'operator';
+                m.capabilitiesOverridden = true;
             }
             if (b.resourceGroupIds !== undefined) {
                 m.resourceGroupIds = textList(b.resourceGroupIds);
@@ -848,7 +802,7 @@ export class Application {
             operator(user);
             const m = this.store.require<ModelRoute>('model', key);
             this.store.own<Account>(user, 'account', m.accountId);
-            this.store.delete('model', key);
+            this.store.put('model', { ...m, enabled: false, archived: true });
             this.changed(user);
             json(res, 200, { ok: true });
             return;
@@ -858,6 +812,7 @@ export class Application {
             const b = await body(req);
             const a = this.knowledge.addArtifact(user, str(b.projectId, 'Progetto'), str(b.name, 'Nome', 200), str(b.content, 'Contenuto', 1048576, true));
             this.changed(user, a.projectId);
+            this.indexLocalSources(user,a.projectId);
             json(res, 201, a);
             return;
         }
@@ -884,11 +839,7 @@ export class Application {
 
         if (pathname === '/api/memories' && method === 'POST') {
             const b = await body(req);
-            const sources = b.sourceIds === undefined ? [] : textList(b.sourceIds);
-            for (const source of sources) {
-                const allowed = ['artifact', 'memory', 'run'].some(kind => { const x = this.store.get<{ ownerId: string; projectId: string }>(kind, source); return x?.ownerId === user.id && x.projectId === b.projectId; });
-                assert(allowed, 400, 'SOURCE', 'Fonte memoria non accessibile.');
-            }
+            const sources = b.sourceIds === undefined ? [] : textList(b.sourceIds, 32);
             const m = this.knowledge.addMemory(user, str(b.projectId, 'Progetto'), { title: str(b.title, 'Titolo', 200), content: str(b.content, 'Contenuto', 100000), kind: b.kind as Memory['kind'], scope: b.scope as Memory['scope'] | undefined, sourceIds: sources });
             this.changed(user, m.projectId);
             json(res, 201, m);
@@ -897,24 +848,34 @@ export class Application {
 
         if (pathname === '/api/memories/search' && method === 'POST') {
             const b = await body(req), project = this.store.projectFor(user, str(b.projectId, 'Progetto')), query = str(b.query, 'Ricerca', 12000);
-            const options = project.routes.embedding ? { embed: this.catalog.embedder(user, project.routes.embedding), modelKey: project.routes.embedding, signal: AbortSignal.timeout(15000) } : {};
+            const options = project.routes.embedding ? { embed: this.catalog.embedder(user, project.routes.embedding), modelKey: project.routes.embedding, signal: this.shutdown.signal } : {};
             const found = await this.knowledge.retrieve(user, project.id, query, options);
             const visible = new Map(this.knowledge.visibleMemory(user, project.id).map(m => [m.id, m]));
-            json(res, 200, { results: found.filter(r => visible.has(r.id)).map(r => ({ memory: visible.get(r.id), score: r.score, method: r.method })) });
+            const seen = new Set<string>();
+            json(res, 200, { results: found.flatMap(r => {
+                if (seen.has(r.id) || !visible.has(r.id)) return [];
+                seen.add(r.id);
+                return [{ memory: visible.get(r.id), score: r.score, method: r.method, citation: r.citation }];
+            }) });
             return;
         }
 
         if (segments[1] === 'memories' && segments.length === 3 && method === 'PATCH') {
             const b = await body(req);
+            const previous = this.store.get<Memory>('memory', key);
             const m = this.knowledge.updateMemory(user, key, b);
+            if(m.status==='approved') this.indexLocalSources(user,m.projectId);
             this.changed(user, m.projectId);
+            if ((previous?.scope === 'project' && previous.status === 'approved') || (m.scope === 'project' && m.status === 'approved')) this.changedSharedMemory(user, m.projectId);
             json(res, 200, m);
             return;
         }
 
         if (segments[1] === 'memories' && segments.length === 3 && method === 'DELETE') {
+            const previous = this.store.get<Memory>('memory', key);
             this.knowledge.forget(user, key);
             this.changed(user);
+            if (previous?.scope === 'project' && previous.status === 'approved') this.changedSharedMemory(user, previous.projectId);
             json(res, 200, { ok: true });
             return;
         }
@@ -965,7 +926,7 @@ export class Application {
                     p.routes[key] = routeId;
                 }
         }
-        if (b.targetId !== undefined || b.workspace !== undefined || b.verifyRecipeIds !== undefined || b.deploymentRecipeId !== undefined) {
+        if (b.targetId !== undefined || b.workspace !== undefined || b.workspaceIsolation !== undefined || b.verifyRecipeIds !== undefined || b.deploymentRecipeId !== undefined) {
             operator(user);
             if (b.targetId !== undefined)
                 p.targetId = b.targetId ? str(b.targetId, 'Target') : undefined;
@@ -976,6 +937,11 @@ export class Application {
                 assert(!path.isAbsolute(workspace) && !workspace.split(/[\\/]/).includes('..') && !workspace.includes('\0'), 400, 'WORKSPACE', 'Workspace relativo al target richiesto.');
                 p.workspace = workspace;
             }
+            if (b.workspaceIsolation !== undefined) {
+                assert(b.workspaceIsolation === 'git-worktree' || b.workspaceIsolation === 'shared', 400, 'INVALID', 'Modalità workspace non valida.');
+                p.workspaceIsolation = b.workspaceIsolation;
+            }
+            assert(p.workspaceIsolation !== 'git-worktree' || target?.kind === 'local', 400, 'WORKTREE_TARGET', 'I worktree gestiti richiedono un target Git locale.');
             if (b.verifyRecipeIds !== undefined) {
                 p.verifyRecipeIds = textList(b.verifyRecipeIds);
                 assert(p.verifyRecipeIds.every(key => target?.commands.some(c => c.id === key && c.verification === true)), 400, 'VERIFY', 'Ricetta di verifica non valida o non marcata verification:true.');
@@ -1026,68 +992,28 @@ export class Application {
 
     static(pathname: string, method: string, res: ServerResponse): void {
         assert(method === 'GET' || method === 'HEAD', 405, 'METHOD', 'Metodo non consentito.');
-        // Map root / to the Cyberpunk Cockpit HUD
-        if (pathname === '/' || pathname === '/index.html') {
-            const indexHtml = path.resolve('static/index.html');
-            if (existsSync(indexHtml)) {
-                res.writeHead(200, {
-                    'Content-Type': 'text/html; charset=utf-8',
-                    'Cache-Control': 'no-cache',
-                    'X-Content-Type-Options': 'nosniff',
-                    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://yed1z.ai http://127.0.0.1:* ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
-                });
-                res.end(method === 'HEAD' ? undefined : readFileSync(indexHtml));
-                return;
-            }
-        }
-
-        // Map /control or /control/* to the Control Room web app
-        if (pathname === '/control' || pathname === '/control/' || pathname === '/control/index.html') {
-            const controlHtml = path.resolve(this.staticDir, 'index.html');
+        if (['/', '/index.html', '/control', '/control/', '/control/index.html', '/cockpit', '/cockpit/classic'].includes(pathname)) {
+            const controlHtml = path.resolve(this.staticDir, pathname === '/cockpit/classic' ? '../classic/index.html' : pathname === '/cockpit' ? 'cockpit.html' : 'index.html');
             if (existsSync(controlHtml)) {
                 res.writeHead(200, {
                     'Content-Type': 'text/html; charset=utf-8',
                     'Cache-Control': 'no-cache',
                     'X-Content-Type-Options': 'nosniff',
-                    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://yed1z.ai http://127.0.0.1:* ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+                    'Content-Security-Policy': pathname === '/cockpit/classic' ? historicCsp : webCsp
                 });
                 res.end(method === 'HEAD' ? undefined : readFileSync(controlHtml));
                 return;
             }
         }
 
-        // Map static assets for the HUD
-        if (pathname.startsWith('/static/')) {
-            const subpath = pathname.slice('/static/'.length);
-            const safePath = path.normalize(subpath).replace(/^(\.\.[\/\\])+/, '');
-            const filePath = path.resolve('static', safePath);
-            if (existsSync(filePath)) {
-                const ext = path.extname(filePath).toLowerCase();
-                const mimeTypes: Record<string, string> = {
-                    '.html': 'text/html; charset=utf-8',
-                    '.css': 'text/css; charset=utf-8',
-                    '.js': 'text/javascript; charset=utf-8',
-                    '.json': 'application/json; charset=utf-8',
-                    '.jpg': 'image/jpeg',
-                    '.jpeg': 'image/jpeg',
-                    '.png': 'image/png',
-                    '.svg': 'image/svg+xml',
-                    '.ico': 'image/x-icon',
-                    '.woff2': 'font/woff2'
-                };
-                const mime = mimeTypes[ext] || 'application/octet-stream';
-                res.writeHead(200, {
-                    'Content-Type': mime,
-                    'Cache-Control': 'public, max-age=3600',
-                    'X-Content-Type-Options': 'nosniff'
-                });
-                res.end(method === 'HEAD' ? undefined : readFileSync(filePath));
-                return;
-            }
-        }
-
         // Control Room Web Assets
         const files: Record<string, [string, string]> = {
+            '/static/style.css': ['../classic/style.css', 'text/css; charset=utf-8'],
+            '/static/app.js': ['../classic/app.js', 'text/javascript; charset=utf-8'],
+            '/static/assets/strix_halo_dual_cluster.jpg': ['../classic/assets/strix_halo_dual_cluster.jpg', 'image/jpeg'],
+            '/static/assets/strix_halo_die_schematic.jpg': ['../classic/assets/strix_halo_die_schematic.jpg', 'image/jpeg'],
+            '/assets/cockpit.js': ['cockpit.js', 'text/javascript; charset=utf-8'],
+            '/assets/cockpit.css': ['cockpit.css', 'text/css; charset=utf-8'],
             '/assets/app.js': ['app.js', 'text/javascript; charset=utf-8'],
             '/assets/style.css': ['style.css', 'text/css; charset=utf-8'],
             '/assets/favicon.svg': ['favicon.svg', 'image/svg+xml']
@@ -1101,7 +1027,7 @@ export class Application {
                 'Cache-Control': 'no-cache',
                 'X-Content-Type-Options': 'nosniff',
                 'Referrer-Policy': 'no-referrer',
-                'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://yed1z.ai http://127.0.0.1:* ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+                'Content-Security-Policy': webCsp
             });
             res.end(method === 'HEAD' ? undefined : readFileSync(target));
             return;
@@ -1113,21 +1039,26 @@ export class Application {
     async apiFacade(req: IncomingMessage, res: ServerResponse, user: User, pathname: string): Promise<void> {
         assert(req.headers.authorization?.startsWith('Bearer '), 401, 'AUTH', 'Le API compatibili richiedono Bearer.');
         if (pathname === '/v1/models' && req.method === 'GET') {
-            json(res, 200, { object: 'list', data: this.catalog.models(user).filter(m => m.enabled).map(m => ({ id: m.id, object: 'model', owned_by: m.providerId, name: m.label, underlying_model: m.model, context_length: m.contextWindow })) });
+            const models = this.catalog.models(user).filter(m=>m.enabled), aliases=aliasRoutes(this.config,models);
+            const data = models.map(m => ({ id: m.id, object: 'model', owned_by: m.providerId, name: m.label,
+                underlying_model: m.model, context_length: m.contextWindow, aliases:[...aliases].filter(([,routes])=>routes.some(r=>r.id===m.id)).map(([name])=>name),
+                endpoints:['codex','antigravity'].includes(this.store.require<Provider>('provider',m.providerId).kind)
+                    ? ['conversation'] : ['conversation','chat/completions','responses'] }));
+            json(res,200,{object:'list',data});
             return;
         }
-        assert(pathname === '/v1/chat/completions' && req.method === 'POST', 404, 'NOT_FOUND', 'Endpoint non supportato.');
+        const responses = pathname === '/v1/responses';
+        assert((responses || pathname === '/v1/chat/completions') && req.method === 'POST', 404, 'NOT_FOUND', 'Endpoint non supportato.');
         assert(user.role !== 'viewer', 403, 'FORBIDDEN', 'Profilo lettore.');
-        const b = await body(req), selected = str(b.model, 'Modello'), available = this.catalog.models(user);
+        const input = await body(req), b: Record<string, unknown> = responses ? fromResponses(input) : input;
+        const selected = str(b.model, 'Modello'), available = this.catalog.models(user);
         let route = available.find(m => m.id === selected);
         if (!route) {
-            const matches = available.filter(m => m.model === selected);
+            const matches = aliasRoutes(this.config, available).get(selected) ?? available.filter(m => m.model === selected && m.enabled);
             assert(matches.length <= 1, 400, 'AMBIGUOUS_MODEL', 'Più account offrono questo modello. Usa l’ID della rotta restituito da /v1/models.');
             route = matches[0];
         }
         assert(route, 404, 'MODEL', 'Modello non trovato.');
-        let resolved = this.catalog.resolve(user, route.id);
-        assert(!['codex', 'antigravity'].includes(resolved.provider.kind), 409, 'CAPABILITY', 'Usa le conversazioni dell’harness per le CLI native.');
         assert(Array.isArray(b.messages) && b.messages.length <= 200, 400, 'MESSAGES', 'Messaggi non validi.');
         const messages = b.messages.map(raw => {
             const m = object(raw);
@@ -1141,76 +1072,93 @@ export class Application {
             }
             return message;
         });
-        const tools = b.tools === undefined ? [] : (() => { assert(Array.isArray(b.tools) && b.tools.length <= 32, 400, 'TOOLS', 'Tool non validi.'); return b.tools.map(raw => { const t = object(raw); assert(t.type === 'function', 400, 'TOOLS', 'Sono supportati function tools.'); const fn = object(t.function); return { name: str(fn.name, 'Nome tool', 200), description: fn.description === undefined ? '' : str(fn.description, 'Descrizione tool', 4000, true), parameters: object(fn.parameters) }; }); })();
+        const tools = b.tools === undefined ? [] : (() => { assert(Array.isArray(b.tools) && b.tools.length <= (responses ? 128 : 32), 400, 'TOOLS', 'Tool non validi.'); return b.tools.map(raw => { const t = object(raw); assert(t.type === 'function', 400, 'TOOLS', 'Sono supportati function tools.'); const fn = object(t.function); return { name: str(fn.name, 'Nome tool', 200), description: fn.description === undefined ? '' : str(fn.description, 'Descrizione tool', responses ? 100000 : 4000, true), parameters: object(fn.parameters) }; }); })();
         assert(JSON.stringify({ messages, tools }).length <= 500000, 413, 'SIZE', 'Contesto troppo grande.');
         const controller = new AbortController();
         res.once('close', () => controller.abort());
         const signal = AbortSignal.any([controller.signal, this.shutdown.signal, AbortSignal.timeout(10 * 60000)]);
-        const lease = await new RouteRouter(this.catalog).reserve({ user, preferredRouteId: route.id, strategy: 'pinned', purpose: 'chat', nativeAllowed: false, priority: 'interactive', maxWaitMs: 8000, signal });
-        resolved = lease; route = lease.route;
-        const release = lease.release, requestId = id('chatcmpl');
-        res.setHeader('X-Yed1z-Queue-Ms', String(lease.waitMs));
-        let streamed = false;
-        const begin = () => { if (!streamed) {
-            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
-            streamed = true;
-        } };
-        const chunk = (value: unknown) => { begin(); res.write('data: ' + JSON.stringify(value) + '\n\n'); };
-        const tStart = Date.now();
-        this.inFlightCount++;
-        try {
-            await this.catalog.activate(route.providerId, signal);
-            const result = await this.orchestrator.completion({ connection: resolved.connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: integer(b.max_completion_tokens ?? b.max_tokens, route.maxOutputTokens ?? 4096, 128, 32000) }, secret: resolved.secret, messages, tools, signal, onText: text => { if (b.stream === true)
-                    chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }); } });
-            this.catalog.succeeded(resolved.account, result.quota);
-            const toolCalls = result.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }));
-            const usage = result.usage ? { prompt_tokens: result.usage.inputTokens, completion_tokens: result.usage.outputTokens, total_tokens: result.usage.inputTokens + result.usage.outputTokens } : undefined;
-            const finish = toolCalls.length ? 'tool_calls' : result.finishReason ?? 'stop';
+        const preferences = routingPreferences(user, this.catalog, b.routing, { strategy: 'pinned', fallbackRouteIds: [] });
+        let remaining = [...new Set([route.id,...(preferences.strategy==='auto' ? preferences.fallbackRouteIds : [])])];
+        const requestId = id('chatcmpl'), waitUntil = Date.now() + (preferences.maxWaitMs ?? 8000);
+        while (remaining.length) {
+            const lease = await new RouteRouter(this.catalog).reserve({ user, preferredRouteId: remaining[0], strategy: preferences.strategy,
+                alternativeRouteIds: remaining.slice(1), purpose: 'chat', requiredCapabilities: tools.length ? ['tools'] : [],
+                nativeAllowed: false, priority: 'interactive', maxWaitMs: Math.max(0,waitUntil-Date.now()), signal });
+            const resolved = lease; const route = lease.route;
+            const release = lease.release;
+            res.setHeader('X-Yed1z-Route', route.id);
+            res.setHeader('X-Yed1z-Queue-Ms', String(lease.waitMs));
+            let streamed = false, receivedText = false, inferenceStarted = false;
+            const begin = () => { if (!streamed) {
+                res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+                streamed = true;
+            } };
+            const chunk = (value: unknown) => { begin(); res.write('data: ' + JSON.stringify(value) + '\n\n'); };
+            const responseOutput = responses ? new ResponsesOutput(route.id, event => {
+                begin(); res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
+            }) : undefined;
+            if (responseOutput) responseOutput.names = b.names as ResponsesOutput['names'];
+            const tStart = Date.now();
+            this.inFlightCount++;
+            try {
+                await this.catalog.activate(route.providerId, signal);
+                inferenceStarted = true;
+                const result = await this.orchestrator.completion({ connection: resolved.connection, model: { id: route.model, contextWindow: route.contextWindow, maxOutputTokens: integer(b.max_completion_tokens ?? b.max_tokens, route.maxOutputTokens ?? 4096, 1, 32000) }, secret: resolved.secret, messages, tools, signal, onText: text => { receivedText ||= Boolean(text); if (b.stream === true && responseOutput) responseOutput.text(text); else if (b.stream === true)
+                        chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }); } });
+                this.catalog.succeeded(resolved.account, result.quota);
+                const toolCalls = result.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }));
+                const usage = result.usage ? { prompt_tokens: result.usage.inputTokens, completion_tokens: result.usage.outputTokens, total_tokens: result.usage.inputTokens + result.usage.outputTokens } : undefined;
+                const finish = toolCalls.length ? 'tool_calls' : result.finishReason ?? 'stop';
 
-            const { user: clientUser, app: clientApp } = this.identifyClientUser(req, user);
-            const durationS = Math.max(0.05, (Date.now() - tStart) / 1000);
-            const compTokens = usage?.completion_tokens ?? (result.usage ? result.usage.outputTokens : 0);
-            const promptTokens = usage?.prompt_tokens ?? (result.usage ? result.usage.inputTokens : 0);
-            recordRequestMetric(
-                route.model || selected,
-                promptTokens,
-                compTokens,
-                durationS,
-                durationS,
-                clientUser,
-                clientApp
-            );
+                this.store.db.prepare('INSERT INTO inference_usage(id,owner,route,account,input_tokens,output_tokens,total_ms,ttft_ms,decode_tps,prefill_tps,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
+                    requestId, user.id, route.id, route.accountId, usage?.prompt_tokens ?? null, usage?.completion_tokens ?? null,
+                    Date.now() - tStart, result.metrics.ttftMs ?? null, result.metrics.decodeTokensPerSecond ?? null, result.metrics.prefillTokensPerSecond ?? null, now());
 
-            if (b.stream === true) {
-                if (toolCalls.length)
-                    chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: toolCalls.map((t, index) => ({ ...t, index })) }, finish_reason: null }] });
-                chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: finish }], usage });
-                res.end('data: [DONE]\n\n');
+                if (responseOutput) {
+                    const response = responseOutput.finish(result,b.stream === true);
+                    if (b.stream === true) res.end(); else json(res,200,response);
+                    return;
+                }
+                if (b.stream === true) {
+                    if (toolCalls.length)
+                        chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: toolCalls.map((t, index) => ({ ...t, index })) }, finish_reason: null }] });
+                    chunk({ id: requestId, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: finish }], usage });
+                    res.end('data: [DONE]\n\n');
+                }
+                else
+                    json(res, 200, { id: requestId, object: 'chat.completion', model: route.id, choices: [{ index: 0, message: { role: 'assistant', content: result.text || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, finish_reason: finish }], usage });
             }
-            else
-                json(res, 200, { id: requestId, object: 'chat.completion', model: route.id, choices: [{ index: 0, message: { role: 'assistant', content: result.text || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) }, finish_reason: finish }], usage });
-        }
-        catch (error) {
-            const details = error as {
-                status?: number;
-                quota?: import('./adapters/types.ts').QuotaObservation;
-            };
-            if (details.quota)
-                this.catalog.quota(resolved.account, details.quota);
-            const status = details.status && details.status >= 400 && details.status <= 599 ? details.status : 502;
-            if (streamed) {
-                chunk({ error: { message: safeError(error), type: 'upstream_error', code: status } });
-                res.end('data: [DONE]\n\n');
+            catch (error) {
+                const details = error as {
+                    status?: number;
+                    quota?: import('./adapters/types.ts').QuotaObservation;
+                };
+                if (details.status === 429 && inferenceStarted)
+                    this.catalog.quota(resolved.account, { ...details.quota, observedAt:details.quota?.observedAt ?? now(), source:details.quota?.source ?? 'provider-headers', state:'limited' });
+                else if (details.quota) this.catalog.quota(resolved.account, details.quota);
+                if (details.status === 429 && inferenceStarted && !receivedText && !streamed && remaining.length > 1 && !signal.aborted) {
+                    remaining=remaining.filter(routeId=>routeId!==route.id);
+                    this.store.emit({ownerId:user.id,type:'routing.quota_fallback',data:{requestId,routeId:route.id}});
+                    continue;
+                }
+                const status = details.status && details.status >= 400 && details.status <= 599 ? details.status : 502;
+                if (streamed && responseOutput) {
+                    responseOutput.fail(safeError(error)); res.end();
+                } else if (streamed) {
+                    chunk({ error: { message: safeError(error), type: 'upstream_error', code: status } });
+                    res.end('data: [DONE]\n\n');
+                }
+                else {
+                    if (details.quota?.retryAfterMs !== undefined)
+                        res.setHeader('Retry-After', String(Math.ceil(details.quota.retryAfterMs / 1000)));
+                    throw new AppError(status, 'UPSTREAM', safeError(error));
+                }
             }
-            else {
-                if (details.quota?.retryAfterMs !== undefined)
-                    res.setHeader('Retry-After', String(Math.ceil(details.quota.retryAfterMs / 1000)));
-                throw new AppError(status, 'UPSTREAM', safeError(error));
+            finally {
+                this.inFlightCount = Math.max(0, this.inFlightCount - 1);
+                release();
             }
-        }
-        finally {
-            this.inFlightCount = Math.max(0, this.inFlightCount - 1);
-            release();
+            return;
         }
     }
 
@@ -1244,7 +1192,9 @@ export class Application {
             this.server.once('error', reject);
             this.server.listen(this.config.port, this.config.bind, () => resolve());
         });
+        void this.refreshEngines();
         this.timer = setInterval(() => {
+            void this.refreshEngines();
             void this.catalog.refresh(this.shutdown.signal).then(() => this.broadcastTelemetry()).catch(() => {});
         }, this.config.telemetryIntervalMs);
         this.timer.unref();
@@ -1259,9 +1209,6 @@ export class Application {
         }, 2000);
         this.loadTimer.unref();
 
-        this.probeTimer = setInterval(() => { void this.sampleClusterHardware().catch(() => {}); }, 3000);
-        this.probeTimer.unref();
-        void this.sampleClusterHardware().catch(() => {});
 
         return (this.server.address() as { port: number }).port;
     }
@@ -1269,8 +1216,8 @@ export class Application {
     async close(): Promise<void> {
         clearInterval(this.timer);
         if (this.loadTimer) clearInterval(this.loadTimer);
-        if (this.probeTimer) clearInterval(this.probeTimer);
         this.shutdown.abort();
+        await Promise.allSettled([...this.indexing.values()].map(job=>job.done));
         for (const set of this.streams.values())
             for (const stream of set)
                 stream.end();

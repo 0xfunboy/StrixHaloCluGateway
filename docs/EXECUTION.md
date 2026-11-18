@@ -16,11 +16,29 @@ percorsi locali sono canonicalizzati; due alias SSH dello stesso nodo devono
 avere lo stesso `nodeId` nella configurazione. L'orchestratore deve usare questa
 lease anche per i backend CLI nativi che possono scrivere.
 
-La release serializza le scritture nello stesso checkout. Non implementa merge
-automatici di worktree Git indipendenti: non presenta come disponibile un sistema
-di integrazione di branch paralleli. Un controllo di versione esterno e altre
-sessioni SSH possono comunque modificare i file; i tool di scrittura rilevano
-cambiamenti intervenuti rispetto al contenuto letto.
+Le missioni serializzano le scritture nello stesso checkout. Un controllo di
+versione esterno e altre sessioni SSH possono comunque modificare i file; i tool
+di scrittura rilevano cambiamenti intervenuti rispetto al contenuto letto.
+
+Su un target locale con un checkout Git principale, imposta
+`workspaceIsolation: "git-worktree"` nel progetto o nel singolo run per lavorare
+in un checkout separato e detached. La base è il commit iniziale di `HEAD`.
+Le modifiche non committate del checkout operatore restano lì. Il worktree viene
+registrato in `.git/yed1z-worktrees/` e gli sviluppatori dello stesso run lo
+usano in serie.
+
+Il run conserva commit candidato, riferimento Git della revisione, file
+modificati e allegato con il diff. L'harness verifica il commit candidato prima
+di mostrare il digest. L'operatore approva il digest per creare un nuovo branch
+`yed1z/<run>-<commit>`. La promozione verifica in una sola transazione che la
+base sia ancora quella registrata e che il nuovo riferimento sia libero.
+Il checkout e il branch dell'operatore restano disponibili per il lavoro
+corrente. Il merge del branch promosso segue le procedure del repository.
+
+Un rilascio del worktree richiede la promozione. A run concluso l'operatore può
+chiedere la pulizia del checkout promosso. Git rifiuta la rimozione se trova
+modifiche o file aggiuntivi, compresi gli ignorati. Il riferimento del candidato
+e il branch promosso preservano la consegna dopo la pulizia.
 
 ## Target locali e SSH
 
@@ -119,9 +137,12 @@ La configurazione del nodo e l'account SSH sono confini operativi essenziali.
 
 Il deploy non è un tool disponibile al modello. L'orchestratore richiede un
 rilascio tramite una ricetta configurata e il relativo controllo di ruolo.
-L'executor esegue nuovamente le verifiche della ricetta, poi presenta una
-richiesta concreta con target, workspace, argv dei passaggi, endpoint di salute
-e rollback previsto. Il grant deve riguardare questo rilascio.
+L'executor esegue nuovamente le verifiche della ricetta e confronta la revisione
+del workspace e la ricetta installata sul runner con i digest registrati.
+L'autorizzazione conserva attore, digesto, workspace, passaggi, health e rollback.
+Se la revisione cambia, la consegna torna alla verifica. Il digest del workspace
+copre commit e file di progetto, escludendo credenziali, dipendenze e directory
+di build protette dagli strumenti del workspace.
 
 Una ricetta di deploy contiene:
 

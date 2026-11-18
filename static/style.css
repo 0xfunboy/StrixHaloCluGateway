@@ -1810,3 +1810,11 @@ body:not(.crt-active) .crt-overlay {
   box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
 }
 
+
+#theme-toggle { color-scheme: dark; }
+[data-theme=light] #theme-toggle { color-scheme: light; }
+[data-motion=off] *, [data-motion=off] *::before, [data-motion=off] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}

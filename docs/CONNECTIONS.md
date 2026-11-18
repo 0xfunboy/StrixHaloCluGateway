@@ -1,4 +1,4 @@
-# Collegare modelli e account · 0.4
+# Collegare modelli e account
 
 La connessione è un'unica operazione del prodotto. Il frontend non deve più
 creare un provider, poi un account e infine richiedere manualmente la discovery.
@@ -20,6 +20,10 @@ Le opzioni avanzate includono etichetta dell'account, condivisione, associazione
 alle risorse e ID dei modelli per API prive di un catalogo. L'etichetta distingue
 due account della stessa connessione. Ripetere `Principale` riusa l'account
 personale esistente; un'etichetta differente crea un altro account.
+Gli operatori possono indicare un dominio quota quando il provider conferma
+che più credenziali condividono un limite. La riserva osservata si applica solo
+agli account dello stesso proprietario associati a quel dominio. I nomi dei
+domini sono visibili al proprietario.
 
 ## Contratto HTTP
 
@@ -32,6 +36,8 @@ contratto principale.
 | `POST /api/connections` | Collegamento, correzione credenziale, discovery e risultato recuperabile. |
 | `POST /api/connections/detect` | Ricerca limitata ai due server locali predefiniti e agli endpoint già configurati. |
 | `POST /api/accounts/:id/login` | Login ufficiale Codex asincrono, con eventi effimeri del proprietario. |
+| `GET /api/accounts/:id/login` | Ultimo stato effimero del login. Recupera il codice attivo dopo una riconnessione. |
+| `DELETE /api/accounts/:id/login` | Annulla il login in corso di quell'account. |
 
 Esempio di collegamento HTTP:
 
@@ -130,8 +136,11 @@ nella configurazione. Le richieste sono limitate a quattro in parallelo e a
 
 Il preset usa la CLI ufficiale installata sul coordinator. Ogni account conserva
 un `CODEX_HOME` privato, distinto, con permessi 0700. Il login usa il device flow
-già implementato attraverso app-server; URL e codice sono eventi effimeri
-visibili soltanto al proprietario. Non vengono copiati nella cronologia.
+di app-server. L'URL e il codice vivono in memoria e sono accessibili solo al
+proprietario mentre il login è in corso. Discovery, login e turni confermano la
+directory e il deposito credenziali effettivi di app-server. Le finestre di quota
+conservano ID del bucket, durata e fonte. I campi di identità osservati dal
+runtime non identificano il dominio di fatturazione condiviso tra profili.
 
 Il collegamento verifica prima la disponibilità dell'eseguibile nel processo del
 servizio. Una CLI installata nel terminale interattivo ma assente dal PATH di
@@ -140,7 +149,7 @@ La UI non può impostare comandi, argomenti o variabili d'ambiente arbitrari.
 
 ## Antigravity
 
-La 0.4 verifica il protocollo ACP del runtime ufficiale. Esegue `initialize` e
+Il coordinator verifica il protocollo ACP del runtime ufficiale. Esegue `initialize` e
 `session/new` in una directory temporanea vuota, senza inviare un prompt e senza
 concedere capacità di filesystem, terminale o tool. Legge soltanto le scelte di
 modello effettivamente pubblicate in `configOptions` oppure nel selettore ACP
@@ -151,22 +160,15 @@ scelta esplicita **Modello corrente della CLI Antigravity**. L'ID `current` è u
 selezione supportata dall'adapter e non il nome inventato di un modello remoto.
 Non vengono assegnate finestre di contesto o quote non riportate dal runtime.
 
-Il codice `Authentication required` del runtime conduce al passo di accesso
-ufficiale sul coordinator:
+Ogni nuovo account ha una directory privata. La CLI usa gli argomenti ufficiali
+`--gemini-dir` e `--app-data-dir` con directory XDG private e senza riusare
+la sessione keyring del servizio. L'account già associato al profilo storico
+mantiene il suo collegamento. **Accedi con Google** avvia la CLI con i parametri del profilo scelto. Apri il collegamento ufficiale, completa il consenso e incolla il codice o l’URL di ritorno nel campo riservato della Control Room. Il coordinator consegna il valore al processo in attesa e richiede una nuova sessione ACP per rilevare i modelli. La guida conserva anche il comando di accesso da terminale.
 
-```bash
-agy acp --login
-```
-
-Il comando va eseguito con lo stesso utente Unix del servizio. Al termine,
-**Riprova** verifica di nuovo la sessione. Il bridge non presenta più un URL per
-creare una chiave API come se fosse un login OAuth completato, né marca un account
-autenticato senza aver osservato una sessione valida.
-
-Antigravity mantiene un solo profilo CLI per il servizio e viene assegnato al
-ruolo sviluppatore. Una modalità sola lettura vincolante non è stata verificata
-per questo adapter; non viene impiegato come orchestratore o revisore. Gli utenti
-che vogliono una chiave Gemini usano il preset Gemini API separato.
+L'indicazione `ready` richiede una sessione ACP confermata. Le quote Antigravity
+restano sconosciute. I profili sono destinati a operatori fidati. Configura i
+permessi del runtime ufficiale per i ruoli abilitati. Per accesso via chiave,
+usa il preset Gemini API.
 
 Riferimenti ufficiali verificati il 17 novembre 2026:
 
@@ -194,9 +196,7 @@ effettivamente pubblicati dalle versioni installate e gli endpoint locali da
 ogni nodo coinvolto. Per Antigravity va verificato anche il comportamento dei
 permessi configurati nel runtime ufficiale.
 
-Evoluzioni successive: login terminale Antigravity integrato attraverso il
-contratto ufficiale di autenticazione ACP; isolamento di più profili Antigravity
-solo dopo verifica del supporto del runtime; gestione esplicita di rimozione e
-rotazione degli account; aggiornamento in background del catalogo senza
-interferire con task nativi attivi. Nessuna di queste funzioni è dichiarata già
-presente da questa release.
+Per il collaudo multiaccount Antigravity, autenticare due profili in momenti
+distinti. Verificare che il secondo richieda accesso finché il suo login resta
+incompleto, quindi inviare un prompt innocuo da ciascun account e controllare
+i modelli disponibili nelle rispettive sessioni.

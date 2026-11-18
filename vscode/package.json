@@ -2,7 +2,7 @@
   "name":"haloforge",
   "displayName":"yed1z Control Room",
   "description":"Il tuo orchestratore, le squadre di agenti, i progetti e l'infrastruttura distribuita nello stesso spazio di lavoro.",
-  "version":"0.4.0",
+  "version":"1.0.0-rc.1",
   "publisher":"funboy",
   "type":"module",
   "license":"SEE LICENSE.md",

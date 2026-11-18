@@ -9,7 +9,15 @@ export function apiPath(raw:unknown):string{
   if(typeof raw!=='string'||raw.length>1800||!raw.startsWith('/api/')||/[\\%#\s]/.test(raw)||raw.split(/[/?]/).some(part=>part==='.'||part==='..'))throw new Error('Percorso API non consentito.');
   const url=new URL(raw,'https://yed1z.invalid');
   if(url.origin!=='https://yed1z.invalid'||!/^\/api\/[a-zA-Z0-9_\/-]+$/.test(url.pathname))throw new Error('Percorso API non consentito.');
-  if(url.search&&(url.pathname!=='/api/events'||![...url.searchParams.keys()].every(key=>key==='after')||url.searchParams.getAll('after').length!==1||!/^\d{1,15}$/.test(url.searchParams.get('after')??'')))throw new Error('Parametri API non consentiti.');
+  if (url.search) {
+    const fields = [...url.searchParams.keys()];
+    const eventPath = url.pathname === '/api/events' || /^\/api\/runs\/[a-zA-Z0-9_-]+\/events$/.test(url.pathname);
+    const eventCursor = eventPath && fields.length === 1 && fields[0] === 'after' && /^\d{1,15}$/.test(url.searchParams.get('after') ?? '');
+    const sourcePath = /^\/api\/projects\/[a-zA-Z0-9_-]+\/knowledge\/sources\/[a-zA-Z0-9_-]+$/.test(url.pathname);
+    const sourceHash = sourcePath && /^[a-f0-9]{64}$/i.test(url.searchParams.get('hash') ?? '') && url.searchParams.getAll('hash').length === 1
+      && (fields.length === 1 || fields.length === 2 && /^\d{1,10}$/.test(url.searchParams.get('revision') ?? ''));
+    if (!eventCursor && !sourceHash) throw new Error('Parametri API non consentiti.');
+  }
   return url.pathname+url.search;
 }
 export async function boundedJson(response:Response):Promise<unknown>{
@@ -31,8 +39,10 @@ export class GatewayClient{
   readonly endpoint:string;private readonly token:string;
   constructor(endpoint:string,token:string){this.endpoint=gatewayUrl(endpoint);this.token=token;}
   async request(method:string,path:string,body:unknown,signal:AbortSignal):Promise<Response>{
-    if(!['GET','POST','PATCH','DELETE'].includes(method))throw new Error('Metodo API non consentito.');
+    const target = apiPath(path);
+    const delegateUpdate = method === 'PUT' && /^\/api\/accounts\/[a-zA-Z0-9_-]+\/delegates$/.test(target);
+    if(!delegateUpdate&&!['GET','POST','PATCH','DELETE'].includes(method))throw new Error('Metodo API non consentito.');
     const text=method==='GET'?undefined:JSON.stringify(body??{});if(text&&Buffer.byteLength(text)>3_000_000)throw new Error('Richiesta troppo grande.');
-    return await fetch(this.endpoint+apiPath(path),{method,signal,redirect:'error',headers:{Authorization:'Bearer '+this.token,'Content-Type':'application/json','X-Client-App':'yed1z-vscode'},...(text===undefined?{}:{body:text})});
+    return await fetch(this.endpoint+target,{method,signal,redirect:'error',headers:{Authorization:'Bearer '+this.token,'Content-Type':'application/json','X-Client-App':'yed1z-vscode'},...(text===undefined?{}:{body:text})});
   }
 }

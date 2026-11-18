@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readlink, realpath } from 'node:fs/promises';
 
 export const MAX_FILE_BYTES = 500_000;
-const EXCLUDED = new Set(['.git', 'node_modules', '.venv', 'venv', '.next', 'dist', 'build', '.ssh', '.aws', '.azure', '.gnupg', '.cloudflared', '.codex']);
+export const WORKTREE_DIRECTORY = 'yed1z-worktrees';
+const EXCLUDED = new Set(['.git', 'node_modules', '.venv', 'venv', '.next', 'dist', 'build', '.ssh', '.aws', '.azure', '.gnupg', '.cloudflared', '.codex', WORKTREE_DIRECTORY]);
 export const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 export function protectedPath(relative: string): boolean {
   return relative.split(/[\\/]/).some(part => EXCLUDED.has(part) ||
@@ -19,10 +20,15 @@ export function relativePath(value: string, label = 'path'): string {
 }
 export async function workspaceRoot(configuredRoot: string, workspace = '.'): Promise<string> {
   if (!path.isAbsolute(configuredRoot)) throw new Error('The operator must configure an absolute workspace root.');
-  relativePath(workspace, 'workspace');
   const root = await realpath(configuredRoot), target = path.resolve(root, workspace);
-  const check = new Workspace(root, new AbortController().signal);
-  await check.resolve(workspace);
+  if (/(?:^|\/)\.git\/yed1z-worktrees\/run_[a-f0-9]{32}$/u.test(workspace)) {
+    if (path.isAbsolute(workspace) || workspace.includes('\\') || workspace.split('/').includes('..') || !target.startsWith(root + path.sep)) throw new Error('Managed worktree is outside the configured root.');
+    if ((await realpath(target)) !== target) throw new Error('Managed worktree must not use a symlink.');
+  } else {
+    relativePath(workspace, 'workspace');
+    const check = new Workspace(root, new AbortController().signal);
+    await check.resolve(workspace);
+  }
   if (!(await lstat(target)).isDirectory()) throw new Error('Configured workspace is not a directory.');
   return target;
 }
@@ -84,4 +90,56 @@ export class Workspace {
       await handle.truncate(bytes.length); await handle.sync();
     } finally { await handle.close(); }
   }
+}
+
+/** Digest source and project files without enumerating credentials, dependencies and build caches. */
+export async function workspaceDigest(workspace: Workspace): Promise<string> {
+  const manifest = createHash('sha256');
+  let entries = 0;
+  let bytes = 0;
+  async function visit(directory: string, depth: number): Promise<void> {
+    workspace.signal.throwIfAborted();
+    if (depth > 64) throw new Error('Workspace exceeds the verification snapshot depth limit.');
+    await workspace.resolve(path.relative(workspace.root, directory) || '.');
+    const children = (await readdir(directory)).sort();
+    for (const name of children) {
+      const absolute = path.join(directory, name);
+      const relative = path.relative(workspace.root, absolute).split(path.sep).join('/');
+      if (protectedPath(relative)) continue;
+      workspace.signal.throwIfAborted();
+      if (++entries > 30_000) throw new Error('Workspace exceeds the verification snapshot entry limit.');
+      const info = await lstat(absolute);
+      if (info.isDirectory()) {
+        manifest.update(JSON.stringify(['directory', relative, info.mode & 0o777]));
+        await visit(absolute, depth + 1);
+        continue;
+      }
+      if (info.isSymbolicLink()) {
+        manifest.update(JSON.stringify(['symlink', relative, await readlink(absolute)]));
+        continue;
+      }
+      if (!info.isFile()) throw new Error('Workspace contains an unsupported entry for a verification snapshot.');
+      bytes += info.size;
+      if (bytes > 512 * 1024 * 1024) throw new Error('Workspace exceeds the verification snapshot byte limit.');
+      const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const opened = await file.stat();
+        if (!opened.isFile() || opened.ino !== info.ino || opened.dev !== info.dev) throw new Error('Workspace entry changed during verification.');
+        const content = createHash('sha256');
+        if (info.size > 0) {
+          const stream = file.createReadStream({ autoClose: false, signal: workspace.signal, end: info.size - 1 });
+          for await (const chunk of stream) content.update(chunk as Buffer);
+        }
+        const after = await lstat(absolute);
+        if (after.ino !== info.ino || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.mode !== info.mode) {
+          throw new Error('Workspace changed while creating the verification snapshot. Retry the check.');
+        }
+        manifest.update(JSON.stringify(['file', relative, info.mode & 0o777, content.digest('hex')]));
+      } finally {
+        await file.close();
+      }
+    }
+  }
+  await visit(workspace.root, 0);
+  return manifest.digest('hex');
 }

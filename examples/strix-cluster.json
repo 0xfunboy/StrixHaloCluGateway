@@ -41,7 +41,18 @@
       "remoteRunner":"/opt/yed1z/dist/runner.mjs","remoteConfig":"/etc/yed1z/node.json","commands":[]
     }
   ],
+  "defaultEmbeddingProviderId":"local-encoder",
   "providers": [
+    {
+      "id":"local-encoder","label":"Encoder locale CPU","kind":"openai-compatible","tag":"local","baseUrl":"http://127.0.0.1:18462/v1","enabled":true,
+      "nodeIds":[],"resourceGroupIds":[],"maxConcurrent":1,"maxEmbeddingChars":120,
+      "models":[{"model":"paraphrase-multilingual-MiniLM-L12-v2","label":"MiniLM multilingue","contextWindow":512,"capabilities":["embedding"]}]
+    },
+    {
+      "id":"gemrouter-inference","label":"GemRouter","kind":"openai-compatible","tag":"gemrouter","baseUrl":"https://gemr.airewardrop.xyz/v1","enabled":true,
+      "nodeIds":["gemrouter"],"resourceGroupIds":[],"secretEnv":"GEMROUTER_API_KEY","sharedAccount":false,
+      "models":[{"model":"gemini-3.8-flash","label":"Gemini 3.8 Flash · GemRouter","capabilities":["chat"]}]
+    },
     {
       "id":"strix-deepseek","label":"DeepSeek · Dual Strix","kind":"openai-compatible","tag":"cluster","baseUrl":"http://127.0.0.1:18231/v1","enabled":true,
       "nodeIds":["strix01","strix02"],"resourceGroupIds":["strix01-memory","strix02-memory"],
@@ -49,8 +60,8 @@
       "activation":{"targetId":"coordinator","recipeId":"strix-deepseek","modelsUrl":"http://127.0.0.1:18231/v1/models","expectedModel":"deepseek-v4.1-flash","timeoutMs":300000}
     },
     {
-      "id":"strix-qwen","label":"Qwen · Strix 01","kind":"openai-compatible","tag":"cluster","baseUrl":"http://127.0.0.1:18562/v1","enabled":true,
-      "nodeIds":["strix01"],"resourceGroupIds":["strix01-memory"],
+      "id":"strix-qwen","label":"Qwen · Strix","kind":"openai-compatible","tag":"cluster","baseUrl":"http://127.0.0.1:18562/v1","enabled":true,
+      "nodeIds":["strix01","strix02"],"resourceGroupIds":["strix01-memory","strix02-memory"],
       "models":[{"model":"qwen38-uncensored-gufo","label":"Qwen · Gufo Strix 01","contextWindow":187392,"capabilities":["chat","tools"]}],
       "activation":{"targetId":"coordinator","recipeId":"strix-qwen","modelsUrl":"http://127.0.0.1:18562/v1/models","expectedModel":"qwen38-uncensored-gufo","timeoutMs":300000}
     },
@@ -58,13 +69,13 @@
       "id":"cuda-qwen","label":"Qwen · RTX 3090","kind":"openai-compatible","tag":"local","baseUrl":"http://192.168.178.47:8080/v1","enabled":true,
       "nodeIds":["aireward"],"resourceGroupIds":["cuda3090-memory"],
       "models":[{"model":"qwen3.8-flash-next-iq3_s","label":"Qwen · Strata CUDA","contextWindow":131072,"capabilities":["chat","tools"]}],
-      "activation":{"switchUrl":"http://192.168.178.47:8090/switch","body":{"model":"qwen"},"modelsUrl":"http://192.168.178.47:8080/v1/models","expectedModel":"qwen3.8-flash-next-iq3_s","timeoutMs":300000}
+      "activation":{"switchUrl":"http://192.168.178.47:8090/switch","stop":{"url":"http://192.168.178.47:8090/stop","healthUrl":"http://192.168.178.47:8090/health"},"body":{"model":"qwen"},"modelsUrl":"http://192.168.178.47:8080/v1/models","expectedModel":"qwen3.8-flash-next-iq3_s","timeoutMs":300000}
     },
     {
       "id":"cuda-deepseek","label":"DeepSeek · RTX 3090","kind":"openai-compatible","tag":"local","baseUrl":"http://192.168.178.47:8085/v1","enabled":true,
       "nodeIds":["aireward"],"resourceGroupIds":["cuda3090-memory"],
       "models":[{"model":"deepseek-v4.1-flash","label":"DeepSeek · Strata CUDA","contextWindow":131072,"capabilities":["chat","tools"]}],
-      "activation":{"switchUrl":"http://192.168.178.47:8090/switch","body":{"model":"deepseek"},"modelsUrl":"http://192.168.178.47:8085/v1/models","expectedModel":"deepseek-v4.1-flash","timeoutMs":300000}
+      "activation":{"switchUrl":"http://192.168.178.47:8090/switch","stop":{"url":"http://192.168.178.47:8090/stop","healthUrl":"http://192.168.178.47:8090/health"},"body":{"model":"deepseek"},"modelsUrl":"http://192.168.178.47:8085/v1/models","expectedModel":"deepseek-v4.1-flash","timeoutMs":300000}
     },
     {"id":"codex","label":"Codex ufficiale","kind":"codex","command":"codex","enabled":true,"nodeIds":[],"resourceGroupIds":[]}
   ]

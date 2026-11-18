@@ -45,14 +45,33 @@ class FixtureApi implements ClientApi {
   saved?: { name: string; content: string };
   connectionGate?: Promise<void>;
   detectionGate?: Promise<void>;
+  journal: RunEvent[] = [];
   async request<T>(method: string, path: string, body?: any): Promise<T> {
     this.calls.push({ method, path, body });
     const fault = this.fault?.(method, path, body); if (fault) throw fault;
     if (path === '/api/bootstrap') return structuredClone(this.state) as T;
+    if (path === '/api/me/appearance' && method === 'PATCH') {
+      this.state.user.appearance = { ...this.state.user.appearance, ...body };
+      return structuredClone(this.state.user.appearance) as T;
+    }
+    if (path === '/api/accounts/local/delegates' && method === 'GET') return { eligible: [{ id: 'u2', name: 'Cooper', role: 'operator' }, { id: 'u3', name: 'Alex', role: 'member' }], userIds: ['u2'], shared: true } as T;
+    if (path === '/api/accounts/local/delegates' && method === 'PUT') return body as T;
+    if (path === '/api/usage') return { gateway: [{ account: 'local', route: 'qwen', requests: 2, measuredRequests: 1, inputTokens: 0, outputTokens: 15 }], conversationTurns: [{ account: 'work', route: 'remote', requests: 1, measuredRequests: 0, inputTokens: null, outputTokens: null }], missionCalls: [{ account: 'local', route: 'qwen', requests: 3, measuredRequests: 2, inputTokens: 12, outputTokens: 8 }], legacy: [] } as T;
     if (path === '/api/login' || path === '/api/logout') return { ok: true } as T;
     if (path === '/api/conversations' && method === 'POST') { const conversation = { ...this.state.conversations[0]!, id: 'c2', messages: [], projectId: body.projectId, routeId: body.routeId }; this.state.conversations.push(conversation); return structuredClone(conversation) as T; }
+    if (path === '/api/conversations/c1/branch' && method === 'POST') {
+      const original = this.state.conversations[0]!;
+      const conversation: Conversation = { ...original, id: 'branch-1', title: body.title || 'Variante', messages: original.messages.slice(0, original.messages.findIndex(message => message.id === body.messageId) + 1), branch: { conversationId: original.id, messageId: body.messageId, createdAt: now } };
+      this.state.conversations.push(conversation);
+      return structuredClone(conversation) as T;
+    }
+    if (method === 'GET' && /\/api\/runs\/[^/]+\/events\?after=/.test(path)) return { events: this.journal, nextCursor: null } as T;
     if (/\/messages$/.test(path)) { const run = runFixture('planning'); this.state.runs.push(run); return structuredClone(run) as T; }
-    if (path === '/api/memories/search') return { results: [{ memory: this.state.memories[0], score: 0.7, method: 'lexical' }] } as T;
+    if (path === '/api/projects/p1/knowledge/search') {
+      const memory = this.state.memories[0]!;
+      return { results: [{ id: 'p-sample', title: memory.title, text: memory.content, kind: 'memory', score: 0.7, method: 'lexical', citation: { sourceId: memory.id, passageId: 'p-sample', revision: 1, sourceHash: 'a'.repeat(64), excerptHash: 'b'.repeat(64), start: 0, end: 35, scope: 'private' } }], report: { mode: 'lexical', scannedPassages: 1, scannedSources: 1, usedChars: 35, maxChars: 18000, truncated: false, embeddingStatus: 'disabled' } } as T;
+    }
+    if (path.startsWith('/api/projects/p1/knowledge/sources/mem1?')) return { source: this.state.memories[0], content: 'Estratto verificabile della revisione.' } as T;
     if (path === '/api/memories/mem1' && method === 'PATCH') { Object.assign(this.state.memories[0]!, body); return structuredClone(this.state.memories[0]) as T; }
     if (path === '/api/tasks/t2/route') { this.state.runs[0]!.tasks[1]!.routeId = body.routeId; return structuredClone(this.state.runs[0]) as T; }
     if (path === '/api/tasks/t2/pause') { Object.assign(this.state.runs[0]!.tasks[1]!, { status: 'blocked', control: 'paused' }); return structuredClone(this.state.runs[0]) as T; }
@@ -83,10 +102,11 @@ class FixtureApi implements ClientApi {
   emit(event: Partial<RunEvent>): void { this.listener?.({ id: 0, ownerId: 'u1', createdAt: now, type: 'state.changed', ...event }); }
 }
 
-async function setup(t: any, api = new FixtureApi()) {
+async function setup(t: any, api = new FixtureApi(), prepare?: (window: Window) => void) {
   const dom = new JSDOM('<!doctype html><html lang="it"><body><div id="root"></div></body></html>', { url: 'https://portal.test', pretendToBeVisual: true });
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new dom.window.Event('close')); };
+  prepare?.(dom.window);
   const root = dom.window.document.getElementById('root')!;
   const app = mountApp(root, api); await app.ready;
   t.after(() => { app.dispose(); dom.window.close(); });
@@ -118,9 +138,10 @@ test('switch modello/account conserva conversazione e invia la route scelta al p
   assert.deepEqual(sent.body.permissions, { write: false, commands: false, deploy: false });
 });
 
-test('parlare durante una missione produce una istruzione persistente senza avviare una seconda missione', async t => {
+test('l’istruzione esplicita alla squadra è persistente e non avvia una seconda missione', async t => {
   const api = new FixtureApi(); api.state.runs.push(runFixture());
   const { root, dom, flush } = await setup(t, api);
+  const mode = root.querySelector<HTMLSelectElement>('#mode-select')!; mode.value = 'steer'; mode.dispatchEvent(new dom.window.Event('change'));
   const input = root.querySelector<HTMLTextAreaElement>('#message-input')!; input.value = 'Dai priorità alla sicurezza'; input.dispatchEvent(new dom.window.Event('input'));
   root.querySelector<HTMLFormElement>('#composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
   assert.equal(api.calls.filter(call => call.path.endsWith('/messages')).length, 0); assert.deepEqual(api.calls.find(call => call.path.endsWith('/steer'))?.body, { text: 'Dai priorità alla sicurezza', attachmentIds: [] });
@@ -143,13 +164,16 @@ test('memorie candidate vengono approvate esplicitamente, con fonte visibile e c
   assert.deepEqual(api.calls.find(call => call.path === '/api/memories/mem1')?.body, { status: 'approved' }); assert.match(root.querySelector('.knowledge-card')!.textContent!, /Approvata/);
 });
 
-test('ricerca memoria usa endpoint del progetto e indica metodo effettivo senza embedding fittizi', async t => {
+test('ricerca nel progetto mostra metodo e apre la fonte con revisione e impronta', async t => {
   const { root, api, click, buttonText, flush, dom } = await setup(t);
   click('[data-view="knowledge"]'); buttonText('Cerca nel contesto').click();
   const input = root.querySelector<HTMLInputElement>('#memory-search')!; input.value = 'release'; input.dispatchEvent(new dom.window.Event('input'));
   root.querySelector<HTMLFormElement>('.page-toolbar')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
-  assert.deepEqual(api.calls.find(call => call.path === '/api/memories/search')?.body, { projectId: 'p1', query: 'release' });
-  assert.match(root.querySelector('#page-view')!.textContent!, /lexical/); assert.match(root.querySelector('#page-view')!.textContent!, /Non vengono generati vettori artificiali/);
+  assert.deepEqual(api.calls.find(call => call.path === '/api/projects/p1/knowledge/search')?.body, { query: 'release' });
+  assert.match(root.querySelector('#page-view')!.textContent!, /lexical/); assert.match(root.querySelector('#page-view')!.textContent!, /revisione 1/);
+  buttonText('Apri fonte citata').click(); await flush();
+  assert.ok(api.calls.some(call => call.path === `/api/projects/p1/knowledge/sources/mem1?hash=${'a'.repeat(64)}&revision=1`));
+  assert.match(root.querySelector('dialog')!.textContent!, /Estratto verificabile/);
 });
 
 test('allegato dalla selezione native viene caricato, conservato e riferito nella richiesta', async t => {
@@ -237,7 +261,7 @@ test('un agente può essere messo in pausa, riassegnato e ripreso senza fermare 
 
 test('una missione in attesa di rilascio riceve istruzioni senza tentare una nuova missione in conflitto', async t => {
   const api = new FixtureApi(); api.state.runs.push(runFixture('awaiting_release'));
-  const { root, dom, flush } = await setup(t, api); const input = root.querySelector<HTMLTextAreaElement>('#message-input')!; input.value = 'Aggiungi un controllo prima del rilascio'; input.dispatchEvent(new dom.window.Event('input')); root.querySelector('#composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  const { root, dom, flush } = await setup(t, api); root.querySelector<HTMLSelectElement>('#mode-select')!.value = 'steer'; const input = root.querySelector<HTMLTextAreaElement>('#message-input')!; input.value = 'Aggiungi un controllo prima del rilascio'; input.dispatchEvent(new dom.window.Event('input')); root.querySelector('#composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
   assert.ok(api.calls.some(item => item.path === '/api/runs/r1/steer')); assert.equal(api.calls.some(item => item.path.endsWith('/messages')), false);
 });
 
@@ -337,6 +361,58 @@ test('il flusso HUD distingue attesa e attività, gli impulsi arrivano dagli eve
   click('#fx-toggle'); assert.equal(root.dataset.motion, 'off');
   api.emit({ type: 'context.warning', taskId: 't2', message: 'Ricerca lessicale' });
   assert.equal(root.querySelector('#activity-strip [data-activity-node="knowledge"]')!.classList.contains('packet'), false);
+});
+
+test('l’aspetto sincronizza preferenze parziali e rispetta il movimento ridotto del sistema', async t => {
+  const api = new FixtureApi();
+  api.state.user.appearance = { theme: 'system' };
+  const { root, dom, click, flush } = await setup(t, api, win => {
+    win.localStorage.setItem('theme', 'dark');
+    win.localStorage.setItem('yed1z.motion', 'off');
+    win.matchMedia = query => ({
+      matches: query.includes('reduced-motion'),
+      addEventListener() {},
+      removeEventListener() {}
+    }) as unknown as MediaQueryList;
+  });
+  assert.equal(dom.window.document.documentElement.dataset.theme, 'light');
+  assert.equal(root.dataset.motion, 'off');
+  click('#appearance-settings');
+  const dialog = root.querySelector<HTMLDialogElement>('.appearance-dialog')!;
+  assert.equal(dialog.getAttribute('aria-label'), 'Aspetto');
+  assert.match(dialog.textContent!, /movimento ridotto/);
+  assert.equal(dialog.querySelector<HTMLSelectElement>('#appearance-motion')!.value, 'off');
+  dialog.querySelector<HTMLSelectElement>('#appearance-theme')!.value = 'dark';
+  dialog.querySelector<HTMLSelectElement>('#appearance-motion')!.value = 'on';
+  dialog.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+  await flush();
+  assert.equal(dom.window.document.documentElement.dataset.theme, 'dark');
+  assert.equal(root.dataset.motion, 'off');
+  assert.equal(dom.window.localStorage.getItem('theme'), 'dark');
+  assert.equal(dom.window.localStorage.getItem('crt'), 'true');
+  assert.deepEqual(api.calls.filter(call => call.path === '/api/me/appearance').map(call => call.body), [{ theme: 'dark', motion: 'on' }]);
+  click('#appearance-settings');
+  const themeOnly = root.querySelector<HTMLDialogElement>('.appearance-dialog')!;
+  themeOnly.querySelector<HTMLSelectElement>('#appearance-theme')!.value = 'light';
+  themeOnly.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+  await flush();
+  assert.deepEqual(api.calls.filter(call => call.path === '/api/me/appearance').at(-1)?.body, { theme: 'light' });
+});
+
+test('gli ospiti usano le preferenze esistenti del cockpit senza modificare il coordinator', async t => {
+  const api = new FixtureApi(); api.state.user.id = 'guest'; api.state.user.role = 'viewer';
+  const { dom, root, click, flush } = await setup(t, api, win => {
+    win.localStorage.setItem('theme', 'light'); win.localStorage.setItem('crt', 'false');
+  });
+  assert.equal(dom.window.document.documentElement.dataset.theme, 'light');
+  assert.equal(root.dataset.motion, 'off');
+  click('#appearance-settings');
+  const dialog = root.querySelector<HTMLDialogElement>('.appearance-dialog')!;
+  dialog.querySelector<HTMLSelectElement>('#appearance-theme')!.value = 'dark';
+  dialog.querySelector('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+  await flush();
+  assert.equal(dom.window.localStorage.getItem('theme'), 'dark');
+  assert.equal(api.calls.some(call => call.path === '/api/me/appearance'), false);
 });
 
 test('le risposte deterministiche sono etichettate come servizio e non come inferenza del modello', async t => {
@@ -450,4 +526,102 @@ test('il wizard conserva hardware esistente e invia solo modifiche esplicite anc
   const service = dialog.querySelector('select')!; service.value = 'existing:cluster'; service.dispatchEvent(new dom.window.Event('change')); form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
   const existing = api.calls.filter(call => call.path === '/api/connections').at(-1)!.body;
   assert.equal('nodeIds' in existing, false); assert.equal('resourceGroupIds' in existing, false); assert.equal(existing.providerId, 'cluster');
+});
+
+test('chat esplicita e istruzioni alla squadra restano distinte durante una missione', async t => {
+  const api = new FixtureApi(); api.state.runs.push(runFixture());
+  const { root, dom, flush } = await setup(t, api);
+  const mode = root.querySelector<HTMLSelectElement>('#mode-select')!;
+  mode.value = 'chat';
+  const input = root.querySelector<HTMLTextAreaElement>('#message-input')!;
+  input.value = 'Come funziona questa verifica?'; input.dispatchEvent(new dom.window.Event('input'));
+  assert.match(root.querySelector('#composer-status')!.textContent!, /missione continua/);
+  root.querySelector('#composer')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  assert.equal(api.calls.find(call => call.path.endsWith('/messages'))?.body.mode, 'chat');
+  assert.equal(api.calls.some(call => call.path.endsWith('/steer')), false);
+});
+
+test('il blocco della prima missione apre la configurazione pertinente e conserva la bozza', async t => {
+  const api = new FixtureApi(); api.state.projects[0]!.verifyRecipeIds = [];
+  const { root, dom, buttonText } = await setup(t, api);
+  root.querySelector<HTMLSelectElement>('#mode-select')!.value = 'mission';
+  const input = root.querySelector<HTMLTextAreaElement>('#message-input')!;
+  input.value = 'Correggi l’importazione'; input.dispatchEvent(new dom.window.Event('input'));
+  assert.equal(root.querySelector<HTMLButtonElement>('#send')!.disabled, true);
+  buttonText('Configura workspace e verifiche').click();
+  const details = Array.from(root.querySelectorAll<HTMLDetailsElement>('dialog details'));
+  assert.equal(details.find(item => item.textContent?.startsWith('Workspace, verifiche e destinazione'))?.open, true);
+  assert.equal(details.find(item => item.textContent?.startsWith('Se il modello è occupato'))?.open, false);
+  assert.equal(input.value, 'Correggi l’importazione');
+});
+
+test('la scelta locale del modello è predefinita e il rifiuto di una modifica condivisa resta visibile', async t => {
+  const api = new FixtureApi();
+  api.fault = (method, path) => method === 'PATCH' && path === '/api/projects/p1' ? new ApiError('Modifica respinta', 409) : undefined;
+  const { root, click, flush } = await setup(t, api);
+  click('#model-picker');
+  const check = root.querySelector<HTMLInputElement>('#make-default-orchestrator')!;
+  assert.equal(check.checked, false);
+  check.checked = true; click('[data-route-id="remote"]'); await flush();
+  assert.match(root.querySelector('dialog .form-error')!.textContent!, /Modifica respinta/);
+  assert.match(root.querySelector('#model-label')!.textContent!, /Qwen/);
+  check.checked = false; click('[data-route-id="remote"]'); await flush();
+  assert.match(root.querySelector('#model-label')!.textContent!, /Gemini/);
+  assert.equal(api.calls.filter(call => call.method === 'PATCH' && call.path === '/api/projects/p1').length, 1);
+});
+
+test('il percorso apre eventi durevoli, filtra il grafo alla transizione selezionata e collega i rami', async t => {
+  const api = new FixtureApi(); api.state.runs.push(runFixture());
+  api.journal = [
+    { id: 12, ownerId: 'u1', projectId: 'p1', runId: 'r1', taskId: 't1', type: 'task.updated', text: 'Analisi completata', createdAt: now, data: { status: 'succeeded' } },
+    { id: 13, ownerId: 'u1', projectId: 'p1', runId: 'r1', taskId: 't2', type: 'task.updated', text: 'Sviluppo avviato', createdAt: now, data: { status: 'running' } },
+  ];
+  const { root, click, flush, dom } = await setup(t, api);
+  click('[data-view="journey"]'); await flush();
+  assert.ok(api.calls.some(call => call.path === '/api/runs/r1/events?after=0'));
+  assert.equal(root.querySelectorAll('.journey-graph .graph-task').length, 2);
+  click('#journal-event-12');
+  assert.equal(root.querySelectorAll('.journey-graph .graph-task').length, 1);
+  assert.equal(root.querySelector('#journal-event-12')!.getAttribute('aria-current'), 'true');
+  click('#journey-live'); assert.equal(root.querySelectorAll('.journey-graph .graph-task').length, 2);
+  click('[data-view="control"]'); click('#branch-thread');
+  root.querySelector('dialog form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  assert.equal(api.calls.find(call => call.path.endsWith('/branch'))?.body.messageId, 'm2');
+  assert.match(root.querySelector('#messages .branch-origin')!.textContent!, /Portale distribuito/);
+});
+
+test('Antigravity protegge la risposta di login e invia il codice solo per la richiesta attiva', async t => {
+  const api = new FixtureApi();
+  api.state.providers.push({ id: 'agy', ownerId: 'u1', label: 'Antigravity', kind: 'antigravity', nodeIds: [], resourceGroupIds: [], enabled: true, createdAt: now });
+  api.state.accounts.push({ id: 'agy-account', providerId: 'agy', ownerId: 'u1', label: 'Antigravity personale', shared: false, status: 'unknown', hasSecret: false });
+  const { root, dom, flush, click, buttonText } = await setup(t, api);
+  click('[data-view="connections"]'); buttonText('Accedi a Antigravity').click(); await flush();
+  api.emit({ type: 'account.login', data: { accountId: 'altro-account', status: 'pending', operationId: 'login-estraneo', responseRequired: true } });
+  assert.equal(root.querySelector('dialog input[type="password"]'), null);
+  api.emit({ type: 'account.login', data: { accountId: 'agy-account', status: 'pending', operationId: 'login-agy', responseRequired: true, verificationUri: 'https://accounts.google.com/o/oauth2/v2/auth' } });
+  assert.equal(root.querySelector<HTMLAnchorElement>('dialog a')!.hostname, 'accounts.google.com');
+  const code = root.querySelector<HTMLInputElement>('dialog input[type="password"]')!;
+  code.value = 'codice-temporaneo-fixture';
+  code.closest('form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  assert.equal(code.value, '');
+  assert.doesNotMatch(root.querySelector('#messages')!.textContent!, /codice-temporaneo/);
+  assert.deepEqual(api.calls.find(call => call.path === '/api/accounts/agy-account/login/respond')?.body, { operationId: 'login-agy', code: 'codice-temporaneo-fixture' });
+});
+
+test('accesso account mantiene scelte esplicite e consumi mostrano valori misurati', async t => {
+  const { root, api, dom, flush, click, buttonText } = await setup(t);
+  click('[data-view="connections"]');
+  buttonText('Accesso').click(); await flush();
+  const form = root.querySelector<HTMLFormElement>('dialog form')!;
+  const [shared, cooper, alex] = Array.from(form.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+  assert.equal(shared!.checked, true); assert.equal(cooper!.checked, true); assert.equal(alex!.checked, false);
+  shared!.click(); cooper!.click(); alex!.click();
+  form.dispatchEvent(new dom.window.Event('submit', { cancelable: true })); await flush();
+  assert.deepEqual(api.calls.find(call => call.method === 'PUT')?.body, { userIds: ['u3'], shared: false });
+  buttonText('Consumi').click(); await flush();
+  const tables = root.querySelectorAll<HTMLTableElement>('dialog table');
+  assert.equal(tables.length, 3);
+  assert.deepEqual(Array.from(tables[2]!.rows[1]!.cells).slice(-2).map(cell => cell.textContent), ['12', '8']);
+  assert.deepEqual(Array.from(tables[0]!.rows[1]!.cells).slice(-2).map(cell => cell.textContent), ['0', '15']);
+  assert.deepEqual(Array.from(tables[1]!.rows[1]!.cells).slice(-2).map(cell => cell.textContent), ['—', '—']);
 });

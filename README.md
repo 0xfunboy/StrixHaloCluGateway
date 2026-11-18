@@ -1,14 +1,12 @@
-# yed1z Control Room · 0.4.0
+# yed1z Control Room · 1.0.0-rc.1
 
 Un centro di controllo per progetti, conversazioni, conoscenza, squadre di agenti e
 infrastruttura distribuita. **Un coordinator TypeScript, la stessa applicazione in
 web e VS Code, più macchine per inferenza ed esecuzione.**
 
-Questa release evolve la tua installazione TypeScript 0.3 e conserva le variazioni
-utili dell'archivio fornito: dashboard pubblica, endpoint monitor e accesso ai
-provider dalla UI. Le infrastrutture esterne continuano a essere adattate:
-engine sui due Strix, engine CUDA sulla 3090, GemRouter e provider cloud. Non serve
-spostare tutti i modelli sul coordinator.
+Apri **Percorso** nel progetto per seguire turni, agenti, dipendenze, tentativi e verifiche. **Connessioni** collega i profili Codex e Antigravity, i motori HTTP locali o remoti e GemRouter. Il gateway espone anche l’API Responses per usare una rotta HTTP dentro Codex. Il monitor hardware è disponibile su `/cockpit` e la plancia storica su `/cockpit/classic`.
+
+Le prove del candidato e le istruzioni per account, nodi e aggiornamento sono nell’[handoff del candidato](docs/CONSEGNA-1.0-RC1.md).
 
 ## Novità della 0.4
 
@@ -84,7 +82,7 @@ configurazioni.
 ### Requisiti
 
 - Linux per il coordinator e i runner di questa release.
-- **Node 24.15+ della linea 24**, verificato con **24.22.1**.
+- **Node 24.15+ della linea 24**, verificato per questa RC con **24.18.0**.
 - Un endpoint di inferenza oppure una CLI ufficiale configurata separatamente.
 - Per SSH: host alias e chiavi già configurati, host key nota, Node e runner sul nodo.
 
@@ -124,7 +122,7 @@ workspace su cui gli agenti lavorano.
 ### Collegare VS Code
 
 ```bash
-code --install-extension artifacts/yed1z-control-room-0.4.0.vsix
+code --install-extension release/yed1z-control-room-1.0.0-rc.1.vsix --force
 ```
 
 Apri **yed1z Control Room** e scegli **Collega il gateway**. Inserisci lo stesso URL
@@ -306,15 +304,10 @@ database/vector aggiuntivi.
 - [Adapter e fonti](docs/ADAPTERS.md)
 - [Esecuzione, SSH e rilascio](docs/EXECUTION.md)
 - [Migrazione e rollback](docs/MIGRATION.md)
-- [Verifica della consegna](docs/VERIFICA.md)
+- [Verifica della RC e matrice delle prove](docs/CONSEGNA-1.0-RC1.md)
+- [Verifica storica della versione 0.4](docs/VERIFICA.md)
 
-I principali limiti residui sono il collaudo sul cluster reale, il collaudo grafico
-in browser/VS Code, worktree Git e merge paralleli, isolamento automatico dei
-processi per utenti non fidati e alta disponibilità del coordinator. Le sessioni
-native vengono ricreate dal contesto canonico: i cursori nativi non sono ancora
-persistiti nell'orchestratore 0.4. La telemetria hardware è live con campioni della
-sessione UI, non un archivio storico TSDB. L'integrazione Antigravity non dichiara
-isolamento multiaccount o quote numeriche verificabili.
+Il coordinator può creare worktree Git locali per le missioni e promuovere i candidati verificati su rami dedicati. Ogni progetto configura il proprio target e la propria ricetta di deploy. La telemetria hardware visualizza i campioni della sessione. Il registro persistente conserva eventi e uso per rotta. Gli operatori nativi usano profili dedicati. Il consenso iniziale di ogni identità Codex e Google richiede il titolare. Le percentuali di quota dipendono da ciò che il provider espone. Per i limiti operativi e le prove di questa versione consulta l’handoff della RC.
 
 Non è una fusione del codice completo di OpenCode, Pi, Goose e DSH. Il progetto
 ricostruisce il prodotto attorno alla tua infrastruttura e riusa gli adapter

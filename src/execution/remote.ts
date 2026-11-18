@@ -28,7 +28,7 @@ export async function executeRemote(request: ExecutionRequest): Promise<Executio
     const child=spawn('ssh',args,{shell:false,env:cleanEnvironment(),detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});
     let buffer='', stderr='', settled=false, done:ExecutionResult|undefined, stopping=false,spawned=false;
     const pending=new Set<string>();
-    const uncertain=(error:unknown)=>spawned&&['prepare','write','command','deploy'].includes(request.operation.kind)?new RemoteExecutionUncertainError(error instanceof Error?error.message:'Remote execution outcome unknown.'):error;
+    const uncertain=(error:unknown)=>spawned&&['prepare','write','command','verify','deploy'].includes(request.operation.kind)?new RemoteExecutionUncertainError(error instanceof Error?error.message:'Remote execution outcome unknown.'):error;
     const stop=()=>{if(stopping)return;stopping=true;const pid=child.pid;if(pid&&process.platform!=='win32'){try{process.kill(-pid,'SIGTERM');}catch{}const timer=setTimeout(()=>{try{process.kill(-pid,'SIGKILL');}catch{}},500);timer.unref();}else child.kill('SIGKILL');};
     const fail=(error:unknown)=>{if(settled)return;settled=true;cleanup();stop();reject(uncertain(error));};
     const onAbort=()=>fail(new Error('Remote execution interrupted. Side effects may have occurred; verify before retrying.'));

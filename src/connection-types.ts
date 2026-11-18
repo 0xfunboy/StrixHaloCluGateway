@@ -29,6 +29,8 @@ export interface ConnectionInput {
   baseUrl?: string;
   secret?: string;
   shared?: boolean;
+  /** Same owner's explicitly verified shared quota domain. Empty clears the binding. */
+  quotaDomain?: string;
   requestId?: string;
   nodeIds?: string[];
   resourceGroupIds?: string[];
@@ -64,3 +66,12 @@ export interface ConnectionDetection {
   }>;
   scope: string;
 }
+
+export type NativeLoginSnapshot =
+  | { accountId: string; status: 'idle' }
+  | ({ accountId: string; operationId: string } & (
+    | { status: 'starting' }
+    | { status: 'pending'; verificationUri: string; userCode?: string; responseRequired?: boolean }
+    | { status: 'complete'; discovered: true; models: ModelRoute[]; warnings: string[] }
+    | { status: 'error' | 'cancelled'; message: string }
+  ));

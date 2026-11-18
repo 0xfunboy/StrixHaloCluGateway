@@ -1,4 +1,4 @@
-# API di yed1z Control Room 0.4
+# API di yed1z Control Room 1.0 RC1
 
 Web e VS Code usano la stessa API del coordinator. I tipi pubblici sono in
 [`src/contracts.ts`](../src/contracts.ts); il comportamento HTTP è in
@@ -135,7 +135,7 @@ Gli eventi 0.4 rendono osservabili le fasi senza richiedere percentuali simulate
 | `route.queued` | `{queuedAt,waitedMs,position,candidateIds,busyResourceIds}`; attesa effettiva sulle risorse condivise dalle alternative. La posizione non è una stima del tempo residuo. |
 | `route.selected` | Decisione registrata nel task: `{requestedRouteId,chosenRouteId,switched,waitMs,reason}` quando viene effettuata la selezione iniziale; le prenotazioni successive mantengono la route scelta. |
 | `inference.started` | `{routeId}` e, nel percorso HTTP, `queueMs`/`loadMs`. |
-| `inference.completed` | Nel percorso HTTP, `{routeId,durationMs}` quando viene ricevuto il risultato. |
+| `inference.completed` | Sui percorsi HTTP e nativo, `{routeId,durationMs}` quando viene ricevuto il risultato. |
 | `routing.updated` | Snapshot effimero di disponibilità; contratto distinto dalla telemetria hardware. |
 
 `message.delta` contiene `{messageId,delta,offset}`; usare l'offset per non
@@ -149,7 +149,7 @@ contesto non sono misure di memoria GPU.
 
 | Endpoint | Contratto |
 | --- | --- |
-| `POST /api/projects` | `{name,description?,memberIds?,routes?,routing?,targetId?,workspace?,verifyRecipeIds?,deploymentRecipeId?}` → `201 Project`. |
+| `POST /api/projects` | `{name,description?,memberIds?,routes?,routing?,targetId?,workspace?,workspaceIsolation?,verifyRecipeIds?,deploymentRecipeId?}` → `201 Project`. `workspaceIsolation` accetta `shared` e `git-worktree`. |
 | `PATCH /api/projects/:id` | Stessi campi modificabili → `200 Project`; proprietario del progetto o admin. |
 | `POST /api/projects/:id/reindex` | `{}` → `{indexed,skipped}`; utente non viewer autorizzato, route embedding configurata. |
 
@@ -242,6 +242,7 @@ delle sonde sono configurazione operatore, non campi accettati dal messaggio.
   "routing": {"strategy": "auto", "fallbackRouteIds": []},
   "attachmentIds": ["art_..."],
   "permissions": {"write": true, "commands": true, "deploy": false},
+  "workspaceIsolation": "git-worktree",
   "maxIterations": 3,
   "maxParallel": 3
 }
@@ -254,6 +255,11 @@ sono al massimo 12, dello stesso proprietario e progetto. `maxIterations` e
 false. `write`/`commands` possono preautorizzare i tool previsti; `deploy` è il
 grant esplicito per la ricetta di rilascio della missione, mantenendo i gate
 di verifica del controller.
+
+`workspaceIsolation` omesso eredita il progetto. Il valore `shared` usa il
+workspace configurato. Il valore `git-worktree` crea un checkout separato alla
+radice Git locale. `parentRunId` facoltativo collega la richiesta a un run di
+origine del proprietario nello stesso progetto.
 
 Auto usa il classificatore deterministico condiviso in
 [`intent.ts`](../src/intent.ts): le normali domande vanno in chat; le direttive
@@ -309,10 +315,13 @@ propria chat HTTP; le missioni sono riservate agli operatori fidati.
 | Endpoint POST | Body | Effetto |
 | --- | --- | --- |
 | `/api/runs/:id/pause` | `{}` | Richiede l'interruzione e porta il run in pausa quando termina l'attività corrente. |
-| `/api/runs/:id/resume` | `{}` | Solo `paused`/`interrupted`, senza attività ancora in corso e con budget residuo; ricostruisce il lavoro dalle evidenze. |
+| `/api/runs/:id/resume` | `{}` | Da `paused`/`interrupted` con budget residuo. Riparte dal checkpoint conservando piano, task conclusi ed evidenze. Richiede la riconciliazione delle operazioni incerte. |
 | `/api/runs/:id/cancel` | `{}` | Annulla un run non terminale, interrompendone l'attività se presente. |
 | `/api/runs/:id/steer` | `{text,attachmentIds?}` | Persiste l'istruzione nella conversazione e nell'obiettivo, e richiede la pausa. Serve poi una ripresa esplicita. |
-| `/api/runs/:id/release` | `{}` | Operator/admin, run `awaiting_release`, verifiche superate, nessun task attivo; concede il rilascio → `202 Run`. |
+| `/api/runs/:id/reconcile` | `{operationId,outcome,note}` | Operator/admin proprietario. Registra l'esito osservato di un'operazione incerta. `outcome` accetta `applied`, `not_applied` o `rolled_back`. |
+| `/api/runs/:id/promote` | `{verificationDigest}` | Su un worktree verificato pubblica un nuovo branch Git riferito al candidato. Rifiuta conflitto e drift della base → `200 Run`. |
+| `/api/runs/:id/cleanup` | `{}` | Su un run concluso con worktree promosso, rimuove un checkout pulito mantenendo il commit e il branch → `200 Run`. |
+| `/api/runs/:id/release` | `{verificationDigest?}` | Operator/admin, run `awaiting_release`, verifiche superate, nessun task attivo. In modalità worktree richiede la promozione → `202 Run`. |
 
 Gli altri controlli restituiscono `200 Run`. La risposta a pause/cancel può
 precedere lo stato finale: osservare gli eventi. Lo steer accetta massimo
@@ -583,7 +592,7 @@ HTTP già inviato non può cambiare.
 
 `tool_choice`, `parallel_tool_calls`, `temperature`, `response_format` e altri
 parametri non sono interpretati/inoltrati. Non sono implementati contenuti
-multimodali né `/v1/responses`, `/v1/embeddings` o gestione file OpenAI.
+multimodali, embedding e gestione file sulla facciata API. `/v1/responses` supporta turni testuali stateless, function tools, namespace, risultato dello strumento e streaming.
 Tool interni e missioni usano le API di prodotto.
 
 ## Bridge webview VS Code
@@ -614,3 +623,28 @@ rifiutati. In Remote SSH, localhost è risolto dall'extension host remoto.
 
 Non esistono RPC pubblici per shell, host o percorsi assoluti arbitrari, né per
 leggere i segreti del coordinator.
+
+## Percorso e integrazioni nella 1.0 RC1
+
+| Richiesta | Risultato |
+|---|---|
+| `POST /api/conversations/:id/branch` | Riceve `messageId` e un titolo opzionale. Restituisce un nuovo thread dello stesso progetto con prefisso stabile e origine. |
+| `GET /api/runs/:id/events?after=N` | Fino a 200 eventi del run del proprietario, ordinati per ID, con `nextCursor` per la pagina seguente. |
+| `GET /api/accounts/:id/login` | Stato effimero accessibile al proprietario, riprende il dialogo di consenso dopo un refresh. |
+| `POST /api/accounts/:id/login/respond` | Per la richiesta Google in attesa accetta `operationId` e `code`, anche come URL di ritorno corrispondente. |
+| `DELETE /api/accounts/:id/login` | Annulla il processo del login relativo a quell’account. |
+| `GET /api/usage` | Uso API per account e rotta del chiamante, con turni conversazionali misurati e deduplicati fra rami. |
+| `POST /api/switch` | Richiede un operatore. `providerId` sceglie un motore con attivazione configurata. `action: "stop"` è disponibile per un profilo Strata con endpoint di arresto e health configurati. Il lease copre l’operazione. |
+| `POST /v1/responses` | Conversazioni testuali stateless con `input`, `instructions`, eventi SSE, function tools, namespace e `function_call_output`. Il client gestisce lo storico. |
+| `POST /v1/chat/completions` e `POST /v1/responses` | Accettano `routing: {"strategy":"auto","fallbackRouteIds":[...]}`. Con strategia fissa un limite provider interessa soltanto la rotta richiesta. La risposta include la rotta scelta e l’attesa nelle intestazioni `X-Yed1z-Route` e `X-Yed1z-Queue-Ms`. |
+| `GET /v1/models` | Elenca rotte accessibili, modelli a monte, alias per i client storici e interfacce supportate. Le CLI native si invocano tramite il progetto. |
+
+La configurazione di progetto, le operazioni di promozione dei worktree e la ricerca per citazione sono documentate nelle sezioni dedicate. [Handoff RC1](CONSEGNA-1.0-RC1.md) · [Knowledge](KNOWLEDGE-MEMORILLA.md)
+
+
+## Preferenze personali
+
+`PATCH /api/me/appearance` accetta le proprietà modificate del tema (`dark`, `light`, `system`) e del movimento (`on`, `off`). I campi si chiamano `theme` e `motion`. Ogni utente autenticato, inclusi i lettori, può modificare le proprie preferenze. Il cockpit legge le impostazioni con `GET /api/me/appearance`. La risposta a una modifica restituisce le preferenze aggiornate, disponibili anche in `GET /api/bootstrap` sotto `user.appearance`. Web e pannello VS Code usano la stessa identità.
+
+
+Nel rapporto personale `/api/usage`, `missionCalls` aggrega per rotta e account le invocazioni completate dagli agenti in una missione. Ogni giro di un task con strumenti conta separatamente. I contatori `inputTokens` e `outputTokens` includono solo i valori dichiarati dal provider. I vecchi eventi privi di token possono contribuire al conteggio delle richieste. La vista `conversationTurns` conta i messaggi con metriche e la vista `gateway` le richieste alla facciata HTTP.

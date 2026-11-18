@@ -67,6 +67,8 @@
     const selections = /* @__PURE__ */ new Set();
     const configured = /* @__PURE__ */ new Set();
     const states = /* @__PURE__ */ new Set();
+    const hosts = /* @__PURE__ */ new Set();
+    let hostContext;
     let saving;
     const listener = (message2) => {
       const value2 = message2.data;
@@ -87,6 +89,9 @@
         for (const handler of selections) handler({ name: value2.name, content: value2.content });
       } else if (value2.type === "connection" && typeof value2.connected === "boolean") {
         for (const handler of states) handler(value2.connected);
+      } else if (value2.type === "host-context" && typeof value2.host === "string" && typeof value2.endpoint === "string") {
+        hostContext = { endpoint: value2.endpoint, host: value2.host, ...typeof value2.workspace === "string" ? { workspace: value2.workspace } : {} };
+        for (const handler of hosts) handler(hostContext);
       } else if (value2.type === "savedFile" && saving) {
         const pending = saving;
         saving = void 0;
@@ -122,6 +127,9 @@
       configure: () => host.postMessage({ type: "configure" }),
       attachSelection: () => host.postMessage({ type: "attachSelection" }),
       openAuth: (url) => host.postMessage({ type: "openAuth", url }),
+      openCockpit: () => host.postMessage({ type: "openCockpit" }),
+      copyText: (text) => host.postMessage({ type: "copyText", text }),
+      openDiff: (text) => host.postMessage({ type: "openDiff", text }),
       saveFile(name, content, mime) {
         if (saving) return Promise.reject(new Error("Completa prima l\u2019esportazione in corso."));
         return new Promise((resolve, reject) => {
@@ -137,6 +145,12 @@
         configured.add(handler);
         return () => configured.delete(handler);
       },
+      onHost(handler) {
+        hosts.add(handler);
+        if (hostContext) handler(hostContext);
+        else host.postMessage({ type: "host-context" });
+        return () => hosts.delete(handler);
+      },
       dispose() {
         win.removeEventListener("message", listener);
         for (const request of requests.values()) {
@@ -148,6 +162,7 @@
         selections.clear();
         states.clear();
         configured.clear();
+        hosts.clear();
         saving?.reject(new Error("La vista \xE8 stata chiusa."));
         saving = void 0;
         host.postMessage({ type: "unsubscribe" });
@@ -397,7 +412,7 @@
     existingChoices.append(element("summary", "", "Usa una connessione gi\xE0 configurata"), field("Connessione", choice));
     existingChoices.open = !!options.existing || !operator;
     if (!data.providers.length && operator) existingChoices.hidden = true;
-    form.append(element("p", "wizard-step", "01 / SCEGLI LA CONNESSIONE"), choices, existingChoices, selected);
+    form.append(element("p", "wizard-step", "Scegli la connessione"), choices, existingChoices, selected);
     const detection = element("div", "connection-detection");
     const detect = element("button", "button subtle full", "Rileva servizi locali e configurati");
     detect.type = "button";
@@ -418,6 +433,8 @@
     const secretField = api.native ? field("API key", requestSecret, "Richiedi la chiave nella finestra protetta di VS Code.") : field("API key, se richiesta", secret, "Salvata in forma cifrata sul coordinator.");
     const accountLabel = input("text", "Personale, Lavoro, Account 2\u2026");
     accountLabel.maxLength = 80;
+    const quotaDomain = input("text", "Es. Team API");
+    quotaDomain.maxLength = 120;
     const providerLabel = input("text");
     providerLabel.maxLength = 120;
     const modelIds = input("text", "modello-a, modello-b");
@@ -425,6 +442,7 @@
     const advanced = element("details", "advanced connect-advanced");
     advanced.append(element("summary", "", "Personalizza nome, modelli e risorse"));
     advanced.append(field("Nome account facoltativo", accountLabel, "Se lo lasci vuoto viene creato un nome automatico."), field("Nome connessione", providerLabel), field("ID modelli manuali, facoltativi", modelIds, "Solo per servizi senza discovery. Gli ID restano dichiarati e non verificati."));
+    if (operator) advanced.append(field("Dominio quota condiviso", quotaDomain, "Usa lo stesso nome solo per credenziali con quota condivisa confermata dal provider."));
     const nodeChecks = element("div", "resource-checkboxes");
     const groupChecks = element("div", "resource-checkboxes");
     for (const node of data.nodes) {
@@ -449,8 +467,8 @@
     resultPanel.setAttribute("aria-live", "polite");
     const submit = element("button", "button primary full", "Continua");
     submit.type = "submit";
-    form.append(element("p", "wizard-step", "02 / COLLEGA E TROVA I MODELLI"), urlField, secretField, advanced, progress, resultPanel, error, submit);
-    let requestId = newId(), accountId, providerId, pending = false, detecting = false, generation = 0, nodesChanged = false, groupsChanged = false;
+    form.append(urlField, secretField, advanced, progress, resultPanel, error, submit);
+    let requestId = newId(), accountId, providerId, pending = false, detecting = false, generation = 0, nodesChanged = false, groupsChanged = false, domainChanged = false;
     const current = (attempt) => dialog.isConnected && dialog.open && generation === attempt;
     dialog.addEventListener("close", () => {
       generation++;
@@ -461,17 +479,22 @@
     groupChecks.addEventListener("change", () => {
       groupsChanged = true;
     });
+    quotaDomain.addEventListener("input", () => {
+      domainChanged = true;
+    });
     function apply() {
       if (pending) return;
       generation++;
       nodesChanged = false;
       groupsChanged = false;
+      domainChanged = false;
       detected.replaceChildren();
       const existing = data.providers.find((provider) => choice.value === `existing:${provider.id}`);
       const preset = presets.find((preset2) => preset2.id === choice.value);
       const kind = existing?.kind ?? choice.value, native = ["codex", "antigravity"].includes(kind);
+      const repairing = existing && existing.id === options.existingAccount?.providerId ? options.existingAccount : void 0;
       requestId = newId();
-      accountId = void 0;
+      accountId = repairing?.id;
       providerId = existing?.id;
       secret.value = "";
       resultPanel.hidden = true;
@@ -481,13 +504,14 @@
         tile.classList.toggle("selected", active);
         tile.setAttribute("aria-pressed", String(active));
       }
-      selected.replaceChildren(element("strong", "", existing?.label ?? preset?.label ?? "Scegli un servizio"), element("p", "", kind === "codex" ? "Usa il login ufficiale. Non servono URL o API key." : kind === "antigravity" ? "Verifichiamo la CLI e il profilo sul coordinator. Se serve il login, qui troverai il comando ufficiale." : "Una connessione, tutti i modelli rilevati."));
+      selected.replaceChildren(element("strong", "", repairing ? `${existing.label} \xB7 ${repairing.label}` : existing?.label ?? preset?.label ?? "Scegli un servizio"), element("p", "", kind === "codex" ? "Usa il login ufficiale. Non servono URL o API key." : kind === "antigravity" ? "Verifichiamo la CLI e il profilo sul coordinator. Se serve il login, qui troverai il comando ufficiale." : repairing ? "Puoi verificare la chiave salvata o inserirne una nuova per questo account." : "Il coordinator verifica la connessione e legge il catalogo."));
       url.value = existing?.baseUrl ?? preset?.url ?? "";
       url.required = !native && !existing;
       urlField.hidden = native || !!existing || ["openai", "gemini"].includes(choice.value);
       secretField.hidden = native;
       shared.disabled = native;
-      if (native) shared.checked = false;
+      shared.checked = !native && repairing?.shared === true;
+      if (api.native) requestSecret.checked = !repairing;
       nodeChecks.hidden = native || !!existing;
       groupChecks.hidden = native || !!existing;
       for (const check of nodeChecks.querySelectorAll("input")) check.checked = existing?.nodeIds.includes(check.value) ?? false;
@@ -495,7 +519,11 @@
       modelIds.closest("label").hidden = native;
       providerLabel.disabled = !!existing;
       providerLabel.value = existing?.label ?? preset?.label ?? "";
-      if (existing) accountLabel.value = `Account ${data.accounts.filter((account) => account.providerId === existing.id).length + 1}`;
+      accountLabel.value = repairing?.label ?? (existing ? `Account ${data.accounts.filter((account) => account.providerId === existing.id).length + 1}` : "");
+      quotaDomain.value = repairing?.quotaDomain ?? "";
+      choices.hidden = !!repairing;
+      existingChoices.hidden = !!repairing || !data.providers.length && operator;
+      detection.hidden = !!repairing;
       submit.textContent = kind === "codex" ? "Accedi con Codex" : kind === "antigravity" ? "Collega Antigravity" : "Collega e trova modelli";
       submit.disabled = !choice.value;
     }
@@ -521,7 +549,7 @@
         for (const candidate of result.candidates.filter((candidate2) => candidate2.status !== "unavailable")) {
           const button = element("button", "detected-service");
           button.type = "button";
-          button.append(element("strong", "", candidate.label), element("span", "", `${candidate.modelCount} modelli \xB7 ${candidate.status === "standby" ? "In standby" : "Rilevato"}`), element("small", "", candidate.baseUrl));
+          button.append(element("strong", "", candidate.label), element("span", "", candidate.message), element("small", "", candidate.baseUrl));
           button.addEventListener("click", () => {
             if (pending) return;
             choice.value = candidate.providerId && data.providers.some((provider) => provider.id === candidate.providerId) ? `existing:${candidate.providerId}` : candidate.preset;
@@ -532,6 +560,13 @@
           detected.append(button);
         }
         if (!result.candidates.some((candidate) => candidate.status !== "unavailable")) detected.append(element("p", "fine-print", "Nessun servizio rilevato. Puoi inserire l\u2019indirizzo del tuo nodo scegliendo un provider locale."));
+        const unavailable = result.candidates.filter((candidate) => candidate.status === "unavailable");
+        if (unavailable.length) {
+          const details = element("details", "advanced");
+          details.append(element("summary", "", "Servizi da verificare"));
+          for (const candidate of unavailable) details.append(element("p", "fine-print", `${candidate.label} \xB7 ${candidate.baseUrl} \xB7 ${candidate.message}`));
+          detected.append(details);
+        }
       }).catch((reason) => {
         if (current(attempt) && !pending) detected.replaceChildren(element("p", "fine-print", message(reason)));
       }).finally(() => {
@@ -550,13 +585,28 @@
       for (const warning of result.warnings ?? []) resultPanel.append(element("p", "fine-print", warning));
       if (result.status === "login-required" && result.nextAction?.kind === "login") {
         dialog.close();
-        await options.login(result.account.id);
+        await options.login(result.account.id, result.nextAction);
         return;
       }
       if (result.nextAction?.command) {
-        const code = element("pre", "connect-command", result.nextAction.command);
-        code.setAttribute("aria-label", "Comando ufficiale da eseguire sul coordinator");
+        const command = result.nextAction.command;
+        const code = element("pre", "connect-command", command);
+        code.setAttribute("aria-label", "Comando da eseguire con l\u2019utente del servizio sul coordinator");
         resultPanel.append(code);
+        const copy = element("button", "button small subtle", "Copia comando");
+        copy.type = "button";
+        copy.addEventListener("click", () => {
+          if (api.copyText) api.copyText(command);
+          else if (document2.defaultView?.navigator.clipboard) void document2.defaultView.navigator.clipboard.writeText(command);
+          else {
+            const selection = document2.getSelection();
+            const range = document2.createRange();
+            range.selectNodeContents(code);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+          }
+        });
+        resultPanel.append(copy);
       }
       if (result.nextAction?.docsUrl) {
         try {
@@ -577,7 +627,9 @@
           const button = element("button", "connected-model");
           button.type = "button";
           button.dataset.connectedModel = model.id;
-          button.append(element("span", "", model.label), element("small", "", result.status === "unverified" ? "Dichiarato \xB7 da verificare" : model.capabilities.includes("embedding") && !model.capabilities.includes("chat") ? "Embedding" : "Usa questo modello \u2197"));
+          const usable = model.enabled && options.canUse(model, result.provider) && (success || result.status === "unverified");
+          button.disabled = !usable;
+          button.append(element("span", "", model.label), element("small", "", !usable ? "Non disponibile per questa chat" : result.status === "unverified" ? "Dichiarato \xB7 da verificare" : "Usa nella conversazione"));
           button.addEventListener("click", () => {
             button.disabled = true;
             void options.connected(result, model.id).then(() => dialog.close()).catch((reason) => {
@@ -601,7 +653,7 @@
         });
         resultPanel.append(done);
       }
-      submit.textContent = result.nextAction?.label ?? "Verifica di nuovo";
+      submit.textContent = result.status === "login-required" ? "Verifica dopo l\u2019accesso" : result.nextAction?.label ?? "Verifica di nuovo";
       resultPanel.scrollIntoView?.({ block: "nearest" });
     }
     form.addEventListener("submit", (event) => {
@@ -622,6 +674,7 @@
       const payload = { preset, requestId, ...providerId ? { providerId } : {}, ...accountId ? { accountId } : {}, label: providerLabel.value.trim(), accountLabel: accountLabel.value.trim(), ...!native ? { baseUrl: url.value.trim(), modelIds: modelIds.value.split(",").map((value2) => value2.trim()).filter(Boolean) } : {}, shared: operator && !native && shared.checked };
       if (operator && !nodeChecks.hidden && nodesChanged) payload.nodeIds = Array.from(nodeChecks.querySelectorAll("input:checked")).map((input2) => input2.value);
       if (operator && !groupChecks.hidden && groupsChanged) payload.resourceGroupIds = Array.from(groupChecks.querySelectorAll("input:checked")).map((input2) => input2.value);
+      if (operator && (domainChanged || quotaDomain.value.trim())) payload.quotaDomain = quotaDomain.value.trim();
       if (!native && api.native && requestSecret.checked) payload.requestSecret = true;
       else if (!native && !api.native && secret.value) payload.secret = secret.value;
       secret.value = "";
@@ -644,6 +697,72 @@
   }
   function message(error) {
     return error instanceof Error ? error.message : "Collegamento non riuscito.";
+  }
+
+  // web/appearance.ts
+  function localAppearance(win) {
+    try {
+      const theme = win.localStorage.getItem("theme");
+      const crt = win.localStorage.getItem("crt");
+      const motion = crt === "false" ? "off" : crt === "true" ? "on" : win.localStorage.getItem("yed1z.motion");
+      return {
+        ...theme === "dark" || theme === "light" || theme === "system" ? { theme } : {},
+        ...motion === "on" || motion === "off" ? { motion } : {}
+      };
+    } catch {
+      return {};
+    }
+  }
+  function storeAppearance(win, appearance) {
+    try {
+      if (appearance.theme) win.localStorage.setItem("theme", appearance.theme);
+      if (appearance.motion) {
+        win.localStorage.setItem("crt", String(appearance.motion === "on"));
+        win.localStorage.setItem("yed1z.motion", appearance.motion);
+      }
+    } catch {
+    }
+  }
+  function createAppearance(win, render) {
+    const dark = win.matchMedia?.("(prefers-color-scheme: dark)");
+    const reduced = win.matchMedia?.("(prefers-reduced-motion: reduce)");
+    let preference = localAppearance(win);
+    const apply = () => {
+      const theme = preference.theme === "dark" || preference.theme === "light" ? preference.theme : dark?.matches === false ? "light" : "dark";
+      const motion = preference.motion !== "off" && !reduced?.matches;
+      const html = win.document.documentElement;
+      html.dataset.theme = theme;
+      html.dataset.motion = motion ? "on" : "off";
+      render(motion);
+    };
+    const storage = (event) => {
+      if (event.key === null || ["theme", "crt", "yed1z.motion"].includes(event.key)) {
+        preference = localAppearance(win);
+        apply();
+      }
+    };
+    dark?.addEventListener("change", apply);
+    reduced?.addEventListener("change", apply);
+    win.addEventListener("storage", storage);
+    apply();
+    return {
+      get value() {
+        return { theme: preference.theme ?? "system", motion: preference.motion ?? "on" };
+      },
+      get reduced() {
+        return reduced?.matches === true;
+      },
+      update(change) {
+        preference = { ...preference, ...change };
+        storeAppearance(win, change);
+        apply();
+      },
+      dispose() {
+        dark?.removeEventListener("change", apply);
+        reduced?.removeEventListener("change", apply);
+        win.removeEventListener("storage", storage);
+      }
+    };
   }
 
   // src/intent.ts
@@ -671,7 +790,7 @@
   // web/app.ts
   var labels = { queued: "In coda", planning: "Pianificazione", executing: "In esecuzione", reviewing: "Revisione", verifying: "Verifica", awaiting_release: "Pronto al rilascio", deploying: "Rilascio in corso", succeeded: "Completato", failed: "Errore", paused: "In pausa", cancelled: "Annullato", interrupted: "Interrotto", blocked: "Bloccato", running: "Al lavoro", online: "Online", offline: "Offline", stale: "Dato non recente", unknown: "Non rilevato", ready: "Disponibile", cooldown: "In attesa quota", approved: "Approvata", candidate: "Da confermare", retired: "Archiviata", pending: "Da approvare", denied: "Negata", expired: "Scaduta" };
   var roleLabels = { primary: "Orchestratore", coder: "Sviluppatore", researcher: "Ricercatore", reviewer: "Revisore", tester: "Verificatore", release: "Release", admin: "Amministratore", operator: "Operatore", member: "Membro", viewer: "Osservatore" };
-  var paths = { grid: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z", activity: "M2 12h4l3-8 5 16 3-8h5", layers: "m12 3 10 6-10 6L2 9zM2 15l10 6 10-6M2 12l10 6 10-6", plug: "M8 3v5M16 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v5", rocket: "M14 4c3-2 6-2 6-2s0 3-2 6l-6 6-5-5zM8 8l-4 1-2 4 5-1M14 14l-1 5-4 2 1-6M5 16l-2 5 5-2M14 6h.01", plus: "M12 5v14M5 12h14", close: "m6 6 12 12M6 18 18 6", menu: "M4 6h16M4 12h16M4 18h16", down: "m6 9 6 6 6-6", up: "m6 15 6-6 6 6M12 9v12", arrow: "M5 12h14m-6-6 6 6-6 6", refresh: "M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 2M18 18A8 8 0 0 1 5 16", server: "M4 3h16v7H4zM4 14h16v7H4zM7 6h.01M7 17h.01M11 6h6M11 17h6", chip: "M6 6h12v12H6zM9 9h6v6H9zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4", cloud: "M6 18a4 4 0 0 1-1-8 7 7 0 0 1 13-2 5 5 0 0 1 0 10z", people: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-4M16 3a4 4 0 0 1 0 8", code: "m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18", check: "m5 12 4 4L19 6", checkSquare: "M9 11l3 3L22 4M21 12v8H3V2h12", file: "M14 2H5v20h14V7zM14 2v6h5M8 12h8M8 16h6", upload: "M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5", download: "M12 3v13m-5-5 5 5 5-5M4 16v5h16v-5", search: "M21 21l-6-6M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0", settings: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2", logout: "M9 3H3v18h6M9 12h13m-4-4 4 4-4 4", paperclip: "m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l9-9M6 15l9-9", pause: "M7 4v16M17 4v16", play: "m6 3 15 9-15 9z", stop: "M5 5h14v14H5z", edit: "m15 4 5 5M3 21l6-1L21 8a3 3 0 0 0-5-5L4 15z", trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7", info: "M12 8h.01M12 11v6M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0", book: "M3 3h6a3 3 0 0 1 3 3v15a3 3 0 0 0-3-3H3zM21 3h-6a3 3 0 0 0-3 3v15a3 3 0 0 1 3-3h6z", terminal: "m4 5 6 7-6 7M12 19h8", share: "M6 12h12M12 6v12M6 3h.01M18 3h.01", shield: "m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6zM8 12l3 3 5-6" };
+  var paths = { grid: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z", activity: "M2 12h4l3-8 5 16 3-8h5", layers: "m12 3 10 6-10 6L2 9zM2 15l10 6 10-6M2 12l10 6 10-6", plug: "M8 3v5M16 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v5", rocket: "M14 4c3-2 6-2 6-2s0 3-2 6l-6 6-5-5zM8 8l-4 1-2 4 5-1M14 14l-1 5-4 2 1-6M5 16l-2 5 5-2M14 6h.01", plus: "M12 5v14M5 12h14", close: "m6 6 12 12M6 18 18 6", menu: "M4 6h16M4 12h16M4 18h16", down: "m6 9 6 6 6-6", up: "m6 15 6-6 6 6M12 9v12", arrow: "M5 12h14m-6-6 6 6-6 6", refresh: "M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 2M18 18A8 8 0 0 1 5 16", server: "M4 3h16v7H4zM4 14h16v7H4zM7 6h.01M7 17h.01M11 6h6M11 17h6", chip: "M6 6h12v12H6zM9 9h6v6H9zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4", cloud: "M6 18a4 4 0 0 1-1-8 7 7 0 0 1 13-2 5 5 0 0 1 0 10z", people: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-4M16 3a4 4 0 0 1 0 8", code: "m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18", check: "m5 12 4 4L19 6", checkSquare: "M9 11l3 3L22 4M21 12v8H3V2h12", file: "M14 2H5v20h14V7zM14 2v6h5M8 12h8M8 16h6", upload: "M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5", download: "M12 3v13m-5-5 5 5 5-5M4 16v5h16v-5", search: "M21 21l-6-6M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0", settings: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2", logout: "M9 3H3v18h6M9 12h13m-4-4 4 4-4 4", paperclip: "m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l9-9M6 15l9-9", pause: "M7 4v16M17 4v16", play: "m6 3 15 9-15 9z", stop: "M5 5h14v14H5z", edit: "m15 4 5 5M3 21l6-1L21 8a3 3 0 0 0-5-5L4 15z", trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7", info: "M12 8h.01M12 11v6M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0", book: "M3 3h6a3 3 0 0 1 3 3v15a3 3 0 0 0-3-3H3zM21 3h-6a3 3 0 0 0-3 3v15a3 3 0 0 1 3-3h6z", terminal: "m4 5 6 7-6 7M12 19h8", share: "M6 12h12M12 6v12M6 3h.01M18 3h.01", shield: "m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6zM8 12l3 3 5-6", appearance: "M12 3a9 9 0 1 0 0 18V3zm0 0a9 9 0 0 1 0 18" };
   var activeRunStatuses = /* @__PURE__ */ new Set(["queued", "planning", "executing", "reviewing", "verifying", "deploying"]);
   var closedRunStatuses = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
   function mountApp(root, api) {
@@ -706,14 +825,34 @@
     connected = false;
     searchQuery = "";
     searchResults;
+    sourceDialog;
+    knowledgeEpoch = 0;
     autonomy = { write: false, commands: false, deploy: false, maxIterations: 3, maxParallel: 3 };
+    nextWorkspaceIsolation;
     accountLoginDialog;
+    loginAccountId;
+    loginTimer;
+    loginFingerprint;
+    loginFallback;
+    accountSearch = "";
     routingOverrides = /* @__PURE__ */ new Map();
     streamFrame;
     packetTimer;
     motionEnabled = true;
+    appearance;
+    appearanceRevision = 0;
+    appearanceWrites = 0;
+    appearanceQueue = Promise.resolve();
     messageLimit = 80;
     modelPickerRender;
+    journeyQuery = "";
+    journeyEventId;
+    journal = /* @__PURE__ */ new Map();
+    journalLoading = /* @__PURE__ */ new Set();
+    journalErrors = /* @__PURE__ */ new Map();
+    host;
+    identityEpoch = 0;
+    renderedConversationId = "";
     constructor(root, api) {
       this.root = root;
       this.api = api;
@@ -724,29 +863,30 @@
       <div class="brand-row"><a href="#control" class="brand" aria-label="yed1z Control Room">yed1z<span class="brand-dot">.</span></a><span class="brand-tag">QUANTUM<br>// HALO</span></div>
       <div class="project-label"><span class="eyebrow">IL TUO PROGETTO</span><button id="new-project" class="icon-button" title="Nuovo progetto" aria-label="Nuovo progetto"></button></div>
       <label class="sr-only" for="project-select">Progetto attivo</label><select id="project-select" class="project-switch"><option value="">Scegli un progetto</option></select>
-      <nav class="nav" aria-label="Sezioni"><button class="nav-item active" data-view="control" aria-current="page">Chat e squadra</button><button class="nav-item" data-view="infrastructure">Dashboard cluster</button><button class="nav-item" data-view="knowledge">Conoscenza</button><button class="nav-item" data-view="connections">Modelli e account</button><button class="nav-item" data-view="releases">Consegne e rilasci</button></nav>
+      <nav class="nav" aria-label="Sezioni"><button class="nav-item active" data-view="control" aria-current="page">Chat e squadra</button><button class="nav-item" data-view="journey">Percorso del progetto</button><button class="nav-item" data-view="knowledge">Conoscenza</button><button class="nav-item" data-view="infrastructure">Dashboard cluster</button><button class="nav-item" data-view="connections">Modelli e account</button><button class="nav-item" data-view="releases">Consegne e rilasci</button></nav>
       <div class="sidebar-line"></div><div class="history-heading"><span class="eyebrow">CONVERSAZIONI</span><button id="new-conversation" class="icon-button" title="Nuova conversazione" aria-label="Nuova conversazione"></button></div>
       <label class="sr-only" for="history-search">Cerca una conversazione</label><input id="history-search" class="history-search" type="search" placeholder="Cerca nelle tue conversazioni\u2026" autocomplete="off"><div class="history" id="history"></div>
       <div class="sidebar-footer"><div class="avatar" id="user-avatar">y</div><div class="user-copy"><strong id="user-name">Il tuo spazio</strong><small id="user-role">Connessione\u2026</small></div><button class="icon-button" id="user-action" aria-label="Esci" title="Esci"></button></div></aside>
       <button class="sidebar-backdrop" id="sidebar-backdrop" aria-label="Chiudi navigazione"></button>
-      <main class="workspace"><header class="topbar"><div class="row"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Apri navigazione"></button><div><div class="breadcrumb" id="breadcrumb">DISTRIBUTED AGENT WORKSTATION</div><h1 id="page-title">Chat e squadra</h1></div></div><div class="topbar-actions"><button class="button subtle fx-toggle" id="fx-toggle" aria-label="Disattiva animazioni" aria-pressed="true">FX ON</button><button class="button subtle" id="quick-connect"><span>Collega modello</span></button><span class="connection-state" id="connection-state"><i class="status-dot"></i>COLLEGAMENTO</span><button class="button primary" id="guest-login-btn" hidden style="font-weight:700">Accedi</button><button class="button subtle" id="project-settings"><span>Progetto</span></button><button class="button subtle mobile-team-button" id="show-team"><span>Squadra</span></button></div></header>
-      <section class="fleet-ribbon" id="fleet-ribbon" aria-label="Stato dell'infrastruttura"></section><div class="banner" id="banner" role="status" hidden><span></span><button class="icon-button" id="close-banner" aria-label="Chiudi avviso"></button></div>
+      <main class="workspace"><header class="topbar"><div class="row"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Apri navigazione"></button><div><div class="breadcrumb" id="breadcrumb">DISTRIBUTED AGENT WORKSTATION</div><h1 id="page-title">Chat e squadra</h1></div></div><div class="topbar-actions"><button class="icon-button appearance-button" id="appearance-settings" aria-label="Aspetto" aria-haspopup="dialog" title="Aspetto"></button><button class="button subtle fx-toggle" id="fx-toggle" aria-label="Disattiva animazioni" aria-pressed="true">FX ON</button><button class="button subtle" id="quick-connect"><span>Collega modello</span></button><span class="connection-state" id="connection-state"><i class="status-dot"></i>COLLEGAMENTO</span><button class="button primary" id="guest-login-btn" hidden style="font-weight:700">Accedi</button><button class="button subtle" id="project-settings"><span>Progetto</span></button><button class="button subtle mobile-team-button" id="show-team"><span>Squadra</span></button></div></header>
+      <p class="host-context" id="host-context" hidden></p><section class="fleet-ribbon" id="fleet-ribbon" aria-label="Stato dell'infrastruttura"></section><div class="banner" id="banner" role="status" hidden><span></span><button class="icon-button" id="close-banner" aria-label="Chiudi avviso"></button></div>
       <div class="content" id="content"><section class="control-room" id="control-view" aria-label="Control room"><section class="conversation" aria-label="Orchestratore e conversazione"><header class="conversation-heading"><div><h2><i class="role-orb"></i>Il tuo orchestratore</h2><p id="conversation-subtitle">Un obiettivo. Una squadra. Tutto sotto controllo.</p></div><div class="conversation-actions"><button id="export-conversation" class="icon-button export-button" aria-label="Esporta conversazione" title="Esporta conversazione"></button><button id="context-info" class="icon-button" aria-label="Contesto dell'ultima attivit\xE0" title="Contesto dell'ultima attivit\xE0"></button></div></header>
-      <div id="activity-strip" class="activity-strip"></div><div id="messages" class="messages" role="log" aria-label="Messaggi" aria-live="off"></div><div class="composer-wrap"><form id="composer" class="composer"><div id="attachments-preview" class="attachments-preview" hidden></div><label class="sr-only" for="message-input">Parla con il tuo orchestratore</label><textarea id="message-input" rows="3" maxlength="100000" placeholder="Descrivi il risultato che vuoi ottenere. Al resto lavoriamo insieme." required></textarea><div class="composer-tools"><button id="attach-file" class="icon-button" type="button" aria-label="Allega un documento" title="Allega un documento"></button><button id="model-picker" class="model-button" type="button" aria-haspopup="dialog"><span id="model-label">Scegli modello e account</span></button><label class="sr-only" for="mode-select">Modalit\xE0</label><select id="mode-select"><option value="auto">Auto</option><option value="chat">Chat diretta</option><option value="mission">Squadra</option></select><button id="routing-policy" class="routing-button" type="button" title="Disponibilit\xE0 e alternative autorizzate">Auto</button><button id="mission-settings" class="icon-button" type="button" aria-label="Autonomia e limiti" title="Autonomia e limiti"></button><button id="send" class="send" type="submit" aria-label="Invia all'orchestratore"></button><button id="stop" class="send stop" type="button" aria-label="Interrompi attivit\xE0" hidden></button></div></form><div class="composer-caption"><span id="composer-status">Il contesto resta nel progetto.</span><span class="keyboard-hint">Invio \u21B5 \xB7 A capo \u21E7\u21B5</span></div></div></section>
+      <div class="work-nav" aria-label="Dettagli del progetto"><button class="text-button" id="open-journey" type="button">Percorso</button><button class="text-button" id="open-cluster" type="button">Cluster</button><button class="text-button" id="branch-thread" type="button" hidden>Crea ramo</button></div><div id="activity-strip" class="activity-strip"></div><div id="messages" class="messages" role="log" aria-label="Messaggi" aria-live="off"></div><div class="composer-wrap"><div id="composer-next" class="composer-next" hidden></div><form id="composer" class="composer"><div id="attachments-preview" class="attachments-preview" hidden></div><label class="sr-only" for="message-input">Parla con il tuo orchestratore</label><textarea id="message-input" rows="3" maxlength="100000" placeholder="Scrivi al tuo orchestratore\u2026" required></textarea><div class="composer-tools"><button id="attach-file" class="icon-button" type="button" aria-label="Allega un documento" title="Allega un documento"></button><button id="model-picker" class="model-button" type="button" aria-haspopup="dialog"><span id="model-label">Scegli modello e account</span></button><label class="sr-only" for="mode-select">Modalit\xE0</label><select id="mode-select"><option value="auto">Auto</option><option value="chat">Chat diretta</option><option value="mission">Squadra</option></select><button id="routing-policy" class="routing-button" type="button" title="Disponibilit\xE0 e alternative autorizzate">Routing</button><button id="mission-settings" class="icon-button" type="button" aria-label="Autonomia e limiti" title="Autonomia e limiti"></button><button id="send" class="send" type="submit" aria-label="Invia all'orchestratore"></button><button id="stop" class="send stop" type="button" aria-label="Interrompi attivit\xE0" hidden></button></div></form><div class="composer-caption"><span id="composer-status" role="status">Il contesto resta nel progetto.</span><span class="keyboard-hint">Invio \u21B5 \xB7 A capo \u21E7\u21B5</span></div></div></section>
       <aside class="team-panel" aria-label="Squadra di agenti"><header class="team-header"><div class="row spread"><h2 class="row" id="team-title">La tua squadra</h2><button class="icon-button close-team" id="close-team" aria-label="Chiudi squadra"></button></div><p id="team-subtitle">Agenti, modelli e avanzamento in tempo reale.</p></header><div class="team-body" id="team-body"></div><div class="task-detail" id="task-detail" hidden></div><footer class="team-footer"><span id="team-footer-left">Nessuna attivit\xE0 in corso</span><span id="team-footer-right"></span></footer></aside></section><section id="page-view" class="page" hidden></section></div></main></div><div class="toast-stack" id="toasts" role="status" aria-live="polite"></div><input id="file-input" type="file" accept=".md,.txt,.json,.csv,.ts,.tsx,.js,.py,.go,.rs,.yaml,.yml,.toml,.log,text/*,application/json" multiple hidden>`;
       this.installIcons();
       this.bind();
       this.syncNavigation();
-      try {
-        this.motionEnabled = this.win.localStorage.getItem("yed1z.motion") !== "off" && !this.win.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-      } catch {
-      }
-      this.applyMotion();
+      this.appearance = createAppearance(this.win, (enabled) => this.applyMotion(enabled));
+      this.disposers.push(() => this.appearance.dispose());
       if (api.onSelection) this.disposers.push(api.onSelection((selection) => {
         void this.uploadText(selection.name, selection.content, true);
       }));
+      if (api.onHost) this.disposers.push(api.onHost((host) => {
+        this.host = host;
+        this.renderHost();
+      }));
       if (api.onConfigured) this.disposers.push(api.onConfigured(() => {
-        this.loginDialog?.close();
+        this.clearPrivateView();
         void this.refresh(true);
       }));
       void this.refresh(true);
@@ -816,10 +956,10 @@
       return select;
     }
     installIcons() {
-      const ids = { "new-project": "plus", "new-conversation": "plus", "user-action": this.api.native ? "settings" : "logout", "mobile-menu": "menu", "project-settings": "settings", "show-team": "people", "close-banner": "close", "export-conversation": "download", "context-info": "layers", "attach-file": "paperclip", "mission-settings": "settings", send: "up", stop: "stop", "close-team": "close", "guest-login-btn": "shield", "quick-connect": "plug" };
+      const ids = { "new-project": "plus", "new-conversation": "plus", "user-action": this.api.native ? "settings" : "logout", "mobile-menu": "menu", "project-settings": "settings", "show-team": "people", "close-banner": "close", "export-conversation": "download", "context-info": "layers", "attach-file": "paperclip", "mission-settings": "settings", send: "up", stop: "stop", "close-team": "close", "guest-login-btn": "shield", "quick-connect": "plug", "appearance-settings": "appearance" };
       for (const [id, icon] of Object.entries(ids)) this.q(`#${id}`).prepend(this.icon(icon));
       this.q("#team-title").prepend(this.icon("people"));
-      const navigation = { control: "grid", infrastructure: "activity", knowledge: "book", connections: "plug", releases: "rocket" };
+      const navigation = { control: "grid", journey: "layers", infrastructure: "activity", knowledge: "book", connections: "plug", releases: "rocket" };
       for (const [view, icon] of Object.entries(navigation)) this.q(`[data-view="${view}"]`).prepend(this.icon(icon));
       this.q("#model-picker").append(this.icon("down"));
       this.q("#quick-connect").setAttribute("aria-label", "Collega un modello");
@@ -849,9 +989,14 @@
         this.conversationId = "";
         this.runId = "";
         this.taskId = "";
+        this.journeyEventId = void 0;
+        this.searchQuery = "";
+        this.searchResults = void 0;
         this.chooseConversation();
         this.restoreDraft();
+        this.savePosition();
         this.render();
+        this.loadJournalIfVisible();
       });
       this.q("#history-search").addEventListener("input", () => this.renderHistory());
       this.q("#new-project").addEventListener("click", () => this.projectDialog());
@@ -859,17 +1004,11 @@
       this.q("#new-conversation").addEventListener("click", () => {
         void this.newConversation();
       });
-      this.q("#model-picker").addEventListener("click", () => this.modelDialog());
-      this.q("#routing-policy").addEventListener("click", () => this.modelDialog());
+      this.q("#model-picker").addEventListener("click", () => this.data?.user.id === "guest" ? this.showLogin() : this.routeId ? this.modelDialog() : this.connectionDialog());
+      this.q("#routing-policy").addEventListener("click", () => this.routingDialog());
       this.q("#quick-connect").addEventListener("click", () => this.data?.user.id === "guest" ? this.showLogin() : this.connectionDialog());
-      this.q("#fx-toggle").addEventListener("click", () => {
-        this.motionEnabled = !this.motionEnabled;
-        this.applyMotion();
-        try {
-          this.win.localStorage.setItem("yed1z.motion", this.motionEnabled ? "on" : "off");
-        } catch {
-        }
-      });
+      this.q("#appearance-settings").addEventListener("click", () => this.appearanceDialog());
+      this.q("#fx-toggle").addEventListener("click", () => this.appearance.reduced ? this.appearanceDialog() : void this.saveAppearance({ motion: this.motionEnabled ? "off" : "on" }));
       this.q("#composer").addEventListener("submit", (event) => {
         event.preventDefault();
         void this.send();
@@ -886,9 +1025,12 @@
       });
       this.q("#mode-select").addEventListener("change", () => this.updateComposer());
       this.q("#stop").addEventListener("click", () => {
-        const run = this.currentRun;
+        const run = this.activeChat ?? this.activeMission;
         if (run) void this.runAction(run, "cancel");
       });
+      this.q("#open-journey").addEventListener("click", () => this.setView("journey"));
+      this.q("#open-cluster").addEventListener("click", () => this.setView("infrastructure"));
+      this.q("#branch-thread").addEventListener("click", () => this.branchDialog());
       this.q("#attach-file").addEventListener("click", () => this.attachmentDialog());
       this.q("#file-input").addEventListener("change", (event) => {
         const input = event.target;
@@ -957,8 +1099,17 @@
     get conversation() {
       return this.data?.conversations.find((item) => item.id === this.conversationId);
     }
+    get conversationRuns() {
+      return this.data?.runs.filter((item) => item.conversationId === this.conversationId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) ?? [];
+    }
+    get activeMission() {
+      return this.conversationRuns.find((run) => run.mode === "mission" && !closedRunStatuses.has(run.status));
+    }
+    get activeChat() {
+      return this.conversationRuns.find((run) => run.mode === "chat" && !closedRunStatuses.has(run.status));
+    }
     get currentRun() {
-      return this.data?.runs.find((item) => item.id === this.runId) ?? this.data?.runs.filter((item) => item.conversationId === this.conversationId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      return this.conversationRuns.find((item) => item.id === this.runId) ?? this.activeMission ?? this.conversationRuns[0];
     }
     get canWrite() {
       return !!this.data && this.data.user.role !== "viewer";
@@ -979,26 +1130,81 @@
       const kind = this.provider(route.providerId)?.kind;
       return route.enabled && !(route.capabilities.includes("embedding") && !route.capabilities.includes("chat")) && (this.operator || !["codex", "antigravity"].includes(kind ?? ""));
     }
+    routeCompatible(route) {
+      const kind = this.provider(route.providerId)?.kind;
+      return !["codex", "antigravity"].includes(kind ?? "") || this.data?.targets.some((target) => target.id === this.project?.targetId && target.kind === "local") === true;
+    }
     get routing() {
       return this.routingOverrides.get(this.projectId) ?? this.project?.routing ?? { strategy: "auto", fallbackRouteIds: [] };
     }
     availability(routeId) {
       return this.data?.routeAvailability?.find((item) => item.routeId === routeId);
     }
-    applyMotion() {
-      this.root.dataset.motion = this.motionEnabled ? "on" : "off";
+    applyMotion(enabled) {
+      this.motionEnabled = enabled;
+      this.root.dataset.motion = enabled ? "on" : "off";
       const button = this.q("#fx-toggle");
-      button.textContent = this.motionEnabled ? "FX ON" : "FX OFF";
-      button.setAttribute("aria-pressed", String(this.motionEnabled));
-      button.setAttribute("aria-label", this.motionEnabled ? "Disattiva animazioni" : "Attiva animazioni");
+      button.textContent = enabled ? "FX ON" : "FX OFF";
+      const reduced = this.win.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      button.setAttribute("aria-pressed", String(enabled));
+      button.setAttribute("aria-label", reduced ? "Effetti ridotti dal sistema. Apri impostazioni" : enabled ? "Disattiva animazioni" : "Attiva animazioni");
+    }
+    async saveAppearance(change) {
+      if (!Object.keys(change).length) return;
+      const revision = ++this.appearanceRevision;
+      this.appearance.update(change);
+      if (!this.data?.user.id || this.data.user.id === "guest") return;
+      const epoch = this.identityEpoch;
+      this.appearanceWrites++;
+      this.appearanceQueue = this.appearanceQueue.then(async () => {
+        try {
+          if (this.disposed || epoch !== this.identityEpoch) return;
+          const saved = await this.api.request("PATCH", "/api/me/appearance", change);
+          if (!this.disposed && epoch === this.identityEpoch && revision === this.appearanceRevision && saved) this.appearance.update(saved);
+        } catch {
+          if (!this.disposed && epoch === this.identityEpoch) this.showBanner("Preferenze attive qui. Il salvataggio sul tuo account non \xE8 riuscito.", true);
+        } finally {
+          this.appearanceWrites--;
+        }
+      });
+      await this.appearanceQueue;
+    }
+    appearanceDialog() {
+      const { dialog, body } = this.modal("Aspetto", "", "appearance-dialog");
+      const previous = this.appearance.value;
+      const theme = this.select([{ value: "system", label: "Come il sistema" }, { value: "light", label: "Chiaro" }, { value: "dark", label: "Scuro" }], previous.theme);
+      const motion = this.select([{ value: "on", label: "Attivi" }, { value: "off", label: "Disattivati" }], previous.motion);
+      theme.id = "appearance-theme";
+      motion.id = "appearance-motion";
+      const form = this.el("form");
+      const save = this.el("button", "button primary", "Salva");
+      save.type = "submit";
+      const actions = this.el("div", "dialog-actions");
+      actions.append(save);
+      form.append(this.field("Tema", theme), this.field("Effetti visivi", motion, this.appearance.reduced ? "Il sistema richiede movimento ridotto e limita gli effetti." : void 0), actions);
+      body.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const change = {};
+        if (theme.value !== previous.theme) change.theme = theme.value;
+        if (motion.value !== previous.motion) change.motion = motion.value;
+        dialog.close();
+        void this.saveAppearance(change);
+      });
+      theme.focus();
     }
     paintStream() {
       if (this.streamFrame !== void 0 || this.disposed) return;
       this.streamFrame = this.win.requestAnimationFrame(() => {
         this.streamFrame = void 0;
         if (this.disposed) return;
-        this.renderMessages();
-        if (this.taskId) this.renderTaskDetail();
+        if (this.view === "control") {
+          this.renderMessages();
+          if (this.taskId) this.renderTaskDetail();
+        } else if (this.view === "journey" && this.journeyEventId === void 0) {
+          const detail = this.root.querySelector("#journey-active-task");
+          if (detail && this.taskTab === "output") this.renderTaskDetail(detail);
+        }
       });
     }
     pulseActivity(destination) {
@@ -1012,11 +1218,19 @@
     }
     createActivity(expanded = false) {
       const run = this.currentRun;
-      return activityView(this.document, this.data, { project: this.project, run, routeLabel: this.route(run?.routeId ?? this.routeId)?.label, expanded, serviceReply: this.conversation?.messages.some((message2) => message2.runId === run?.id && message2.source === "service"), onSelect: (destination) => {
-        if (destination === "knowledge") this.setView("knowledge");
-        else if (destination === "models") this.data?.user.id === "guest" ? this.showLogin() : this.modelDialog();
-        else if (destination === "evidence") this.setView("releases");
-        else {
+      return activityView(this.document, this.data, { project: this.project, run, routeLabel: this.route(run?.routeId ?? this.routeId)?.label, expanded, serviceReply: !!run && this.conversation?.messages.some((message2) => message2.runId === run.id && message2.source === "service"), onSelect: (destination) => {
+        if (destination === "knowledge") {
+          const report = run?.tasks.findLast((task) => task.context)?.context;
+          if (report) this.contextDialog(report);
+          else this.setView("knowledge");
+        } else if (destination === "models") {
+          if (this.data?.user.id === "guest") this.showLogin();
+          else if (run?.tasks.some((task) => task.routeId && this.route(task.routeId))) this.runRoutesDialog(run);
+          else this.modelDialog();
+        } else if (destination === "evidence") {
+          if (run) this.openRun(run, "journey");
+          else this.setView("releases");
+        } else {
           this.setView("control");
           if (destination === "team") this.q("#shell").classList.add("team-open");
           else this.q("#message-input").focus();
@@ -1026,12 +1240,34 @@
     renderActivity() {
       if (this.data) this.q("#activity-strip").replaceChildren(this.createActivity());
     }
+    runRoutesDialog(run) {
+      const { dialog, body } = this.modal("Inferenza di questa attivit\xE0", "Modelli, account e destinazioni osservati.");
+      for (const task of run.tasks) {
+        const route = this.route(task.routeId);
+        if (!route) continue;
+        const detail = this.el("article", "run-operation");
+        const target = route.nodeIds.map((id) => this.data?.nodes.find((item) => item.id === id)?.label ?? id).join(" \xB7 ") || this.provider(route.providerId)?.label || "Provider remoto";
+        detail.append(this.el("strong", "", task.label), this.el("span", "fine-print", `${route.label} \xB7 ${this.account(route.accountId)?.label ?? "Account"} \xB7 ${target}`));
+        if (task.routing) detail.append(this.el("p", "fine-print", `${task.routing.reason} \xB7 Attesa ${value(task.routing.waitMs / 1e3, " s")}`));
+        if (this.availability(route.id)?.status === "busy") detail.append(this.pill("queued", "Risorsa occupata"));
+        body.append(detail);
+      }
+      body.append(this.button("Scegli modello per la conversazione", () => {
+        dialog.close();
+        this.modelDialog();
+      }, { className: "button small" }));
+    }
     routingEditor(initial, onChange) {
       const wrapper = this.el("details", "routing-editor advanced");
       wrapper.append(this.el("summary", "", "Se il modello \xE8 occupato"));
       const strategy = this.select([{ value: "auto", label: "Usa un\u2019alternativa autorizzata disponibile" }, { value: "pinned", label: "Attendi il modello selezionato" }], initial.strategy);
       strategy.setAttribute("aria-label", "Instradamento quando il modello \xE8 occupato");
       wrapper.append(this.field("Comportamento", strategy));
+      const wait = this.input("number", initial.maxWaitMs === void 0 ? "" : String(initial.maxWaitMs / 1e3), "Automatico");
+      wait.min = "0";
+      wait.max = "120";
+      wait.step = "0.001";
+      wrapper.append(this.field("Attesa massima (secondi)", wait, "Vuoto usa il limite della modalit\xE0. Zero prova la disponibilit\xE0 immediata."));
       const choices = this.el("div", "fallback-choices");
       for (const route of this.data?.models.filter((route2) => this.usableRoute(route2)) ?? []) {
         const checkbox = this.input("checkbox");
@@ -1045,26 +1281,60 @@
       wrapper.append(this.el("p", "field-label", "Alternative autorizzate"), choices, help);
       const update = () => {
         choices.hidden = strategy.value === "pinned";
-        onChange({ strategy: strategy.value, fallbackRouteIds: Array.from(choices.querySelectorAll("input:checked")).map((input) => input.value), ...initial.maxWaitMs ? { maxWaitMs: initial.maxWaitMs } : {} });
+        if (!wait.validity.valid) return;
+        onChange({ strategy: strategy.value, fallbackRouteIds: Array.from(choices.querySelectorAll("input:checked")).map((input) => input.value), ...wait.value === "" ? {} : { maxWaitMs: Math.round(wait.valueAsNumber * 1e3) } });
       };
       strategy.addEventListener("change", update);
       choices.addEventListener("change", update);
+      wait.addEventListener("input", update);
       choices.hidden = strategy.value === "pinned";
       return wrapper;
+    }
+    routingDialog() {
+      if (!this.project || !this.canWrite) return;
+      const { dialog, body } = this.modal("Routing della richiesta", "Le alternative autorizzate possono ricevere il contesto della richiesta.");
+      const form = this.el("form");
+      let selected = this.routing;
+      const editor = this.routingEditor(selected, (value2) => {
+        selected = value2;
+      });
+      editor.open = true;
+      const reset = this.button("Usa regole del progetto", () => {
+        this.routingOverrides.delete(this.projectId);
+        this.updateComposer();
+        dialog.close();
+      }, { className: "button subtle" });
+      const save = this.el("button", "button primary", "Usa in questa sessione");
+      save.type = "submit";
+      const actions = this.el("div", "dialog-actions");
+      actions.append(reset, save);
+      form.append(editor, actions);
+      body.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        this.routingOverrides.set(this.projectId, selected);
+        this.updateComposer();
+        dialog.close();
+      });
     }
     async refresh(initial = false) {
       if (this.disposed) return;
       if (this.loading) return this.loading;
+      const epoch = this.identityEpoch;
+      const appearanceRevision = this.appearanceRevision;
       this.loading = (async () => {
         try {
           const data = await this.api.request("GET", "/api/bootstrap");
-          if (this.disposed) return;
-          const wasGuest = this.data?.user.id === "guest";
+          if (this.disposed || epoch !== this.identityEpoch) return;
+          const previousUser = this.data?.user.id;
+          const wasGuest = previousUser === "guest";
           this.data = data;
+          if (!this.appearanceWrites && appearanceRevision === this.appearanceRevision && data.user.appearance) this.appearance.update(data.user.appearance);
           if (wasGuest && data.user.id !== "guest") {
             this.view = "control";
             this.q("#mode-select").value = ["admin", "operator"].includes(data.user.role) ? "auto" : "chat";
           }
+          if (previousUser !== data.user.id && data.user.id !== "guest") this.restorePosition();
           if (!data.projects.some((item) => item.id === this.projectId)) this.projectId = data.projects[0]?.id ?? "";
           this.chooseConversation();
           if (!data.models.some((item) => item.id === this.routeId && this.usableRoute(item))) {
@@ -1077,6 +1347,7 @@
             this.view = "infrastructure";
           }
           this.render();
+          this.loadJournalIfVisible();
           if (!this.subscription) this.subscription = this.api.subscribe((event) => this.onEvent(event), (connected) => {
             this.connected = connected;
             this.renderConnection();
@@ -1084,13 +1355,16 @@
           });
           if (initial && data.demo) this.showBanner("MODALIT\xC0 DEMO \xB7 Dati di esempio dichiarati. Nessuna connessione ai nodi reali.");
         } catch (error) {
-          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) this.showLogin();
-          else {
+          if (epoch !== this.identityEpoch) return;
+          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+            if (this.data?.user.id && this.data.user.id !== "guest") this.clearPrivateView();
+            this.showLogin();
+          } else {
             this.showBanner(errorMessage(error), true);
             if (initial && this.api.native) this.showLogin();
           }
         } finally {
-          this.loading = void 0;
+          if (epoch === this.identityEpoch) this.loading = void 0;
         }
       })();
       return this.loading;
@@ -1100,6 +1374,57 @@
       const conversations = this.data.conversations.filter((item) => item.projectId === this.projectId);
       if (!conversations.some((item) => item.id === this.conversationId)) this.conversationId = conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]?.id ?? "";
       if (this.runId && !this.data.runs.some((item) => item.id === this.runId && item.conversationId === this.conversationId)) this.runId = "";
+    }
+    savePosition() {
+      const userId = this.data?.user.id;
+      if (!userId || userId === "guest") return;
+      try {
+        this.win.localStorage.setItem(`yed1z.position.${this.host?.endpoint ?? "web"}.${userId}`, JSON.stringify({ project: this.projectId, conversation: this.conversationId, run: this.runId, view: this.view }));
+      } catch {
+      }
+    }
+    restorePosition() {
+      const hash = new URLSearchParams(this.win.location.hash.slice(1));
+      let previous = {};
+      try {
+        previous = JSON.parse(this.win.localStorage.getItem(`yed1z.position.${this.host?.endpoint ?? "web"}.${this.data.user.id}`) ?? "{}") ?? {};
+      } catch {
+      }
+      const position = hash.has("project") ? Object.fromEntries(hash) : previous;
+      if (typeof position.project === "string" && this.data.projects.some((project) => project.id === position.project)) {
+        this.projectId = position.project;
+        this.conversationId = typeof position.conversation === "string" ? position.conversation : "";
+        this.runId = typeof position.run === "string" ? position.run : "";
+        const views = ["control", "journey", "infrastructure", "knowledge", "connections", "releases"];
+        if (views.some((view) => view === position.view)) this.view = position.view;
+      }
+    }
+    selectConversation(conversation) {
+      this.saveDraft();
+      this.projectId = conversation.projectId;
+      this.conversationId = conversation.id;
+      this.runId = "";
+      this.taskId = "";
+      this.journeyEventId = void 0;
+      this.restoreDraft();
+      this.setView("control");
+      this.render();
+    }
+    openRun(run, view) {
+      if (this.conversationId !== run.conversationId) {
+        this.saveDraft();
+        this.projectId = run.projectId;
+        this.conversationId = run.conversationId;
+        this.restoreDraft();
+      }
+      if (this.runId !== run.id) {
+        this.taskId = "";
+        this.journeyEventId = void 0;
+      }
+      this.runId = run.id;
+      this.setView(view);
+      this.render();
+      if (view === "control") this.q("#shell").classList.add("team-open");
     }
     scheduleRefresh() {
       if (this.refreshTimer || this.disposed) return;
@@ -1112,6 +1437,12 @@
       if (event.type === "account.login") {
         this.loginEvent(event);
         return;
+      }
+      if (event.type === "state.changed" && event.data?.knowledgeChanged === true && (!event.projectId || event.projectId === this.projectId)) {
+        this.knowledgeEpoch++;
+        this.searchResults = void 0;
+        this.sourceDialog?.close();
+        if (this.view === "knowledge") this.renderPage();
       }
       if ((event.type === "telemetry" || event.type === "routing.updated") && this.data && event.data) {
         const observation = event.data;
@@ -1134,10 +1465,13 @@
         this.updateComposer();
         return;
       }
-      if (event.type.endsWith(".delta")) this.pulseActivity(event.type === "message.delta" ? "orchestrator" : "models");
-      else if (event.type.startsWith("context.") || event.type.startsWith("memory.")) this.pulseActivity("knowledge");
-      else if (event.type.startsWith("tool.")) this.pulseActivity("team");
-      else if (event.type === "evidence.created") this.pulseActivity("evidence");
+      if (!event.runId || event.runId === this.currentRun?.id || event.runId === this.activeMission?.id || event.runId === this.activeChat?.id) {
+        if (event.type.endsWith(".delta")) this.pulseActivity(event.type === "message.delta" ? "orchestrator" : "models");
+        else if (event.type.startsWith("context.") || event.type.startsWith("memory.")) this.pulseActivity("knowledge");
+        else if (event.type.startsWith("route.")) this.pulseActivity("models");
+        else if (event.type.startsWith("tool.")) this.pulseActivity("team");
+        else if (event.type === "evidence.created") this.pulseActivity("evidence");
+      }
       if (!event.type.endsWith(".delta")) {
         this.events.push(event);
         if (this.events.length > 300) this.events.splice(0, this.events.length - 300);
@@ -1203,8 +1537,8 @@
       this.q("#user-name").textContent = isGuest ? "Ospite (Cluster)" : this.data.user.name;
       this.q("#user-role").textContent = isGuest ? `Sola lettura \xB7 v${this.data.version}` : `${roleLabels[this.data.user.role]} \xB7 v${this.data.version}`;
       this.q("#user-avatar").textContent = isGuest ? "\u26A1" : initials(this.data.user.name);
-      this.q("#user-action").setAttribute("aria-label", isGuest ? "Accedi" : "Esci");
-      this.q("#user-action").title = isGuest ? "Accedi alla control room" : "Esci";
+      this.q("#user-action").setAttribute("aria-label", this.api.native ? "Configura gateway VS Code" : isGuest ? "Accedi" : "Esci");
+      this.q("#user-action").title = this.api.native ? "Configura gateway VS Code" : isGuest ? "Accedi alla control room" : "Esci";
       this.q("#breadcrumb").textContent = `yed1z / ${this.project?.name ?? (isGuest ? "infrastruttura cluster" : "il tuo workspace")}`;
       this.q("#quick-connect").disabled = !isGuest && !this.canWrite;
       this.q("#new-project").disabled = !this.canWrite;
@@ -1220,17 +1554,23 @@
           nav.append(badge);
         }
       }
+      this.syncView();
       this.renderConnection();
+      this.renderHost();
       this.renderFleet();
       this.renderHistory();
-      this.renderMessages();
       this.renderTeam();
       this.renderActivity();
       this.updateComposer();
       this.renderAttachments();
-      this.syncView();
+      this.renderMessages();
       this.renderPage();
       this.modelPickerRender?.();
+    }
+    renderHost() {
+      const context = this.q("#host-context");
+      context.hidden = !this.host;
+      if (this.host) context.textContent = `VS Code \xB7 ${this.host.host} \xB7 Gateway ${this.host.endpoint}${this.host.workspace ? ` \xB7 Workspace ${this.host.workspace}` : ""}`;
     }
     renderConnection() {
       const target = this.q("#connection-state");
@@ -1261,10 +1601,15 @@
         if (!telemetry || telemetry.status !== "online") metrics.textContent = `${labels[telemetry?.status ?? "unknown"]} \xB7 ultimo dato ${relativeTime(telemetry?.observedAt)}`;
         copy2.append(title, metrics);
         cell2.append(symbol, copy2);
-        cell2.addEventListener("click", () => this.setView("infrastructure"));
+        cell2.addEventListener("click", () => {
+          this.setView("infrastructure");
+          const detail = this.document.getElementById(`cluster-node-${node.id}`);
+          detail?.focus();
+          detail?.scrollIntoView?.({ block: "nearest" });
+        });
         ribbon.append(cell2);
       }
-      const active = this.data?.runs.filter((item) => activeRunStatuses.has(item.status)).length ?? 0;
+      const active = this.data?.runs.filter((item) => item.mode === "mission" && activeRunStatuses.has(item.status)).length ?? 0;
       const cell = this.el("button", "fleet-mini badged");
       cell.type = "button";
       const copy = this.el("div");
@@ -1283,35 +1628,44 @@
         button.type = "button";
         button.dataset.conversationId = conversation.id;
         const title = this.el("strong", "truncate", conversation.title);
-        button.append(title, this.el("small", "", `${relativeTime(conversation.updatedAt)} \xB7 ${conversation.messages.length} messaggi`));
+        button.append(title, this.el("small", "", `${conversation.branch ? "Ramo \xB7 " : ""}${relativeTime(conversation.updatedAt)} \xB7 ${conversation.messages.length} messaggi`));
         if (conversation.id === this.conversationId) button.setAttribute("aria-current", "true");
-        button.addEventListener("click", () => {
-          this.saveDraft();
-          this.conversationId = conversation.id;
-          this.runId = "";
-          this.taskId = "";
-          this.restoreDraft();
-          this.setView("control");
-          this.render();
-        });
+        button.addEventListener("click", () => this.selectConversation(conversation));
         history.append(button);
       }
       if (!conversations.length) history.append(this.el("p", "empty", query ? "Nessuna conversazione trovata." : "Le conversazioni di questo progetto compariranno qui."));
     }
     renderMessages() {
       const messages = this.q("#messages");
-      const scrollAtBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+      const changed = this.renderedConversationId !== this.conversationId;
+      const scrollAtBottom = changed || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+      this.renderedConversationId = this.conversationId;
       messages.replaceChildren();
       const conversation = this.conversation;
-      this.q("#conversation-subtitle").textContent = conversation?.title ?? "Un obiettivo. Una squadra. Tutto sotto controllo.";
+      this.q("#conversation-subtitle").textContent = conversation?.title ?? "Nuova conversazione";
+      this.q("#branch-thread").hidden = !conversation?.messages.length || !this.canWrite;
+      this.q("#open-journey").hidden = !this.project;
+      if (conversation?.branch) {
+        const parent = this.data?.conversations.find((item) => item.id === conversation.branch?.conversationId);
+        if (parent) messages.append(this.button(`Origine del ramo \xB7 ${parent.title}`, () => {
+          const index = parent.messages.findIndex((message2) => message2.id === conversation.branch?.messageId);
+          this.messageLimit = Math.max(80, parent.messages.length - index);
+          this.selectConversation(parent);
+          const origin = Array.from(messages.querySelectorAll("[data-message-id]")).find((item) => item.dataset.messageId === conversation.branch?.messageId);
+          if (origin) {
+            origin.tabIndex = -1;
+            origin.focus();
+            origin.scrollIntoView?.({ block: "center" });
+          }
+        }, { className: "text-button branch-origin", icon: "layers" }));
+      }
       if (!conversation?.messages.length) {
         const welcome = this.el("div", "welcome");
-        welcome.append(this.el("div", "welcome-eyebrow", "DAL TUO OBIETTIVO ALLA CONSEGNA"));
-        const heading = this.el("h2", "", "Guida il lavoro.");
-        heading.append(this.el("br"), this.el("span", "", "La squadra \xE8 qui per te."));
-        welcome.append(heading, this.el("p", "", this.project ? `Descrivi ci\xF2 che vuoi realizzare in ${this.project.name}. L\u2019orchestratore organizza il lavoro, coordina modelli e agenti e rende visibili risultati, verifiche e decisioni.` : "Crea un progetto per riunire conversazioni, contesto, documenti e agenti. La tua infrastruttura resta sempre visibile."));
+        welcome.append(this.el("h2", "", this.project?.name ?? "Il tuo primo progetto"));
+        welcome.append(this.el("p", "", this.project ? "Scrivi una domanda o descrivi il lavoro da fare." : "Riunisci conversazioni, fonti e missioni in un progetto."));
         const starters = this.el("div", "welcome-grid");
         for (const entry of [{ title: "Costruiamo una funzionalit\xE0", text: "Definisci il risultato e i criteri di verifica.", icon: "code", prompt: "Voglio realizzare una nuova funzionalit\xE0 in questo progetto. Aiutami a definire il risultato, poi organizza sviluppo e verifica." }, { title: "Analizziamo il progetto", text: "Comprendi il codice, trova ci\xF2 che manca.", icon: "layers", prompt: "Analizza questo progetto: individua architettura, problemi e interventi prioritari. Presentami un piano verificabile." }, { title: "Risolviamo un problema", text: "Diagnosi, correzione e test di regressione.", icon: "activity", prompt: "Aiutami a diagnosticare e risolvere questo problema. Prima cerca la causa, poi prepara una correzione con una verifica riproducibile." }, { title: "Prepariamo una consegna", text: "Revisione, evidenze e rilascio controllato.", icon: "rocket", prompt: "Controlla cosa manca per consegnare questo progetto. Verifica il lavoro ed evidenzia ci\xF2 che blocca il rilascio." }]) {
+          if (!this.project || !this.routeId || !this.operator || !this.project.targetId || !this.project.verifyRecipeIds.length) break;
           const button = this.el("button", "starter");
           button.type = "button";
           const copy = this.el("span");
@@ -1342,19 +1696,12 @@
       const meta = this.el("div", "message-meta");
       meta.append(this.el("span", "message-avatar", message2.role === "user" ? initials(this.data.user.name) : "y"), this.el("strong", "", message2.role === "user" ? this.data.user.name : message2.role === "system" ? "Progetto" : message2.source === "service" ? "Servizio yed1z" : "Orchestratore"));
       if (message2.source === "service") meta.append(this.el("span", "service-label", "Nessuna inferenza"));
-      if (message2.routeId) meta.append(this.el("span", "message-model truncate", this.route(message2.routeId)?.label ?? "Modello precedente"));
+      if (message2.routeId) {
+        const route = this.route(message2.routeId), account = this.account(route?.accountId);
+        meta.append(this.el("span", "message-model truncate", [route?.label ?? "Modello precedente", account?.label].filter(Boolean).join(" \xB7 ")));
+      }
       meta.append(this.el("time", "timestamp", time(message2.createdAt)));
       article.append(meta);
-      if (message2.thinking) {
-        const details = this.el("details", "message-thinking");
-        const summary = this.el("summary", "thinking-summary");
-        const timeStr = message2.thinkingMs ? ` \xB7 ${(message2.thinkingMs / 1e3).toFixed(1)}s` : "";
-        summary.append(this.el("span", "summary-badge", "\u{1F9E0} RAGIONAMENTO" + timeStr));
-        const content = this.el("div", "thinking-content");
-        content.append(renderMarkdown(this.document, message2.thinking));
-        details.append(summary, content);
-        article.append(details);
-      }
       if (message2.actions?.length) {
         const details = this.el("details", "message-actions");
         const summary = this.el("summary", "actions-summary");
@@ -1391,12 +1738,7 @@
         const run = this.data?.runs.find((item) => item.id === message2.runId);
         if (run) {
           const row = this.el("div", "response-metrics");
-          row.append(this.button(`${run.mode === "mission" ? "Squadra" : "Attivit\xE0"} \xB7 ${labels[run.status]}`, () => {
-            this.runId = run.id;
-            this.taskId = "";
-            this.renderTeam();
-            this.q("#shell").classList.add("team-open");
-          }, { className: "context-chip", icon: "people" }));
+          row.append(this.button(`${run.mode === "mission" ? "Squadra" : "Attivit\xE0"} \xB7 ${labels[run.status]}`, () => this.openRun(run, "control"), { className: "context-chip", icon: "people" }));
           article.append(row);
         }
       }
@@ -1410,27 +1752,32 @@
     metricsElement(metrics) {
       const row = this.el("div", "response-metrics stats-bar");
       if (!metrics) return row;
-      const total = metrics.totalTokens ?? ((metrics.inputTokens || 0) + (metrics.outputTokens || 0) || void 0);
-      const values = [
-        ["in", metrics.inputTokens, " token"],
-        ["out", metrics.outputTokens, " token"],
-        ["totale", total, " token"],
-        ["cache", metrics.cachedInputTokens, " token"],
-        ["velocit\xE0", metrics.decodeTokensPerSecond ? Number(metrics.decodeTokensPerSecond).toFixed(1) : void 0, " tok/s"],
-        ["prefill", metrics.prefillTokensPerSecond ? Number(metrics.prefillTokensPerSecond).toFixed(1) : metrics.prefillMs ? (metrics.prefillMs / 1e3).toFixed(2) : void 0, metrics.prefillTokensPerSecond ? " tok/s" : " s"],
-        ["caricamento", metrics.loadMs !== void 0 ? (metrics.loadMs / 1e3).toFixed(2) : void 0, " s"],
-        ["thinking", metrics.thinkingMs !== void 0 ? (metrics.thinkingMs / 1e3).toFixed(1) : void 0, " s"],
-        ["TTFT", metrics.ttftMs === void 0 ? void 0 : (metrics.ttftMs / 1e3).toFixed(2), " s"],
-        ["durata", metrics.durationMs === void 0 ? void 0 : (metrics.durationMs / 1e3).toFixed(1), " s"]
-      ];
-      for (const [label, amount, suffix] of values) {
-        if (amount === void 0) continue;
+      const add = (parent, label, amount, suffix, digits = 1) => {
+        if (amount === void 0 || !Number.isFinite(amount)) return;
         const chip = this.el("span", "stat-chip", `${label} `);
-        chip.append(this.el("b", "", value(amount, suffix)));
-        row.append(chip);
-      }
+        chip.append(this.el("b", "", value(amount, suffix, digits)));
+        parent.append(chip);
+      };
+      const seconds = (milliseconds) => milliseconds === void 0 ? void 0 : milliseconds / 1e3;
+      add(row, "in", metrics.inputTokens, " token", 0);
+      add(row, "out", metrics.outputTokens, " token", 0);
+      add(row, "decode", metrics.decodeTokensPerSecond, " tok/s");
+      if (metrics.prefillTokensPerSecond !== void 0) add(row, "prefill", metrics.prefillTokensPerSecond, " tok/s");
+      else add(row, "prefill", seconds(metrics.prefillMs), " s", 2);
       if (metrics.contextWindow !== void 0) row.append(this.el("span", "stat-chip", `contesto ${value(metrics.contextUsed)} / ${formatNumber(metrics.contextWindow)}${metrics.contextSource === "estimated" ? " \xB7 stimato" : ""}`));
-      row.title = `Fonte: ${metrics.source}. Misure reali osservate durante l\u2019inferenza.`;
+      const details = this.el("details", "measure-details");
+      details.append(this.el("summary", "", "Misure"));
+      const more = this.el("div", "measure-values");
+      add(more, "totale", metrics.totalTokens ?? (metrics.inputTokens === void 0 || metrics.outputTokens === void 0 ? void 0 : metrics.inputTokens + metrics.outputTokens), " token", 0);
+      add(more, "cache", metrics.cachedInputTokens, " token", 0);
+      add(more, "coda", seconds(metrics.queueMs), " s", 2);
+      add(more, "contesto", seconds(metrics.contextMs), " s", 2);
+      add(more, "caricamento", seconds(metrics.loadMs), " s", 2);
+      add(more, "TTFT", seconds(metrics.ttftMs), " s", 2);
+      add(more, "durata", seconds(metrics.durationMs), " s", 2);
+      more.append(this.el("span", "fine-print", `Fonte ${metrics.source === "unknown" ? "non disponibile" : metrics.source}`));
+      details.append(more);
+      row.append(details);
       return row;
     }
     updateComposer() {
@@ -1439,27 +1786,66 @@
       const mission = mode.querySelector('[value="mission"]');
       mission.disabled = !this.operator;
       mission.textContent = this.operator ? "Squadra" : "Squadra \xB7 solo operatori";
+      let steer = mode.querySelector('[value="steer"]');
+      if (this.activeMission && this.operator && this.activeMission.status !== "deploying" && !this.activeMission.operations?.some((operation) => operation.state === "uncertain")) {
+        if (!steer) {
+          steer = this.el("option", "", "Istruzione alla squadra");
+          steer.value = "steer";
+          mode.append(steer);
+        }
+      } else if (steer) {
+        if (mode.value === "steer") mode.value = "auto";
+        steer.remove();
+      }
       if (!this.operator) mode.value = "chat";
-      const intent = classifyRequest(input.value, { mode: mode.value, attachmentCount: this.selectedAttachments.length });
+      const intent = this.requestIntent();
       const service = intent.kind === "service";
-      const active = !!this.currentRun && !closedRunStatuses.has(this.currentRun.status);
-      const guide = active && !service;
+      const active = this.activeChat ?? this.activeMission;
+      const guide = mode.value === "steer" && !service;
       const route = this.route(this.routeId), account = this.account(route?.accountId), availability = this.availability(this.routeId);
+      const blocker = this.composerBlocker(intent, guide);
       input.maxLength = guide ? 12e3 : 1e5;
       this.q("#mission-settings").disabled = !this.operator;
       mode.title = "Auto distingue domande e lavoro operativo. Chat risponde direttamente; Squadra pianifica ed esegue.";
       this.q("#model-label").textContent = route ? `${route.label} \xB7 ${account?.label ?? "account"}` : "Collega un modello";
-      this.q("#routing-policy").textContent = this.routing.strategy === "pinned" ? "Fisso" : this.routing.fallbackRouteIds.length ? `Auto \xB7 ${this.routing.fallbackRouteIds.length} alternative` : "Auto";
+      this.q("#routing-policy").textContent = this.routing.strategy === "pinned" ? "Modello fisso" : this.routing.fallbackRouteIds.length ? `Routing \xB7 ${this.routing.fallbackRouteIds.length} alternative` : "Routing";
       this.q("#send").hidden = false;
       this.q("#stop").hidden = !active;
       this.q("#send").setAttribute("aria-label", guide ? "Invia una nuova istruzione alla squadra" : service ? "Invia al servizio yed1z" : "Invia all\u2019orchestratore");
-      this.q("#send").disabled = this.sending || !this.canWrite || !this.project || !service && (!route || !this.usableRoute(route)) || !input.value.trim();
+      this.q("#send").disabled = this.sending || !this.canWrite || !!blocker || !input.value.trim();
       this.q("#stop").disabled = this.sending;
       this.q("#attach-file").disabled = !this.project || !this.canWrite;
-      this.q("#composer-status").textContent = this.sending ? "Richiesta ricevuta, avvio\u2026" : !this.project ? "Crea un progetto per iniziare." : service ? "Risposta immediata del servizio \xB7 nessuna inferenza." : guide ? `${labels[this.currentRun.status]} \xB7 questo messaggio guider\xE0 la squadra.` : !route ? "Collega un modello. Saluti, aiuto e stato sono gi\xE0 disponibili." : availability?.status === "busy" ? `${availability.reason}${this.routing.strategy === "auto" && this.routing.fallbackRouteIds.length ? " \xB7 alternative autorizzate attive" : " \xB7 attesa limitata, annullabile"}` : account?.status === "cooldown" ? "Quota in attesa. Scegli un altro account o autorizza un\u2019alternativa." : intent.mode === "mission" ? "Squadra \xB7 piano, esecuzione e verifiche." : "Chat diretta \xB7 una risposta, senza avviare una missione.";
+      this.q("#composer-status").textContent = this.sending ? "Richiesta ricevuta, avvio\u2026" : blocker ? "" : service ? "Risposta immediata del servizio \xB7 nessuna inferenza." : guide ? "Questa istruzione mette in pausa la missione per ripianificare." : availability?.status === "busy" ? `${availability.reason}${this.routing.strategy === "auto" && this.routing.fallbackRouteIds.length ? " \xB7 alternative autorizzate attive" : " \xB7 attesa limitata, annullabile"}` : account?.status === "cooldown" ? "Quota in attesa. Puoi scegliere un altro account o autorizzare un\u2019alternativa." : intent.mode === "mission" ? `Squadra \xB7 Esecuzione su ${this.data?.targets.find((target) => target.id === this.project?.targetId)?.label ?? this.project?.targetId}` : this.activeMission ? "Chat diretta \xB7 la missione continua in parallelo." : "Chat diretta \xB7 una risposta dal modello selezionato.";
+      const next = this.q("#composer-next");
+      next.hidden = !blocker || this.data?.user.id === "guest";
+      if (blocker && next.dataset.blocker !== blocker.text) {
+        next.dataset.blocker = blocker.text;
+        next.replaceChildren(this.el("span", "", blocker.text));
+        if (blocker.action) next.append(this.button(blocker.label, blocker.action, { className: "button small subtle" }));
+      }
+    }
+    requestIntent() {
+      const selected = this.q("#mode-select").value;
+      return classifyRequest(this.q("#message-input").value, { mode: selected === "steer" ? "auto" : selected, attachmentCount: this.selectedAttachments.length });
+    }
+    composerBlocker(intent, guide) {
+      if (!this.project) return { text: "Crea un progetto per iniziare.", label: "Crea progetto", action: this.canWrite ? () => this.projectDialog() : void 0 };
+      if (intent.kind === "service" || guide) return;
+      const route = this.route(this.routeId);
+      if (!route || !this.usableRoute(route)) return { text: "Collega un modello per la prima chat. Saluti, aiuto e stato sono gi\xE0 disponibili.", label: "Collega modello", action: this.canWrite ? () => this.connectionDialog() : void 0 };
+      if (intent.mode === "mission" && this.activeMission) return { text: "In questa conversazione c\u2019\xE8 gi\xE0 una missione aperta.", label: "Apri missione", action: () => this.openRun(this.activeMission, "control") };
+      if (intent.mode === "mission" && (!this.project.targetId || !this.project.verifyRecipeIds.length)) return { text: !this.project.targetId ? "Scegli dove eseguire la missione." : "Scegli almeno una verifica per avviare la missione.", label: "Configura workspace e verifiche", action: () => this.projectDialog(this.project, "execution") };
+      if (intent.mode === "chat" && this.activeChat) return { text: "Una risposta \xE8 gi\xE0 in corso in questa conversazione.", label: "Mostra attivit\xE0", action: () => this.openRun(this.activeChat, "control") };
+      if (!this.routeCompatible(route) && (this.routing.strategy === "pinned" || !this.routing.fallbackRouteIds.some((id) => {
+        const alternative = this.route(id);
+        return !!alternative && this.routeCompatible(alternative);
+      }))) return { text: "Questo modello CLI richiede un workspace locale autorizzato.", label: "Scegli modello", action: () => this.modelDialog() };
     }
     renderTeam() {
       const body = this.q("#team-body");
+      const scrollTop = body.scrollTop;
+      const focusedTask = body.contains(this.document.activeElement) ? this.document.activeElement?.closest("[data-graph-task], [data-task-id]") : void 0;
+      const focusKey = focusedTask?.getAttribute("data-graph-task") ?? focusedTask?.getAttribute("data-task-id");
       body.replaceChildren();
       const run = this.currentRun;
       const pending = this.data?.approvals.filter((item) => item.status === "pending" && item.projectId === this.projectId && (!run || item.runId === run.id)) ?? [];
@@ -1486,14 +1872,17 @@
         card.append(meter, copy);
       }
       const controls = this.el("div", "run-controls");
-      if (activeRunStatuses.has(run.status)) controls.append(this.button("Pausa", () => this.runAction(run, "pause"), { className: "button small subtle", icon: "pause", disabled: !this.canWrite }), this.button("Guida", () => this.steerDialog(run), { className: "button small subtle", icon: "edit", disabled: !this.canWrite }), this.button("Stop", () => this.runAction(run, "cancel"), { className: "button small danger", icon: "stop", disabled: !this.canWrite }));
-      else if (["paused", "interrupted"].includes(run.status)) controls.append(this.button("Riprendi", () => this.runAction(run, "resume"), { className: "button small primary", icon: "play", disabled: !this.canWrite }), this.button("Annulla", () => this.runAction(run, "cancel"), { className: "button small danger", disabled: !this.canWrite }));
+      if (run.mode === "chat") {
+        if (!closedRunStatuses.has(run.status)) controls.append(this.button("Interrompi risposta", () => this.runAction(run, "cancel"), { className: "button small danger", icon: "stop", disabled: !this.canWrite }));
+      } else if (activeRunStatuses.has(run.status)) controls.append(this.button("Pausa", () => this.runAction(run, "pause"), { className: "button small subtle", icon: "pause", disabled: !this.canWrite }), this.button("Guida", () => this.steerDialog(run), { className: "button small subtle", icon: "edit", disabled: !this.canWrite }), this.button("Stop", () => this.runAction(run, "cancel"), { className: "button small danger", icon: "stop", disabled: !this.canWrite }));
+      else if (["paused", "interrupted"].includes(run.status)) controls.append(this.button("Riprendi", () => this.runAction(run, "resume"), { className: "button small primary", icon: "play", disabled: !this.canWrite || !!run.operations?.some((operation) => operation.state === "uncertain") }), this.button("Annulla", () => this.runAction(run, "cancel"), { className: "button small danger", disabled: !this.canWrite }));
       else if (run.status === "awaiting_release") controls.append(this.button("Esamina la consegna", () => this.setView("releases"), { className: "button small primary", icon: "rocket" }), this.button("Annulla", () => this.runAction(run, "cancel"), { className: "button small subtle", disabled: !this.canWrite }));
       else if (!closedRunStatuses.has(run.status)) controls.append(this.button("Metti in pausa", () => this.runAction(run, "pause"), { className: "button small", icon: "pause", disabled: !this.canWrite }), this.button("Annulla", () => this.runAction(run, "cancel"), { className: "button small danger", disabled: !this.canWrite }));
       if (run.phase && run.phase !== run.status) card.append(this.el("p", "run-phase", run.phase));
       if (run.error) card.append(this.el("p", "fine-print", run.error));
       if (controls.childElementCount) card.append(controls);
       body.append(card);
+      this.renderRunOperations(body, run, true);
       const heading = this.el("div", "section-heading");
       heading.append(this.el("span", "eyebrow", "AGENTI E DIPENDENZE"), this.el("span", "fine-print", `max ${run.maxParallel} in parallelo`));
       body.append(heading);
@@ -1512,6 +1901,7 @@
         if (task.dependencies.length) button.append(this.el("p", "task-deps", `Dopo: ${task.dependencies.map((id) => run.tasks.find((item) => item.id === id)?.label ?? id).join(" \xB7 ")}`));
         button.addEventListener("click", () => {
           this.taskId = task.id;
+          this.taskTab = "output";
           this.renderTeam();
         });
         list.append(button);
@@ -1520,30 +1910,36 @@
       body.append(list);
       this.q("#team-footer-left").textContent = `${run.budget.callsUsed}/${run.budget.maxModelCalls} chiamate`;
       this.q("#team-footer-right").textContent = `${formatNumber(run.budget.outputTokensUsed)} token output`;
+      body.scrollTop = scrollTop;
+      if (focusKey) Array.from(body.querySelectorAll("[data-graph-task], [data-task-id]")).find((element) => (focusedTask?.hasAttribute("data-graph-task") ? element.getAttribute("data-graph-task") : element.getAttribute("data-task-id")) === focusKey)?.focus({ preventScroll: true });
       this.renderTaskDetail();
     }
-    renderTaskDetail() {
-      const target = this.q("#task-detail");
-      const task = this.currentRun?.tasks.find((item) => item.id === this.taskId);
+    renderTaskDetail(target = this.q("#task-detail"), run = this.currentRun, historical = false) {
+      const task = run?.tasks.find((item) => item.id === this.taskId);
       target.replaceChildren();
       target.hidden = !task;
-      if (!task) return;
+      if (!task || !run) return;
+      const redraw = () => {
+        if (this.view === "journey") this.renderPage();
+        else this.renderTeam();
+      };
       const heading = this.el("div", "row spread");
       heading.append(this.el("h3", "", task.label), this.button("", () => {
         this.taskId = "";
-        this.renderTeam();
+        redraw();
       }, { className: "icon-button", icon: "close", title: "Chiudi dettaglio agente" }));
       target.append(heading);
       const route = this.route(task.routeId);
       const account = this.account(route?.accountId);
       const meta = this.el("dl", "detail-meta");
       const deterministic = ["tester", "release"].includes(task.role);
-      const targetConfig = this.data?.targets.find((item) => item.id === this.project?.targetId);
-      for (const [label, text] of [["Agente", roleLabels[task.role] ?? task.role], [deterministic ? "Motore" : "Modello", deterministic ? task.role === "tester" ? "Verifica eseguibile" : "Controller di rilascio" : route?.label ?? task.routeId], ["Account", deterministic ? "\u2014" : account?.label ?? "\u2014"], ["Nodi", deterministic ? this.data?.nodes.find((item) => item.id === targetConfig?.nodeId)?.label ?? targetConfig?.nodeId ?? "\u2014" : route?.nodeIds.map((id) => this.data?.nodes.find((item) => item.id === id)?.label ?? id).join(", ") || "Provider remoto"], ["Stato", taskPaused(task) ? "In pausa" : labels[task.status] ?? task.status]]) meta.append(this.el("dt", "", label), this.el("dd", "", text));
+      const targetConfig = this.data?.targets.find((item) => item.id === (run.spec?.targetId ?? this.project?.targetId));
+      const nodeNames = route?.nodeIds.map((id) => this.data?.nodes.find((item) => item.id === id)?.label ?? id).join(", ");
+      for (const [label, text] of [["Agente", roleLabels[task.role] ?? task.role], [deterministic ? "Motore" : "Modello", deterministic ? task.role === "tester" ? "Verifica eseguibile" : "Controller di rilascio" : route?.label ?? (task.routeId || "\u2014")], ["Account", deterministic ? "\u2014" : account?.label ?? "\u2014"], ["Inferenza", nodeNames || (route && !deterministic ? "Provider remoto" : "\u2014")], ["Workspace", targetConfig && run.mode === "mission" ? `${targetConfig.label} \xB7 ${run.spec?.workspace ?? this.project?.workspace ?? "."}` : "\u2014"], ["Stato", taskPaused(task) ? "In pausa" : labels[task.status] ?? task.status]]) meta.append(this.el("dt", "", label), this.el("dd", "", text));
       target.append(meta);
       if (task.routing) target.append(this.el("p", "routing-decision", `${task.routing.switched ? "Alternativa selezionata" : "Modello selezionato"} \xB7 ${task.routing.reason} \xB7 attesa osservata ${value(task.routing.waitMs / 1e3, " s")}`));
-      if (!deterministic && (task.status === "queued" || taskPaused(task))) target.append(this.button("Cambia modello / account", () => this.modelDialog(task), { className: "text-button", disabled: !this.operator }));
-      const individualControl = this.operator && ["researcher", "coder"].includes(task.role) && this.currentRun?.mode === "mission" && activeRunStatuses.has(this.currentRun.status) && (taskPaused(task) || ["queued", "running"].includes(task.status));
+      if (!historical && !deterministic && (task.status === "queued" || taskPaused(task))) target.append(this.button("Cambia modello / account", () => this.modelDialog(task), { className: "text-button", disabled: !this.operator }));
+      const individualControl = !historical && this.operator && ["researcher", "coder"].includes(task.role) && run.mode === "mission" && activeRunStatuses.has(run.status) && (taskPaused(task) || ["queued", "running"].includes(task.status));
       if (individualControl) {
         const controls = this.el("div", "run-controls agent-controls");
         controls.append(this.button(taskPaused(task) ? "Riprendi agente" : "Pausa agente", () => this.taskAction(task, taskPaused(task) ? "resume" : "pause"), { className: `button small ${taskPaused(task) ? "primary" : "subtle"}`, icon: taskPaused(task) ? "play" : "pause" }), this.button("Istruzione", () => this.taskSteerDialog(task), { className: "button small subtle", icon: "edit" }), this.button("Annulla", () => this.taskAction(task, "cancel"), { className: "button small danger", icon: "stop", title: "Annulla questa attivit\xE0 e ferma le attivit\xE0 dipendenti" }));
@@ -1552,18 +1948,18 @@
       const tabs = this.el("div", "detail-tabs");
       for (const [id, title] of [["output", "Risultato"], ["events", "Attivit\xE0"], ["context", "Contesto"]]) tabs.append(this.button(title, () => {
         this.taskTab = id;
-        this.renderTaskDetail();
+        this.renderTaskDetail(target, run, historical);
       }, { className: this.taskTab === id ? "active" : "" }));
       target.append(tabs);
       if (this.taskTab === "output") {
-        const progress = this.taskProgress.get(task.id);
+        const progress = historical ? void 0 : this.taskProgress.get(task.id);
         const content = this.el("div", "message-body");
         content.style.paddingLeft = "0";
-        content.append(renderMarkdown(this.document, task.output ?? task.error ?? progress?.text ?? "Il risultato sar\xE0 disponibile al termine dell\u2019attivit\xE0."));
+        content.append(renderMarkdown(this.document, task.output ?? task.error ?? progress?.text ?? (historical ? "Consultazione storica. Apri le evidenze registrate." : "Il risultato sar\xE0 disponibile al termine dell\u2019attivit\xE0.")));
         target.append(content);
         if (!task.output && progress?.incomplete) target.append(this.el("p", "fine-print", "Flusso ripreso dopo una disconnessione. Il risultato completo sar\xE0 disponibile al termine."));
       } else if (this.taskTab === "events") {
-        const events = this.events.filter((item) => item.taskId === task.id).slice(-40);
+        const events = [...this.runEvents(run.id), ...this.events.filter((item) => item.id === 0)].filter((item) => item.taskId === task.id && (!historical || item.id > 0 && item.id <= (this.journeyEventId ?? 0))).slice(-40);
         for (const event of events) {
           const row = this.el("div", "event-line");
           row.append(this.el("time", "", time(event.createdAt)), this.el("strong", "", event.text ?? event.type));
@@ -1573,6 +1969,17 @@
       } else if (task.context) target.append(this.contextElement(task.context));
       else target.append(this.el("p", "fine-print", "Il contesto viene compilato quando l\u2019agente parte."));
       const evidence = this.data?.evidence.filter((item) => task.evidenceIds.includes(item.id)) ?? [];
+      if (task.attempts?.length) {
+        const history = this.el("details", "advanced");
+        history.append(this.el("summary", "", "Tentativi"));
+        for (const attempt of task.attempts) {
+          const row = this.el("div", "event-line");
+          row.append(this.el("time", "", dateTime(attempt.startedAt)), this.el("strong", "", `Tentativo ${attempt.number} \xB7 ${labels[attempt.status] ?? attempt.status} \xB7 ${this.route(attempt.routeId ?? attempt.requestedRouteId)?.label ?? "Modello non disponibile"}`));
+          history.append(row);
+          if (attempt.error) history.append(this.el("p", "fine-print", attempt.error));
+        }
+        target.append(history);
+      }
       if (evidence.length) {
         target.append(this.el("div", "eyebrow", "EVIDENZE"));
         for (const item of evidence) target.append(this.button(`${item.ok ? "\u2713" : "!"} ${item.title}`, () => this.textDialog(item.title, item.output), { className: "text-button" }));
@@ -1590,93 +1997,107 @@
       card.append(buttons);
       return card;
     }
-    taskGraph(run) {
-      const wrapper = this.el("div", "task-graph");
-      const ns = "http://www.w3.org/2000/svg";
-      const svg = this.document.createElementNS(ns, "svg");
-      svg.setAttribute("role", "group");
-      svg.setAttribute("aria-label", "Mappa delle dipendenze della squadra");
-      const markerId = `task-arrow-${run.id.replace(/[^a-z0-9_-]/gi, "")}`;
-      const defs = this.document.createElementNS(ns, "defs");
-      const marker = this.document.createElementNS(ns, "marker");
-      marker.setAttribute("id", markerId);
-      marker.setAttribute("viewBox", "0 0 8 8");
-      marker.setAttribute("refX", "7");
-      marker.setAttribute("refY", "4");
-      marker.setAttribute("markerWidth", "5");
-      marker.setAttribute("markerHeight", "5");
-      marker.setAttribute("orient", "auto");
-      const arrow = this.document.createElementNS(ns, "path");
-      arrow.setAttribute("d", "M0 0L8 4L0 8z");
-      arrow.setAttribute("fill", "#3d5c67");
-      marker.append(arrow);
+    taskGraph(run, journey = false) {
+      const wrapper = this.el("div", `task-graph${journey ? " journey-graph" : ""}`);
+      const svgNode = (name, attributes = {}) => {
+        const node = this.document.createElementNS("http://www.w3.org/2000/svg", name);
+        for (const [key, value2] of Object.entries(attributes)) node.setAttribute(key, String(value2));
+        return node;
+      };
+      const svg = svgNode("svg", { role: "group", "aria-label": "Mappa delle dipendenze della squadra" });
+      const markerId = `task-arrow-${journey ? "journey" : "team"}-${run.id.replace(/[^a-z0-9_-]/gi, "")}`;
+      const defs = svgNode("defs");
+      const marker = svgNode("marker", { id: markerId, viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 5, markerHeight: 5, orient: "auto" });
+      marker.append(svgNode("path", { d: "M0 0L8 4L0 8z", fill: "#658099" }));
       defs.append(marker);
       svg.append(defs);
+      const tasks = new Map(run.tasks.map((task) => [task.id, task]));
       const depths = /* @__PURE__ */ new Map();
       const visiting = /* @__PURE__ */ new Set();
-      const depth = (task) => {
-        if (depths.has(task.id)) return depths.get(task.id);
-        if (visiting.has(task.id)) return 0;
-        visiting.add(task.id);
-        const parents = task.dependencies.map((id) => run.tasks.find((item) => item.id === id)).filter((item) => !!item);
-        const level = parents.length ? Math.max(...parents.map((item) => depth(item))) + 1 : 0;
-        visiting.delete(task.id);
-        depths.set(task.id, level);
+      const depth = (id) => {
+        const cached = depths.get(id);
+        if (cached !== void 0) return cached;
+        const task = tasks.get(id);
+        if (!task || visiting.has(id)) return 0;
+        visiting.add(id);
+        const parents = task.dependencies.filter((parent) => tasks.has(parent));
+        const level = parents.length ? Math.max(...parents.map(depth)) + 1 : 0;
+        visiting.delete(id);
+        depths.set(id, level);
         return level;
       };
-      for (const task of run.tasks) depth(task);
-      const levels = Array.from(new Set(depths.values())).sort((a, b) => a - b);
+      const trail = /* @__PURE__ */ new Set();
+      const trace = (id) => {
+        if (trail.has(id)) return;
+        const task = tasks.get(id);
+        if (!task) return;
+        trail.add(id);
+        task.dependencies.forEach(trace);
+      };
+      if (journey && this.taskId) trace(this.taskId);
+      for (const task of run.tasks) depth(task.id);
+      const wide = journey && this.win.innerWidth >= 900;
+      const width = wide ? 620 : 280;
+      const nodeWidth = wide ? 154 : 84;
+      const nodeHeight = wide ? 41 : 30;
+      const gap = wide ? 20 : 8;
+      const rowHeight = wide ? 58 : 47;
       const positions = /* @__PURE__ */ new Map();
+      const levels = Array.from(new Set(depths.values())).sort((a, b) => a - b);
       let y = 8;
       for (const level of levels) {
         const items = run.tasks.filter((task) => depths.get(task.id) === level);
-        for (let index = 0; index < items.length; index++) {
+        for (const [index, item] of items.entries()) {
           const row = Math.floor(index / 3);
           const rowCount = Math.min(3, items.length - row * 3);
-          const x = (280 - rowCount * 84 - (rowCount - 1) * 8) / 2 + index % 3 * 92;
-          positions.set(items[index].id, { x, y: y + row * 47 });
+          const x = (width - rowCount * nodeWidth - (rowCount - 1) * gap) / 2 + index % 3 * (nodeWidth + gap);
+          positions.set(item.id, { x, y: y + row * rowHeight });
         }
-        y += Math.ceil(items.length / 3) * 47 + 9;
+        y += Math.ceil(items.length / 3) * rowHeight + 9;
       }
-      svg.setAttribute("viewBox", `0 0 280 ${y}`);
+      svg.setAttribute("viewBox", `0 0 ${width} ${y}`);
+      const midpoint = nodeWidth / 2;
       for (const task of run.tasks) for (const dependency of task.dependencies) {
-        const from = positions.get(dependency);
-        const to = positions.get(task.id);
+        const from = positions.get(dependency), to = positions.get(task.id);
         if (!from || !to) continue;
-        const line = this.document.createElementNS(ns, "path");
-        line.setAttribute("d", `M${from.x + 42},${from.y + 30} C${from.x + 42},${from.y + 42} ${to.x + 42},${to.y - 12} ${to.x + 42},${to.y}`);
-        line.setAttribute("class", "graph-edge");
-        line.setAttribute("marker-end", `url(#${markerId})`);
-        svg.append(line);
+        const follows = trail.has(task.id) && trail.has(dependency);
+        const working2 = task.status === "running" && !taskPaused(task) && tasks.get(dependency)?.status === "succeeded";
+        const start = from.x + midpoint, end = to.x + midpoint;
+        const y1 = from.y + nodeHeight, y2 = to.y;
+        svg.append(svgNode("path", {
+          d: `M${start},${y1} C${start},${y1 + 14} ${end},${y2 - 14} ${end},${y2}`,
+          class: `graph-edge${follows ? " traced" : trail.size ? " quiet" : ""}${working2 ? " working" : ""}`,
+          "marker-end": `url(#${markerId})`
+        }));
       }
       for (const [index, task] of run.tasks.entries()) {
-        const visibleStatus = taskPaused(task) ? "paused" : task.status;
+        const status = taskPaused(task) ? "paused" : task.status;
+        const role = roleLabels[task.role] ?? task.role;
+        const state = labels[status] ?? status;
         const position = positions.get(task.id);
-        const group = this.document.createElementNS(ns, "g");
-        group.setAttribute("class", `graph-task ${statusTone(visibleStatus)} ${task.id === this.taskId ? "selected" : ""}`);
-        group.setAttribute("transform", `translate(${position.x},${position.y})`);
-        group.setAttribute("role", "button");
-        group.setAttribute("tabindex", "0");
-        group.setAttribute("aria-label", `${roleLabels[task.role]}: ${task.label}. ${labels[visibleStatus]}`);
-        const title = this.document.createElementNS(ns, "title");
-        title.textContent = `${task.label} \xB7 ${labels[visibleStatus]}`;
-        const rect = this.document.createElementNS(ns, "rect");
-        rect.setAttribute("width", "84");
-        rect.setAttribute("height", "30");
-        rect.setAttribute("rx", "5");
-        const text = this.document.createElementNS(ns, "text");
-        text.setAttribute("x", "42");
-        text.setAttribute("y", "13");
-        text.textContent = `${String(index + 1).padStart(2, "0")} ${roleLabels[task.role] ?? task.role}`;
-        const status = this.document.createElementNS(ns, "text");
-        status.setAttribute("x", "42");
-        status.setAttribute("y", "24");
-        status.setAttribute("class", "graph-status");
-        status.textContent = labels[visibleStatus] ?? visibleStatus;
-        group.append(title, rect, text, status);
+        const group = svgNode("g", {
+          class: `graph-task ${statusTone(status)}${task.id === this.taskId ? " selected" : ""}${trail.size && !trail.has(task.id) ? " quiet" : ""}`,
+          transform: `translate(${position.x},${position.y})`,
+          role: "button",
+          tabindex: 0,
+          "aria-label": `${role}. ${task.label}. ${state}`,
+          "aria-pressed": String(task.id === this.taskId),
+          "data-graph-task": task.id
+        });
+        if (journey) group.id = `journey-graph-${task.id}`;
+        const title = svgNode("title");
+        title.textContent = `${task.label} \xB7 ${state}`;
+        const rect = svgNode("rect", { width: nodeWidth, height: nodeHeight, rx: 2 });
+        const heading = svgNode("text", { x: midpoint, y: wide ? 16 : 13 });
+        heading.textContent = wide ? task.label.length > 23 ? `${task.label.slice(0, 22)}\u2026` : task.label : `${index + 1} ${role}`;
+        const detail = svgNode("text", { x: midpoint, y: wide ? 30 : 24, class: "graph-status" });
+        detail.textContent = state;
+        group.append(title, rect, heading, detail);
         const select = () => {
           this.taskId = task.id;
-          this.renderTeam();
+          this.taskTab = "output";
+          if (journey) this.renderPage();
+          else this.renderTeam();
         };
         group.addEventListener("click", select);
         group.addEventListener("keydown", (event) => {
@@ -1704,10 +2125,12 @@
       this.q("#shell").classList.remove("sidebar-open");
       this.syncNavigation();
       this.syncView();
+      this.savePosition();
       this.renderPage();
+      this.loadJournalIfVisible();
     }
     syncView() {
-      const titles = { control: "Chat e squadra", infrastructure: "Dashboard cluster", knowledge: "Conoscenza del progetto", connections: "Modelli e account", releases: "Consegne e rilasci" };
+      const titles = { control: "Chat e squadra", journey: "Percorso del progetto", infrastructure: "Dashboard cluster", knowledge: "Conoscenza del progetto", connections: "Modelli e account", releases: "Consegne e rilasci" };
       this.q("#page-title").textContent = titles[this.view];
       for (const item of this.root.querySelectorAll("[data-view]")) {
         const selected = item.dataset.view === this.view;
@@ -1724,8 +2147,10 @@
       const active = this.document.activeElement;
       const activeId = active && page.contains(active) ? active.id : "";
       const selection = activeId && active?.tagName === "INPUT" ? [active.selectionStart, active.selectionEnd] : void 0;
+      const scrollTop = page.scrollTop;
       page.replaceChildren();
-      if (this.view === "infrastructure") this.renderInfrastructure(page);
+      if (this.view === "journey") this.renderJourney(page);
+      else if (this.view === "infrastructure") this.renderInfrastructure(page);
       else if (this.view === "knowledge") this.renderKnowledge(page);
       else if (this.view === "connections") this.renderConnections(page);
       else this.renderReleases(page);
@@ -1736,6 +2161,335 @@
           if (selection && replacement.type === "search") replacement.setSelectionRange(selection[0] ?? 0, selection[1] ?? 0);
         }
       }
+      page.scrollTop = scrollTop;
+    }
+    loadJournalIfVisible() {
+      const run = this.currentRun;
+      if (this.view === "journey" && run && !this.journal.has(run.id) && !this.journalErrors.has(run.id)) void this.loadJournal(run);
+    }
+    async loadJournal(run, after = 0) {
+      if (this.journalLoading.has(run.id)) return;
+      this.journalLoading.add(run.id);
+      this.journalErrors.delete(run.id);
+      const epoch = this.identityEpoch;
+      this.renderPage();
+      try {
+        const response = await this.api.request("GET", `/api/runs/${encodeURIComponent(run.id)}/events?after=${after}`);
+        if (epoch !== this.identityEpoch) return;
+        this.journal.set(run.id, { events: [...after ? this.journal.get(run.id)?.events ?? [] : [], ...response.events], nextCursor: response.nextCursor });
+        if (this.journal.size > 50) this.journal.delete(this.journal.keys().next().value);
+      } catch (error) {
+        if (epoch === this.identityEpoch) this.journalErrors.set(run.id, errorMessage(error));
+      } finally {
+        if (epoch === this.identityEpoch) {
+          this.journalLoading.delete(run.id);
+          if (!this.disposed && this.view === "journey" && this.currentRun?.id === run.id) this.renderPage();
+        }
+      }
+    }
+    runEvents(runId) {
+      const events = this.journal.get(runId)?.events ?? [];
+      const liveEvents = this.events.filter((event) => event.runId === runId && event.id > 0);
+      return Array.from(new Map([...events, ...liveEvents].map((event) => [event.id, event])).values()).sort((a, b) => a.id - b.id);
+    }
+    renderJourney(page) {
+      const project = this.project;
+      page.append(this.pageIntro(project?.name ?? "Percorso del progetto", "Missioni, rami e risultati dello stesso progetto.", "PERCORSO", this.button("Torna alla chat", () => this.setView("control"), { icon: "arrow" })));
+      if (!project || !this.data) return;
+      const columns = this.el("div", "journey-layout");
+      const index = this.el("aside", "journey-index");
+      index.setAttribute("aria-label", "Cronologia del progetto");
+      const filter = this.input("search", this.journeyQuery, "Cerca missione, file o agente");
+      filter.id = "journey-search";
+      filter.setAttribute("aria-label", "Cerca nella cronologia del progetto");
+      filter.addEventListener("input", () => {
+        this.journeyQuery = filter.value;
+        this.renderPage();
+      });
+      index.append(filter);
+      const query = this.journeyQuery.trim().toLocaleLowerCase();
+      const conversations = this.data.conversations.filter((item) => item.projectId === project.id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const runs = this.data.runs.filter((item) => item.projectId === project.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const activeRun = this.currentRun;
+      for (const conversation of conversations) {
+        const allRuns = runs.filter((run) => run.conversationId === conversation.id);
+        const matchingRuns = conversation.title.toLocaleLowerCase().includes(query) ? allRuns : allRuns.filter((run) => [run.goal, ...run.tasks.map((task) => task.label), ...this.data.artifacts.filter((item) => item.runId === run.id).map((item) => item.name)].join(" ").toLocaleLowerCase().includes(query));
+        if (query && !matchingRuns.length && !conversation.title.toLocaleLowerCase().includes(query)) continue;
+        const section = this.el("section", `journey-thread${conversation.branch ? " branch" : ""}`);
+        const title = this.button("", () => this.selectConversation(conversation), { className: "text-button thread-title", icon: conversation.branch ? "layers" : "book", title: conversation.title });
+        title.append(this.el("span", "journey-thread-title", conversation.title));
+        section.append(title);
+        if (conversation.branch) {
+          const parent = conversations.find((item) => item.id === conversation.branch?.conversationId);
+          if (parent) section.append(this.el("small", "", `Ramo da ${parent.title}`));
+        }
+        for (const run of matchingRuns) {
+          const control = this.button("", () => this.openRun(run, "journey"), { className: "journey-run", title: run.goal });
+          control.id = `journey-run-${run.id}`;
+          control.setAttribute("aria-label", `${run.goal} \xB7 ${labels[run.status] ?? run.status}`);
+          if (activeRun?.id === run.id) control.setAttribute("aria-current", "true");
+          control.append(this.el("span", "journey-run-title", run.goal), this.el("time", "", dateTime(run.createdAt)), this.pill(run.status));
+          section.append(control);
+        }
+        index.append(section);
+      }
+      if (index.childElementCount === 1) index.append(this.el("p", "empty", query ? "Nessun risultato." : "Le conversazioni e le missioni del progetto appariranno qui."));
+      const inspect = this.el("section", "journey-main");
+      inspect.setAttribute("aria-label", "Dettaglio del percorso");
+      if (activeRun) this.renderJourneyRun(inspect, activeRun);
+      else inspect.append(this.el("h3", "", "Seleziona una missione o un\u2019attivit\xE0"));
+      columns.append(index, inspect);
+      page.append(columns);
+    }
+    renderJourneyRun(inspect, run) {
+      const head = this.el("div", "journey-run-heading");
+      head.append(this.el("h3", "", run.goal), this.pill(run.status));
+      const buttons = this.el("div", "row");
+      buttons.append(this.button("Apri conversazione", () => this.openRun(run, "control"), { icon: "arrow", className: "button small" }), this.button("Copia collegamento", () => this.runLink(run), { icon: "share", className: "button small subtle" }));
+      inspect.append(head, buttons);
+      const thread = this.conversation;
+      const source = thread?.messages.find((message2) => message2.id === run.sourceMessageId || message2.role === "user" && message2.runId === run.id);
+      if (source && this.canWrite) buttons.append(this.button("Crea ramo dalla richiesta", () => this.branchDialog(source.id), { icon: "layers", className: "button small subtle" }));
+      if (source) inspect.append(this.button("Leggi la richiesta e gli allegati", () => {
+        const { body } = this.modal("Richiesta alla base del percorso");
+        body.append(renderMarkdown(this.document, source.text));
+        for (const id of source.attachmentIds ?? []) {
+          const name = this.data?.artifacts.find((item) => item.id === id)?.name;
+          if (name) body.append(this.button(name, () => this.openArtifact(id), { className: "text-button", icon: "file" }));
+        }
+      }, { className: "text-button", icon: "file" }));
+      if (run.parentRunId) {
+        const parent = this.data?.runs.find((item) => item.id === run.parentRunId);
+        if (parent) inspect.append(this.button(`Precedente \xB7 ${parent.goal}`, () => this.openRun(parent, "journey"), { className: "text-button", icon: "layers" }));
+      }
+      if (run.spec?.targetId) inspect.append(this.el("p", "journey-workspace", `Workspace ${run.worktree?.workspace ?? run.spec.workspace ?? "."} \xB7 ${this.data?.targets.find((target) => target.id === run.spec?.targetId)?.label ?? run.spec.targetId}`));
+      const events = this.runEvents(run.id);
+      const selected = events.find((event) => event.id === this.journeyEventId);
+      const slice = selected ? events.filter((event) => event.id <= selected.id) : events;
+      const visible = selected ? this.historicalRun(run, slice) : run;
+      const mapLabel = this.el("div", "journey-section");
+      mapLabel.append(this.el("h4", "", "Dipendenze e rami"), this.el("span", "pill", selected ? dateTime(selected.createdAt) : "Adesso"));
+      if (selected) {
+        const live = this.button("Torna adesso", () => {
+          this.journeyEventId = void 0;
+          this.renderPage();
+        }, { className: "button small subtle" });
+        live.id = "journey-live";
+        mapLabel.append(live);
+      }
+      inspect.append(mapLabel);
+      if (visible.tasks.length) inspect.append(this.taskGraph(visible, true));
+      else inspect.append(this.el("p", "empty", selected ? "Nessuna attivit\xE0 documentata a questo punto." : "Non ci sono attivit\xE0 registrate."));
+      if (this.taskId && visible.tasks.some((task) => task.id === this.taskId)) {
+        const taskPanel = this.el("div", "journey-task");
+        taskPanel.id = "journey-active-task";
+        inspect.append(taskPanel);
+        this.renderTaskDetail(taskPanel, visible, !!selected);
+      }
+      this.renderJourneyEvents(inspect, run, events, selected);
+      const evidenceIds = new Set(slice.flatMap((event) => typeof event.data?.evidenceId === "string" ? [event.data.evidenceId] : []));
+      const artifactIds = new Set(slice.flatMap((event) => typeof event.data?.artifactId === "string" ? [event.data.artifactId] : []));
+      const evidence = this.data?.evidence.filter((item) => item.runId === run.id && (!selected || evidenceIds.has(item.id))) ?? [];
+      if (evidence.length) {
+        inspect.append(this.el("h4", "", "Verifiche ed evidenze"));
+        for (const item of evidence) {
+          const row = this.el("div", "journey-evidence");
+          row.append(this.pill(item.ok ? "succeeded" : "failed"), this.button(item.title, () => this.textDialog(item.title, item.output), { className: "text-button" }));
+          const task = visible.tasks.find((task2) => task2.id === item.taskId);
+          if (task) row.append(this.button("Segui percorso", () => {
+            this.taskId = task.id;
+            this.taskTab = "output";
+            this.renderPage();
+            this.document.getElementById(`journey-graph-${task.id}`)?.focus();
+          }, { className: "text-button trace-evidence" }));
+          inspect.append(row);
+        }
+      }
+      for (const file of this.data?.artifacts.filter((item) => item.runId === run.id && (!selected || artifactIds.has(item.id))) ?? []) inspect.append(this.button(file.name, () => this.openArtifact(file.id), { icon: "file", className: "text-button journey-artifact" }));
+      if (!selected) {
+        this.renderWorktree(inspect, run);
+        this.renderRunOperations(inspect, run);
+      }
+    }
+    renderWorktree(parent, run) {
+      const worktree = run.worktree;
+      if (!worktree) return;
+      const box = this.el("section", "journey-operations");
+      box.append(this.el("h4", "", "Candidato Git isolato"), this.el("p", "fine-print", `Base ${worktree.baseCommit.slice(0, 12)}${worktree.candidateCommit ? ` \xB7 Candidato ${worktree.candidateCommit.slice(0, 12)}` : ""}${worktree.promotedRef ? ` \xB7 Pubblicato come ${worktree.promotedRef}` : ""}`));
+      const artifact = this.data?.artifacts.find((item) => item.id === worktree.reviewArtifactId);
+      if (artifact) box.append(this.button("Apri differenze verificate", () => this.openArtifact(artifact.id, true), { className: "text-button", icon: "code" }));
+      if (worktree.changedFiles?.length) {
+        const details = this.el("details", "advanced");
+        details.append(this.el("summary", "", `File modificati (${worktree.changedFiles.length})`));
+        const files = this.el("ul");
+        for (const file of worktree.changedFiles) {
+          const item = this.el("li");
+          item.append(this.el("code", "", file));
+          files.append(item);
+        }
+        details.append(files);
+        box.append(details);
+      }
+      const promotion = run.operations?.some((operation) => operation.kind === "promotion" && operation.state === "uncertain");
+      const cleanup = run.operations?.some((operation) => operation.kind === "cleanup" && operation.state === "uncertain");
+      if ((worktree.state === "verified" || promotion && worktree.state === "promoted") && run.verification && this.operator) {
+        const verificationDigest = run.verification.digest;
+        box.append(this.button(promotion ? "Verifica promozione Git" : "Promuovi candidato", () => this.confirm("Pubblica il candidato Git?", "Crea un ramo gestito a partire dal candidato verificato.", async () => {
+          await this.api.request("POST", `/api/runs/${encodeURIComponent(run.id)}/promote`, { verificationDigest });
+          await this.refresh();
+        }), { className: "button small primary", icon: "check" }));
+      }
+      if ((worktree.state === "promoted" || cleanup && worktree.state === "removed") && closedRunStatuses.has(run.status) && this.operator) {
+        box.append(this.button(cleanup ? "Verifica pulizia Git" : "Rimuovi checkout temporaneo", () => this.confirm("Rimuovi il checkout temporaneo?", "Il coordinator verifica che il checkout sia pulito prima di rimuoverlo.", async () => {
+          await this.api.request("POST", `/api/runs/${encodeURIComponent(run.id)}/cleanup`, {});
+          await this.refresh();
+        }), { className: "text-button", icon: "trash" }));
+      }
+      parent.append(box);
+    }
+    renderJourneyEvents(inspect, run, events, selected) {
+      const heading = this.el("div", "journey-section");
+      heading.append(this.el("h4", "", "Registro attivit\xE0"));
+      inspect.append(heading);
+      if (this.journalLoading.has(run.id)) inspect.append(this.el("p", "fine-print", "Caricamento del registro\u2026"));
+      const error = this.journalErrors.get(run.id);
+      if (error) inspect.append(this.el("p", "form-error", error), this.button("Ricarica registro", () => this.loadJournal(run), { className: "button small" }));
+      if (selected) {
+        const eventDetail = this.el("div", "journey-event-detail");
+        eventDetail.append(this.el("time", "", dateTime(selected.createdAt)), this.el("p", "", selected.text ?? eventTitle(selected.type)));
+        inspect.append(eventDetail);
+      }
+      const recorded = events.filter((event) => event.type !== "state.changed");
+      const list = this.el("div", "journey-events");
+      list.setAttribute("aria-label", "Transizioni registrate");
+      for (const event of recorded) {
+        const card = this.button(event.text ?? eventTitle(event.type), () => {
+          this.journeyEventId = event.id;
+          this.taskId = event.taskId ?? "";
+          this.taskTab = "events";
+          this.renderPage();
+        }, { className: "journey-event" });
+        card.id = `journal-event-${event.id}`;
+        card.prepend(this.el("time", "", time(event.createdAt)));
+        if (event.id === selected?.id) card.setAttribute("aria-current", "true");
+        list.append(card);
+      }
+      if (recorded.length) inspect.append(list);
+      else if (!this.journalLoading.has(run.id) && !error) inspect.append(this.el("p", "empty", "Nessuna transizione registrata."));
+      const cursor = this.journal.get(run.id)?.nextCursor;
+      if (cursor != null) inspect.append(this.button("Carica altri eventi", () => this.loadJournal(run, cursor), { className: "button small" }));
+    }
+    historicalRun(run, events) {
+      const planned = new Set(events.flatMap((event) => event.type === "plan.created" && Array.isArray(event.data?.taskIds) ? event.data.taskIds.filter((id) => typeof id === "string") : []));
+      const tasks = run.tasks.flatMap((task) => {
+        const history = events.filter((event) => event.taskId === task.id);
+        const transition = history.findLast((event) => ["route.queued", "task.updated", "task.attempt_started", "task.attempt_finished"].includes(event.type));
+        if (!transition && !planned.has(task.id)) return [];
+        const state = transition?.type === "task.attempt_started" ? "running" : transition?.type === "route.queued" || !transition ? "queued" : transition?.data?.status;
+        const route = history.findLast((event) => event.type === "route.selected")?.data?.chosenRouteId;
+        const status = ["queued", "running", "succeeded", "failed", "cancelled", "blocked"].find((value2) => value2 === state);
+        const recordedEvidence = history.flatMap((event) => event.type === "evidence.created" && typeof event.data?.evidenceId === "string" ? [event.data.evidenceId] : []);
+        return [{ ...task, status: status ?? "queued", control: transition?.data?.control === "paused" ? "paused" : void 0, routeId: typeof route === "string" ? route : "", evidenceIds: recordedEvidence, attempts: void 0, output: void 0, error: void 0, context: void 0, routing: void 0 }];
+      });
+      return { ...run, tasks };
+    }
+    runLink(run) {
+      const origin = this.host?.endpoint ?? this.win.location.origin;
+      const fragment = new URLSearchParams({ project: run.projectId, conversation: run.conversationId, run: run.id, view: "journey" });
+      const { body } = this.modal("Collegamento alla missione", "Per aprire il percorso serve un account autorizzato a leggere la missione.");
+      const field = this.input("text", `${origin}/#${fragment.toString()}`);
+      field.readOnly = true;
+      body.append(this.field("Indirizzo", field));
+      field.focus();
+      field.select();
+      body.append(this.button("Copia", async () => {
+        if (this.api.copyText) this.api.copyText(field.value);
+        else await this.win.navigator.clipboard.writeText(field.value);
+        this.toast("Collegamento copiato.");
+      }, { className: "button primary" }));
+    }
+    renderRunOperations(parent, run, uncertainOnly = false) {
+      const operations = run.operations?.filter((operation) => !uncertainOnly || operation.state === "uncertain") ?? [];
+      if (!operations.length) return;
+      const section = this.el("section", "journey-operations");
+      section.append(this.el("h4", "", uncertainOnly ? "Effetti da verificare" : "Effetti registrati"));
+      const states = { dispatched: "Avviamento", awaiting_approval: "Attende approvazione", running: "In corso", succeeded: "Riuscito", failed: "Fallito", denied: "Negato", uncertain: "Esito da verificare", reconciled: "Esito riconciliato" };
+      for (const operation of operations) {
+        const row = this.el("article", "run-operation");
+        row.append(this.el("strong", "", operation.label), this.el("span", "fine-print", `${states[operation.state]} \xB7 ${dateTime(operation.finishedAt ?? operation.startedAt)}`));
+        if (operation.reconciliation) row.append(this.el("p", "fine-print", `${reconciliationLabel(operation.reconciliation.outcome)} \xB7 ${operation.reconciliation.note}`));
+        if (operation.evidenceId) {
+          const evidence = this.data?.evidence.find((item) => item.id === operation.evidenceId);
+          if (evidence) row.append(this.button("Apri evidenza", () => this.textDialog(evidence.title, evidence.output), { className: "text-button" }));
+        }
+        if (operation.state === "uncertain" && this.operator) {
+          if (operation.kind === "promotion" || operation.kind === "cleanup") {
+            if (uncertainOnly) row.append(this.button("Apri candidato Git", () => this.openRun(run, "journey"), { className: "button small subtle", icon: "code" }));
+            else row.append(this.el("p", "fine-print", "Usa la verifica specifica nella scheda del candidato Git."));
+          } else row.append(this.button("Registra esito verificato", () => this.reconcileDialog(run, operation), { className: "button small subtle", icon: "check" }));
+        }
+        section.append(row);
+      }
+      parent.append(section);
+    }
+    reconcileDialog(run, operation) {
+      const { dialog, body } = this.modal("Riconcilia l\u2019effetto", `Verifica l\u2019operazione \xAB${operation.label}\xBB sul target e registra ci\xF2 che hai osservato.`);
+      const form = this.el("form");
+      const outcome = this.select([{ value: "", label: "Scegli un esito" }, ...["applied", "not_applied", "rolled_back"].map((value2) => ({ value: value2, label: reconciliationLabel(value2) }))], "");
+      outcome.required = true;
+      const note = this.el("textarea");
+      note.required = true;
+      note.maxLength = 4e3;
+      note.rows = 4;
+      const error = this.el("p", "form-error");
+      error.hidden = true;
+      error.setAttribute("role", "alert");
+      const save = this.el("button", "button primary", "Registra esito");
+      save.type = "submit";
+      form.append(this.field("Esito verificato", outcome), this.field("Evidenza osservata", note, "Indica ci\xF2 che hai controllato sul target."), error, save);
+      body.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void this.formAction(save, error, async () => {
+          await this.api.request("POST", `/api/runs/${encodeURIComponent(run.id)}/reconcile`, { operationId: operation.id, outcome: outcome.value, note: note.value.trim() });
+          dialog.close();
+          await this.refresh();
+        });
+      });
+      outcome.focus();
+    }
+    branchDialog(preferredMessageId) {
+      const conversation = this.conversation;
+      if (!conversation || !this.canWrite || !conversation.messages.length) return;
+      const { dialog, body } = this.modal("Crea ramo della conversazione", "Scegli il punto da cui esplorare un\u2019alternativa. Dal nuovo ramo puoi tornare al messaggio di origine.");
+      const form = this.el("form");
+      const title = this.input("text", "", "Es. Una seconda implementazione");
+      title.maxLength = 120;
+      const streaming = conversation.messages.findIndex((message2) => message2.status === "streaming");
+      const complete = streaming >= 0 ? conversation.messages.slice(0, streaming) : conversation.messages;
+      const messages = complete.slice(-60).reverse();
+      const preferred = complete.find((message2) => message2.id === preferredMessageId);
+      if (preferred && !messages.includes(preferred)) messages.push(preferred);
+      const anchor = this.select(messages.map((message2) => ({ value: message2.id, label: `${message2.role === "user" ? "Tu" : "Orchestratore"} \xB7 ${message2.text.replace(/\s+/g, " ").slice(0, 100)}` })), preferred?.id ?? messages[0]?.id ?? "");
+      anchor.required = true;
+      const submit = this.el("button", "button primary", "Crea ramo");
+      submit.type = "submit";
+      submit.disabled = !messages.length;
+      const error = this.el("p", "form-error");
+      error.hidden = true;
+      error.setAttribute("role", "alert");
+      form.append(this.field("Da quale messaggio?", anchor), this.field("Titolo del nuovo ramo", title), error, submit);
+      body.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void this.formAction(submit, error, async () => {
+          const branch = await this.api.request("POST", `/api/conversations/${encodeURIComponent(conversation.id)}/branch`, { messageId: anchor.value, ...title.value.trim() ? { title: title.value.trim() } : {} });
+          dialog.close();
+          await this.refresh();
+          this.selectConversation(branch);
+        });
+      });
+      anchor.focus();
     }
     pageIntro(title, subtitle, eyebrow, action) {
       const intro = this.el("header", "page-intro");
@@ -1746,16 +2500,28 @@
       return intro;
     }
     renderInfrastructure(page) {
-      page.append(this.pageIntro("Cluster / sistema distribuito", "Nodi fisici, motori distribuiti e provider restano distinti. Vedi dove gira ogni modello e quali risorse condivide.", "INFRASTRUTTURA DISTRIBUITA", this.button("Aggiorna telemetria", async () => {
+      page.append(this.pageIntro("Cluster", "Nodi, collegamenti, motori e risorse condivise.", "INFRASTRUTTURA DISTRIBUITA"));
+      const actions = this.el("div", "row cluster-actions");
+      if (this.operator) actions.append(this.button("Aggiorna telemetria", async () => {
         await this.api.request("POST", "/api/telemetry/refresh", {});
         await this.refresh();
-      }, { icon: "refresh" })));
+      }, { icon: "refresh" }));
+      if (this.data?.user.id !== "guest") actions.append(this.button("Consumi", () => this.usageDialog(), { icon: "activity" }));
+      if (this.api.native && this.api.openCockpit) actions.append(this.button("Cockpit hardware", () => this.api.openCockpit?.(), { icon: "activity" }));
+      else if (!this.api.native) {
+        const cockpit = this.el("a", "button", "Cockpit hardware");
+        cockpit.href = "/cockpit";
+        actions.append(cockpit);
+      }
+      page.append(actions);
       page.append(this.createActivity(true));
       const grid = this.el("div", "cards-grid");
       for (const node of this.data.nodes) {
         const telemetry = this.data.telemetry.find((item) => item.nodeId === node.id);
         const card = this.el("article", "card node-card");
         card.dataset.nodeId = node.id;
+        card.id = `cluster-node-${node.id}`;
+        card.tabIndex = -1;
         const head = this.el("div", "row spread");
         const copy = this.el("div");
         const title = this.el("h3", "node-title");
@@ -1873,7 +2639,7 @@
       ), this.el("p", "fine-print", "Le misure del motore possono includere richieste avviate dal coordinator: i conteggi non si sommano. \u2014 indica un dato non osservato."));
     }
     renderKnowledge(page) {
-      page.append(this.pageIntro("Il progetto ricorda come lavori.", "Documenti, decisioni e metodi hanno una fonte e uno stato. Il contesto usa soltanto ci\xF2 che \xE8 autorizzato e pertinente al compito.", "MEMORIA E CONTESTO", this.button("Aggiungi conoscenza", () => this.memoryDialog(), { className: "button primary", icon: "plus", disabled: !this.project || !this.canWrite })));
+      page.append(this.pageIntro("Conoscenza del progetto", "Documenti, conversazioni, metodi e decisioni con le relative fonti.", "MEMORIA E CONTESTO", this.button("Aggiungi conoscenza", () => this.memoryDialog(), { className: "button primary", icon: "plus", disabled: !this.project || !this.canWrite })));
       const tabs = this.el("div", "knowledge-tabs");
       for (const [id, text] of [["memories", "Metodi e decisioni"], ["files", "Allegati e documenti"], ["search", "Cerca nel contesto"]]) tabs.append(this.button(text, () => {
         this.knowledgeTab = id;
@@ -1909,43 +2675,81 @@
         }
         if (!artifacts.length) page.append(this.el("p", "empty", "Nessun documento. Carica un Markdown, un brief o un file di testo."));
       } else {
-        const form = this.el("form", "page-toolbar");
-        const input = this.input("search", this.searchQuery, "Cerca una procedura, una decisione, un metodo\u2026");
-        input.id = "memory-search";
-        input.setAttribute("aria-label", "Cerca nella memoria del progetto");
-        input.addEventListener("input", () => {
-          this.searchQuery = input.value;
-        });
-        const submit = this.el("button", "button primary", "Cerca");
-        submit.type = "submit";
-        form.append(input, submit);
-        form.addEventListener("submit", (event) => {
-          event.preventDefault();
-          void this.perform(submit, async () => {
-            const result = await this.api.request("POST", "/api/memories/search", { projectId: this.projectId, query: input.value });
-            this.searchResults = result.results;
-            this.searchQuery = input.value;
-            this.renderPage();
-          });
-        });
-        page.append(form);
-        const embedding = this.route(this.project.routes.embedding);
-        page.append(this.info(embedding ? `Ricerca lessicale e vettoriale tramite ${embedding.label}. Gli embedding vengono calcolati dal provider configurato; la selezione rispetta sempre i permessi del progetto.` : "La ricerca lessicale \xE8 attiva. Per aggiungere la ricerca vettoriale, scegli una route di embedding nelle impostazioni del progetto. Non vengono generati vettori artificiali."));
-        if (embedding) page.append(this.button("Aggiorna indice vettoriale", async () => {
-          const result = await this.api.request("POST", `/api/projects/${encodeURIComponent(this.projectId)}/reindex`, {});
-          this.toast(`${result.indexed} voci indicizzate \xB7 ${result.skipped} saltate.`);
-          await this.refresh();
-        }, { icon: "refresh", disabled: !this.canWrite }));
-        if (this.searchResults) {
-          page.append(this.el("p", "search-count", `${this.searchResults.length} risultati`));
-          for (const item of this.searchResults) {
-            const card = this.memoryCard(item.memory);
-            card.append(this.el("p", "provenance", `${item.method} \xB7 punteggio ${value(item.score, "", 3)}`));
-            page.append(card);
-          }
-          if (!this.searchResults.length) page.append(this.el("p", "empty", "Nessuna memoria pertinente trovata."));
-        }
+        this.renderKnowledgeSearch(page, this.project);
       }
+    }
+    renderKnowledgeSearch(page, project) {
+      const path = `/api/projects/${encodeURIComponent(project.id)}`;
+      const form = this.el("form", "page-toolbar");
+      const input = this.input("search", this.searchQuery, "Cerca una procedura, un file o una decisione\u2026");
+      input.id = "memory-search";
+      input.required = true;
+      input.setAttribute("aria-label", "Cerca nella conoscenza del progetto");
+      input.addEventListener("input", () => {
+        this.searchQuery = input.value;
+      });
+      const submit = this.el("button", "button primary", "Cerca");
+      submit.type = "submit";
+      submit.disabled = !this.canWrite;
+      form.append(input, submit);
+      page.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const query = input.value.trim();
+        if (!query) return;
+        const epoch = this.identityEpoch;
+        const knowledgeEpoch = this.knowledgeEpoch;
+        void this.perform(submit, async () => {
+          const value2 = await this.api.request("POST", `${path}/knowledge/search`, { query });
+          if (this.projectId === project.id && this.identityEpoch === epoch && this.knowledgeEpoch === knowledgeEpoch) {
+            this.searchResults = { projectId: project.id, value: value2 };
+            this.renderPage();
+          }
+        });
+      });
+      const embedding = this.route(project.routes.embedding);
+      if (embedding) page.append(this.button("Aggiorna indice vettoriale", async () => {
+        const result = await this.api.request("POST", `${path}/reindex`, {});
+        this.toast(`${result.indexed} voci indicizzate \xB7 ${result.skipped} saltate.`);
+        await this.refresh();
+      }, { icon: "refresh", disabled: !this.canWrite }));
+      else page.append(this.info("Ricerca lessicale. Puoi scegliere un modello di embedding nelle impostazioni del progetto."));
+      if (this.searchResults?.projectId !== project.id) return;
+      const { results, report } = this.searchResults.value;
+      page.append(this.el("p", "search-count", `${results.length} risultati \xB7 ${report.scannedSources} fonti esaminate \xB7 ${report.usedChars}/${report.maxChars} caratteri`));
+      if (report.truncated) page.append(this.el("p", "fine-print", "Il limite della ricerca ha escluso altre fonti o passaggi."));
+      for (const item of results) {
+        const card = this.el("article", "knowledge-card");
+        const citation = item.citation;
+        const kind = item.kind === "memory" ? "Memoria" : "Allegato";
+        card.append(this.el("h3", "", item.title), this.el("div", "body", item.text), this.el("p", "provenance", `${kind} \xB7 ${item.method} \xB7 ${citation.revision === void 0 ? "" : `revisione ${citation.revision} \xB7 `}${citation.scope === "project" ? "progetto" : "privata"} \xB7 caratteri ${citation.start}\u2013${citation.end}`));
+        if (item.signals?.matchingTerms.length) card.append(this.el("p", "fine-print", `Termini corrispondenti \xB7 ${item.signals.matchingTerms.join(", ")}`));
+        card.append(this.button("Apri fonte citata", () => this.openKnowledgeSource(project.id, citation), { className: "text-button", icon: "file" }));
+        page.append(card);
+      }
+      if (!results.length) page.append(this.el("p", "empty", "Nessuna fonte pertinente trovata."));
+      const embeddingState = { "not-configured": "embedding da configurare", "not-indexed": "indice vettoriale assente", unavailable: "modello di embedding non disponibile", incompatible: "indice vettoriale incompatibile", used: "indice vettoriale usato" };
+      page.append(this.el("p", "fine-print", `Ricerca ${report.mode === "hybrid" ? "lessicale e vettoriale" : "lessicale"} \xB7 ${report.scannedPassages} passaggi${embeddingState[report.embeddingStatus] ? ` \xB7 ${embeddingState[report.embeddingStatus]}` : ""}`));
+    }
+    async openKnowledgeSource(projectId, citation) {
+      const epoch = this.identityEpoch, knowledgeEpoch = this.knowledgeEpoch;
+      const query = new URLSearchParams({ hash: citation.sourceHash });
+      if (citation.revision !== void 0) query.set("revision", String(citation.revision));
+      const result = await this.api.request("GET", `/api/projects/${encodeURIComponent(projectId)}/knowledge/sources/${encodeURIComponent(citation.sourceId)}?${query.toString()}`);
+      if (this.identityEpoch !== epoch || this.knowledgeEpoch !== knowledgeEpoch || this.projectId !== projectId) return;
+      const { dialog, body } = this.modal(result.source.title, result.source.revision === void 0 ? "Fonte citata" : `Fonte citata \xB7 revisione ${result.source.revision}`);
+      this.sourceDialog = dialog;
+      dialog.addEventListener("close", () => {
+        if (this.sourceDialog === dialog) this.sourceDialog = void 0;
+      });
+      const quote = this.el("blockquote", "knowledge-quote", result.content.slice(citation.start, citation.end));
+      body.append(quote, this.el("p", "fine-print", `SHA-256 \xB7 ${citation.sourceHash}`));
+      const complete = this.el("details", "advanced");
+      complete.append(this.el("summary", "", "Fonte completa"));
+      complete.addEventListener("toggle", () => {
+        if (complete.open && complete.childElementCount === 1) complete.append(renderMarkdown(this.document, result.content));
+      });
+      body.append(complete);
     }
     memoryCard(memory) {
       const card = this.el("article", "knowledge-card");
@@ -1953,25 +2757,48 @@
       const head = this.el("div", "row spread");
       head.append(this.el("h3", "", memory.title), this.pill(memory.status));
       card.append(head, this.el("div", "body", memory.content));
-      const sources = memory.sourceIds.map((id) => this.data.artifacts.find((item) => item.id === id)?.name ?? this.data.runs.find((item) => item.id === id)?.goal ?? id);
+      const sources = memory.sourceIds.map((id) => this.data.artifacts.find((item) => item.id === id)?.name ?? this.data.runs.find((item) => item.id === id)?.goal ?? this.data.conversations.find((item) => item.id === id)?.title ?? id);
       card.append(this.el("p", "provenance", `Revisione ${memory.revision} \xB7 ${memory.kind === "method" ? "Metodo di lavoro" : memory.kind === "decision" ? "Decisione" : memory.kind === "brief" ? "Brief" : "Documento"} \xB7 ${memory.indexed ? "Indicizzata" : "Indice lessicale"}${sources.length ? ` \xB7 Fonti: ${sources.join(", ")}` : " \xB7 Fonte: inserimento esplicito"}`));
       const actions = this.el("div", "card-actions");
+      const mayManage = this.canWrite && (memory.ownerId === this.data.user.id || this.data.user.role === "admin");
       if (memory.status === "candidate") actions.append(this.button("Approva per il contesto", async () => {
         await this.api.request("PATCH", `/api/memories/${encodeURIComponent(memory.id)}`, { status: "approved" });
         await this.refresh();
-      }, { className: "button small primary", icon: "check", disabled: !this.canWrite }));
-      actions.append(this.button("Modifica", () => this.memoryDialog(memory), { className: "button small subtle", icon: "edit", disabled: !this.canWrite }), this.button("Dimentica", () => this.confirm("Dimentica questa memoria?", "Testo, revisioni e vettori di questa voce verranno rimossi. La cronologia della conversazione resta separata.", async () => {
+      }, { className: "button small primary", icon: "check", disabled: !mayManage }));
+      if (memory.status === "approved" && mayManage) actions.append(this.button("Ritira dal contesto", async () => {
+        await this.api.request("PATCH", `/api/memories/${encodeURIComponent(memory.id)}`, { status: "retired" });
+        this.searchResults = void 0;
+        await this.refresh();
+      }, { className: "button small subtle" }));
+      actions.append(this.button("Modifica", () => this.memoryDialog(memory), { className: "button small subtle", icon: "edit", disabled: !mayManage }), this.button("Dimentica", () => this.confirm("Dimentica questa memoria?", "Testo, revisioni e vettori di questa voce verranno rimossi. La cronologia della conversazione resta separata.", async () => {
         await this.api.request("DELETE", `/api/memories/${encodeURIComponent(memory.id)}`);
         this.searchResults = void 0;
         await this.refresh();
-      }), { className: "button small subtle", icon: "trash", disabled: !this.canWrite }), this.el("span", "memory-scope", memory.scope === "project" ? "Condivisa nel progetto" : "Privata"));
+      }), { className: "button small subtle", icon: "trash", disabled: !mayManage }), this.el("span", "memory-scope", memory.scope === "project" ? "Condivisa nel progetto" : "Privata"));
       card.append(actions);
       return card;
     }
     renderConnections(page) {
-      page.append(this.pageIntro("Scegli la risorsa giusta per ogni agente.", "Collega un provider, trova i suoi modelli e assegna gli account. GemRouter \xE8 un fornitore di inferenza selezionabile come gli altri.", "MODELLI \xB7 ACCOUNT \xB7 QUOTE", this.button("Collega un account", () => this.connectionDialog(), { className: "button primary", icon: "plus", disabled: !this.canWrite })));
+      page.append(this.pageIntro("Modelli e account", "Collega un provider, verifica un account e consulta quote e disponibilit\xE0.", "CONNESSIONI", this.button("Collega un account", () => this.connectionDialog(), { className: "button primary", icon: "plus", disabled: !this.canWrite })));
+      const search = this.input("search", this.accountSearch, "Cerca provider, account o modello\u2026");
+      search.id = "accounts-search";
+      search.classList.add("accounts-search");
+      search.setAttribute("aria-label", "Cerca nelle connessioni");
+      search.addEventListener("input", () => {
+        this.accountSearch = search.value;
+        this.renderPage();
+      });
+      const toolbar = this.el("div", "row accounts-toolbar");
+      toolbar.append(search);
+      if (this.data?.user.id !== "guest") toolbar.append(this.button("Consumi", () => this.usageDialog(), { icon: "activity" }));
+      page.append(toolbar);
+      const query = this.accountSearch.trim().toLocaleLowerCase();
       const grid = this.el("div", "cards-grid");
       for (const provider of this.data.providers) {
+        const providerSearch = [provider.label, provider.kind, provider.tag, provider.baseUrl].join(" ").toLocaleLowerCase();
+        const providerAccounts = this.data.accounts.filter((item) => item.providerId === provider.id);
+        const accounts = providerSearch.includes(query) ? providerAccounts : providerAccounts.filter((account) => [account.label, labels[account.status], this.data.user.id === account.ownerId ? "personale" : "", account.shared ? "condiviso" : "", ...this.data.models.filter((model) => model.accountId === account.id).flatMap((route) => [route.label, route.model, ...route.capabilities])].join(" ").toLocaleLowerCase().includes(query));
+        if (query && !accounts.length && !providerSearch.includes(query)) continue;
         const card = this.el("article", "card connection-card");
         const heading = this.el("div", "row");
         const copy = this.el("div", "grow");
@@ -1979,47 +2806,33 @@
         heading.append(this.el("div", "provider-logo", initials(provider.label)), copy, this.pill(provider.enabled ? "ready" : "unknown", provider.enabled ? "Configurato" : "Disabilitato"));
         card.append(heading);
         card.append(this.el("p", "provider-url", provider.baseUrl ?? "CLI ufficiale sul server \xB7 configurazione dell\u2019operatore"));
-        const accounts = this.data.accounts.filter((item) => item.providerId === provider.id);
         for (const account of accounts) {
+          const owned = account.ownerId === this.data.user.id;
+          const native = provider.kind === "codex" || provider.kind === "antigravity";
+          const scope = account.shared ? "condiviso" : !owned || account.grantedUserIds?.length ? "delegato" : "personale";
           const accountRow = this.el("div", "account-row");
-          accountRow.append(this.el("span", "", `${account.label}${account.shared ? " \xB7 condiviso" : ""}`), this.pill(account.status));
+          accountRow.append(this.el("span", "", `${account.label} \xB7 ${scope}`), this.pill(account.status));
           card.append(accountRow, this.quotaElement(account));
+          if (account.quotaDomain && owned) card.append(this.el("p", "fine-print", `Dominio quota \xB7 ${account.quotaDomain}`));
+          if (native) card.append(this.el("p", "fine-print", (account.nativeProfile ?? (provider.kind === "codex" ? "isolated" : "service")) === "isolated" ? "Profilo CLI dedicato sui processi del coordinator." : "Profilo CLI del servizio."));
           const models = this.data.models.filter((item) => item.accountId === account.id);
           const tags = this.el("div", "model-tags");
           for (const model of models) tags.append(this.button(model.label, () => this.modelSettingsDialog(model), { className: "model-tag", disabled: !this.operator, title: this.operator ? "Configura capacit\xE0 del modello" : model.model }));
           card.append(tags);
           const actions = this.el("div", "card-actions");
-          actions.append(this.button("Trova modelli", async () => {
-            const result = await this.api.request("POST", `/api/accounts/${encodeURIComponent(account.id)}/discover`, {});
-            this.toast(`${result.models.length} modelli rilevati.`);
-            await this.refresh();
-          }, { className: "button small", icon: "search", disabled: !this.canWrite || ["codex", "antigravity"].includes(provider.kind) && !this.operator }));
-          if (provider.kind === "codex") actions.append(this.button("Accedi a Codex", async () => {
-            await this.api.request("POST", `/api/accounts/${encodeURIComponent(account.id)}/login`, {});
-            this.toast("Accesso avviato. Attendi le istruzioni del servizio ufficiale.");
-          }, { className: "button small subtle", disabled: !this.operator }));
-          if (provider.kind === "antigravity") actions.append(this.button("Login Antigravity", () => {
-            const modal = this.modal("Accesso ad Antigravity", "Esegui il login ufficiale sul coordinator per autorizzare la CLI.");
-            modal.body.append(
-              this.el("p", "", "Sul server o nel terminale del coordinator, con l\u2019utente funboy, esegui:"),
-              this.el("pre", "connect-command", "agy acp --login"),
-              this.el("p", "fine-print", 'Apri il link restituito nel browser, completa il login con il tuo account Google, e incolla il codice nel terminale. Al termine premi "Verifica modelli".'),
-              this.button("Verifica modelli", async () => {
-                modal.dialog.close();
-                const result = await this.api.request("POST", `/api/accounts/${encodeURIComponent(account.id)}/discover`, {});
-                this.toast(`${result.models.length} modelli verificati.`);
-                await this.refresh();
-              }, { className: "button primary full" })
-            );
-          }, { className: "button small subtle", disabled: !this.operator }));
+          actions.append(this.button("Scegli modello", () => this.modelDialog(void 0, account.id), { className: "button small", icon: "chip", disabled: !models.some((model) => this.usableRoute(model)) }));
+          if (owned && this.canWrite && (!native || this.operator)) {
+            actions.append(this.button("Verifica account", () => this.connectionDialog(provider, account), { className: "button small subtle", icon: "settings" }));
+            if (native) actions.append(this.button(`Accedi a ${provider.kind === "codex" ? "Codex" : "Antigravity"}`, () => this.startAccountLogin(account.id), { className: "button small subtle" }));
+            if (this.operator) actions.append(this.button("Accesso", () => this.delegatesDialog(account, native), { className: "button small subtle", icon: "people" }));
+          }
           card.append(actions);
         }
         if (!accounts.length) card.append(this.el("p", "fine-print", "Nessun account collegato."));
-        card.append(this.button("Aggiungi account", () => this.connectionDialog(provider), { className: "text-button", disabled: !this.canWrite || provider.kind === "antigravity" || provider.kind === "codex" && !this.operator }));
-        if (provider.kind === "antigravity") card.append(this.el("p", "fine-print", "CLI ufficiale Antigravity sul coordinator: disponibile per conversazione, orchestratore e task di sviluppo nel workspace autorizzato."));
+        card.append(this.button("Aggiungi account", () => this.connectionDialog(provider), { className: "text-button", disabled: !this.canWrite || ["codex", "antigravity"].includes(provider.kind) && !this.operator }));
         grid.append(card);
       }
-      if (!this.data.providers.length) grid.append(this.el("p", "empty", "Collega il primo provider. I modelli del cluster si registrano dalla configurazione dell\u2019operatore."));
+      if (!grid.childElementCount) grid.append(this.el("p", "empty", query ? "Nessuna connessione corrisponde alla ricerca." : "Collega il primo provider."));
       page.append(grid, this.info("Le quote sono quelle osservate dal provider, con la data dell\u2019ultimo aggiornamento. Una quota sconosciuta non significa illimitata. Il cambio account conserva la conversazione e non ripete automaticamente azioni gi\xE0 eseguite."));
       if (this.data.user.role === "admin") {
         const section = this.el("section", "page-section");
@@ -2027,6 +2840,107 @@
         heading.append(this.el("h3", "", "Utenti della control room"), this.button("Gestisci utenti", () => this.usersDialog(), { icon: "people" }));
         section.append(heading, this.el("p", "fine-print", "Identit\xE0, accessi e ruoli sono verificati sul server. Le conversazioni personali restano separate."));
         page.append(section);
+      }
+    }
+    async delegatesDialog(account, native) {
+      const { dialog, body } = this.modal(`Accesso a ${account.label}`, "Scegli quali identit\xE0 possono usare la connessione. La gestione delle credenziali rimane al proprietario.");
+      const path = `/api/accounts/${encodeURIComponent(account.id)}/delegates`;
+      const status = this.el("p", "fine-print", "Caricamento degli accessi\u2026");
+      status.setAttribute("role", "status");
+      body.append(status);
+      let access;
+      try {
+        access = await this.api.request("GET", path);
+      } catch (error2) {
+        if (dialog.isConnected) {
+          status.className = "form-error";
+          status.textContent = errorMessage(error2);
+        }
+        return;
+      }
+      if (!dialog.isConnected) return;
+      status.remove();
+      const form = this.el("form");
+      const shared = this.input("checkbox");
+      shared.checked = !native && access.shared;
+      if (!native) form.append(this.field("Accesso per tutti gli utenti abilitati del coordinator", shared));
+      const search = this.input("search", "", "Cerca nome o ruolo");
+      search.setAttribute("aria-label", "Cerca un utente da autorizzare");
+      const list = this.el("fieldset", "delegate-list");
+      list.append(this.el("legend", "", "Persone autorizzate esplicitamente"));
+      const selected = new Set(access.userIds.filter((id) => access.eligible.some((user) => user.id === id)));
+      const options = access.eligible.map((user) => {
+        const check = this.input("checkbox");
+        check.checked = selected.has(user.id);
+        const label = `${user.name} \xB7 ${roleLabels[user.role] ?? user.role}`;
+        const row = this.field(label, check);
+        row.classList.add("delegate");
+        list.append(row);
+        check.addEventListener("change", () => {
+          if (check.checked) selected.add(user.id);
+          else selected.delete(user.id);
+        });
+        return { row, label };
+      });
+      search.addEventListener("input", () => {
+        const query = search.value.trim().toLocaleLowerCase();
+        for (const option of options) option.row.hidden = !option.label.toLocaleLowerCase().includes(query);
+      });
+      if (!options.length) list.append(this.el("p", "fine-print", "Non ci sono altri utenti autorizzabili."));
+      const error = this.el("p", "form-error");
+      error.hidden = true;
+      error.setAttribute("role", "alert");
+      const save = this.el("button", "button primary", "Salva accesso");
+      save.type = "submit";
+      form.append(search, list, error, save);
+      body.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void this.formAction(save, error, async () => {
+          await this.api.request("PUT", path, { userIds: [...selected], shared: shared.checked });
+          dialog.close();
+          await this.refresh();
+        });
+      });
+      search.focus();
+    }
+    async usageDialog() {
+      if (!this.data || this.data.user.id === "guest") return;
+      const { dialog, body } = this.modal("Consumi", "Riepilogo del gateway, delle conversazioni e degli archivi importati.");
+      const status = this.el("p", "fine-print", "Caricamento consumi\u2026");
+      status.setAttribute("role", "status");
+      body.append(status);
+      let report;
+      try {
+        report = await this.api.request("GET", "/api/usage");
+      } catch (error) {
+        if (dialog.isConnected) {
+          status.className = "form-error";
+          status.textContent = errorMessage(error);
+        }
+        return;
+      }
+      if (!dialog.isConnected) return;
+      status.remove();
+      for (const [name, values] of [["Gateway API", report.gateway], ["Conversazioni", report.conversationTurns], ["Chiamate degli agenti nelle missioni", report.missionCalls ?? []]]) {
+        body.append(this.el("h3", "", name));
+        body.append(this.table(["Account", "Modello", "Richieste", "Input misurati", "Input token", "Output token"], values.map((row) => [
+          this.account(row.account ?? void 0)?.label ?? row.account ?? "\u2014",
+          this.route(row.route ?? void 0)?.label ?? row.route ?? "\u2014",
+          value(row.requests),
+          value(row.measuredRequests),
+          value(row.inputTokens),
+          value(row.outputTokens)
+        ])));
+      }
+      body.append(this.el("p", "fine-print", "I token si riferiscono alle richieste misurate. \u2014 indica un dato assente."));
+      for (const legacy of report.legacy) {
+        const details = this.el("details", "advanced usage-import");
+        details.append(this.el("summary", "", `Storico importato \xB7 ${dateTime(legacy.importedAt)}`), this.el("p", "fine-print", legacy.source));
+        const totals = legacy.totals && typeof legacy.totals === "object" ? Object.entries(legacy.totals).filter(([, amount]) => typeof amount === "number") : [];
+        details.append(this.table(["Misura nell\u2019archivio", "Valore"], totals.map(([key, amount]) => [key.replaceAll("_", " "), value(amount)])));
+        if (legacy.days && typeof legacy.days === "object") details.append(this.el("p", "fine-print", `${Object.keys(legacy.days).length} giorni registrati`));
+        body.append(details);
       }
     }
     quotaElement(account) {
@@ -2069,17 +2983,10 @@
         }
         if (!evidence.length) evidenceList.append(this.el("p", "fine-print", "Nessuna evidenza registrata. La consegna non \xE8 ancora verificata."));
         card.append(evidenceList);
+        this.renderWorktree(card, run);
         const actions = this.el("div", "row actions");
-        actions.append(this.button("Apri missione", () => {
-          this.saveDraft();
-          this.conversationId = run.conversationId;
-          this.runId = run.id;
-          this.taskId = "";
-          this.restoreDraft();
-          this.setView("control");
-          this.render();
-        }, { icon: "people", className: "button small" }));
-        if (run.status === "awaiting_release") actions.append(this.button("Esamina e rilascia", () => this.releaseDialog(run), { icon: "rocket", className: "button small primary", disabled: !this.operator || !run.verificationPassed }));
+        actions.append(this.button("Apri missione", () => this.openRun(run, "journey"), { icon: "people", className: "button small" }));
+        if (run.status === "awaiting_release") actions.append(this.button("Esamina e rilascia", () => this.releaseDialog(run), { icon: "rocket", className: "button small primary", disabled: !this.operator || !run.verificationPassed || !!run.worktree && run.worktree.state !== "promoted" }));
         const label = run.releasedAt ? `Rilascio registrato ${relativeTime(run.releasedAt)}` : run.verificationPassed ? "Verifica superata" : "Verifica di produzione non superata";
         actions.append(this.el("span", "fine-print", label));
         card.append(actions);
@@ -2194,41 +3101,70 @@
       });
       token.focus();
     }
+    clearPrivateView() {
+      this.identityEpoch++;
+      this.subscription?.();
+      this.subscription = void 0;
+      if (this.refreshTimer) {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = void 0;
+      }
+      this.loading = void 0;
+      this.data = void 0;
+      this.connected = false;
+      this.sending = false;
+      this.projectId = "";
+      this.conversationId = "";
+      this.runId = "";
+      this.taskId = "";
+      this.routeId = "";
+      this.renderedConversationId = "";
+      this.view = "control";
+      this.events = [];
+      this.selectedAttachments = [];
+      this.journeyEventId = void 0;
+      this.journal.clear();
+      this.journalLoading.clear();
+      this.journalErrors.clear();
+      this.taskProgress.clear();
+      this.telemetryHistory.clear();
+      this.drafts.clear();
+      this.routingOverrides.clear();
+      this.searchResults = void 0;
+      this.searchQuery = "";
+      this.journeyQuery = "";
+      this.accountSearch = "";
+      this.autonomy = { write: false, commands: false, deploy: false, maxIterations: 3, maxParallel: 3 };
+      this.nextWorkspaceIsolation = void 0;
+      this.root.querySelectorAll("dialog").forEach((dialog) => dialog.close());
+      this.loginDialog = void 0;
+      for (const id of ["history", "messages", "team-body", "page-view", "fleet-ribbon", "task-detail", "project-select", "attachments-preview", "activity-strip", "composer-next"]) this.q(`#${id}`).replaceChildren();
+      this.q("#composer-next").removeAttribute("data-blocker");
+      this.q("#message-input").value = "";
+      this.q("#history-search").value = "";
+      this.q("#user-name").textContent = "Il tuo spazio";
+      this.q("#user-role").textContent = "Non connesso";
+      this.q("#user-avatar").textContent = "y";
+      this.q("#breadcrumb").textContent = "yed1z";
+      this.q("#conversation-subtitle").textContent = "";
+      this.q("#team-footer-left").textContent = "";
+      this.q("#team-footer-right").textContent = "";
+      this.q("#banner").hidden = true;
+      this.q("#toasts").replaceChildren();
+      this.renderConnection();
+      this.updateComposer();
+      this.syncView();
+    }
     async logout() {
       try {
         await this.api.request("POST", "/api/logout", {});
-        this.subscription?.();
-        this.subscription = void 0;
-        this.data = void 0;
-        this.projectId = "";
-        this.conversationId = "";
-        this.runId = "";
-        this.taskId = "";
-        this.events = [];
-        this.selectedAttachments = [];
-        this.taskProgress.clear();
-        this.telemetryHistory.clear();
-        this.drafts.clear();
-        this.searchResults = void 0;
-        this.searchQuery = "";
-        this.root.querySelectorAll("dialog").forEach((dialog) => dialog.close());
-        for (const id of ["history", "messages", "team-body", "page-view", "fleet-ribbon", "task-detail", "project-select", "attachments-preview"]) this.q(`#${id}`).replaceChildren();
-        this.q("#message-input").value = "";
-        this.q("#user-name").textContent = "Il tuo spazio";
-        this.q("#user-role").textContent = "Non connesso";
-        this.q("#user-avatar").textContent = "y";
-        this.q("#breadcrumb").textContent = "yed1z / il tuo workspace";
-        this.q("#conversation-subtitle").textContent = "";
-        this.q("#team-footer-left").textContent = "";
-        this.q("#team-footer-right").textContent = "";
-        this.q("#banner").hidden = true;
-        this.updateComposer();
+        this.clearPrivateView();
         this.showLogin();
       } catch (error) {
         this.showBanner(errorMessage(error), true);
       }
     }
-    projectDialog(project) {
+    projectDialog(project, focus) {
       if (!this.data || !this.canWrite) return;
       const { dialog, body } = this.modal(project ? "Impostazioni del progetto" : "Un posto per il tuo prossimo risultato.", project ? "Obiettivo, squadra e destinazione restano legati al progetto." : "Inizia con un nome e un orchestratore. Le impostazioni avanzate possono aspettare.");
       const form = this.el("form");
@@ -2257,10 +3193,12 @@
       }));
       const advanced = this.el("details", "advanced");
       advanced.append(this.el("summary", "", "Workspace, verifiche e destinazione"));
+      advanced.open = focus === "execution";
       advanced.append(this.field("Obiettivo e convenzioni", description));
       const target = this.select([{ value: "", label: "Nessuna esecuzione su filesystem" }, ...this.data.targets.map((item) => ({ value: item.id, label: item.label }))], project?.targetId ?? "");
       const workspace = this.input("text", project?.workspace ?? "", "Percorso relativo alla radice autorizzata");
-      if (this.operator) advanced.append(this.field("Macchina di esecuzione", target, "La macchina che esegue i tool pu\xF2 essere diversa da quella che fornisce inferenza."), this.field("Workspace", workspace, "Percorso relativo alla radice configurata dall\u2019operatore. Vuoto = radice del target."));
+      const isolation = this.select([{ value: "shared", label: "Workspace del progetto" }, { value: "git-worktree", label: "Checkout Git separato per missione" }], project?.workspaceIsolation ?? "shared");
+      if (this.operator) advanced.append(this.field("Macchina di esecuzione", target, "La macchina che esegue i tool pu\xF2 essere diversa da quella che fornisce inferenza."), this.field("Workspace", workspace, "Percorso relativo alla radice configurata dall\u2019operatore. Vuoto = radice del target."), this.field("Isolamento Git", isolation, "Il checkout separato richiede un repository sul target locale."));
       else if (project?.targetId) advanced.append(this.info("La destinazione di esecuzione e le verifiche di questo progetto sono gestite da un operatore."));
       const recipes = this.el("div");
       const deployments = this.select([{ value: "", label: "Nessun rilascio configurato" }], project?.deploymentRecipeId ?? "");
@@ -2288,8 +3226,14 @@
         deployments.value = project?.deploymentRecipeId ?? "";
         deployments.disabled = !this.operator;
       };
-      target.addEventListener("change", renderRecipes);
-      renderRecipes();
+      const refreshTarget = () => {
+        renderRecipes();
+        const local = this.data.targets.some((item) => item.id === target.value && item.kind === "local");
+        isolation.querySelector('[value="git-worktree"]').disabled = !local;
+        if (!local && isolation.value === "git-worktree") isolation.value = "shared";
+      };
+      target.addEventListener("change", refreshTarget);
+      refreshTarget();
       if (this.operator || project?.verifyRecipeIds.length || project?.deploymentRecipeId) {
         advanced.append(this.el("p", "field-label", "Verifiche obbligatorie"), recipes, this.field("Ricetta di rilascio", deployments));
       }
@@ -2313,6 +3257,7 @@
             value2.workspace = workspace.value.trim();
             value2.verifyRecipeIds = Array.from(recipes.querySelectorAll("input:checked")).map((item) => item.value);
             value2.deploymentRecipeId = deployments.value;
+            if (project?.workspaceIsolation !== void 0 || isolation.value !== "shared") value2.workspaceIsolation = isolation.value;
           }
           if (project && this.operator && (project.ownerId === this.data.user.id || this.data.user.role === "admin")) value2.memberIds = members.value.split(",").map((item) => item.trim()).filter(Boolean);
           const saved = await this.api.request(project ? "PATCH" : "POST", project ? `/api/projects/${encodeURIComponent(project.id)}` : "/api/projects", value2);
@@ -2332,7 +3277,7 @@
           this.updateComposer();
         });
       });
-      name.focus();
+      (focus === "execution" && this.operator ? target : name).focus();
     }
     modelDialog(task, accountId) {
       const { dialog, body } = this.modal(task ? `Modello per ${task.label}` : "Scegli modello e disponibilit\xE0", task ? "Riassegna un\u2019attivit\xE0 in coda o in pausa." : "Il contesto resta nel progetto. Vedi subito le risorse occupate e le alternative autorizzate.");
@@ -2341,14 +3286,17 @@
       const search = this.input("search", "", "Cerca modello, account o macchina\u2026");
       search.setAttribute("aria-label", "Cerca un modello o un account");
       searchWrap.append(search);
-      if (!task && this.project) {
+      if (!task && this.project && this.canWrite && (this.project.ownerId === this.data?.user.id || this.data?.user.role === "admin")) {
         const defaultRow = this.el("label", "row fine-print default-checkbox-label");
         const defaultCheck = this.input("checkbox");
         defaultCheck.id = "make-default-orchestrator";
-        defaultCheck.checked = true;
-        defaultRow.append(defaultCheck, this.document.createTextNode(` Imposta anche come orchestratore predefinito per "${this.project.name}"`));
+        defaultRow.append(defaultCheck, this.document.createTextNode(` Salva anche come modello predefinito di \xAB${this.project.name}\xBB`));
         searchWrap.append(defaultRow);
       }
+      const pickerError = this.el("p", "form-error");
+      pickerError.hidden = true;
+      pickerError.setAttribute("role", "alert");
+      searchWrap.append(pickerError);
       const list = this.el("div", "model-options");
       body.append(searchWrap);
       if (!task) {
@@ -2367,6 +3315,7 @@
         const query = search.value.toLocaleLowerCase();
         const allModels = this.data?.models.filter((model) => (!accountId || model.accountId === accountId) && this.usableRoute(model, task?.role === "coder") && `${model.label} ${model.model} ${this.account(model.accountId)?.label} ${this.provider(model.providerId)?.label} ${model.nodeIds.join(" ")}`.toLocaleLowerCase().includes(query)) ?? [];
         const rank = (model) => {
+          if (!this.routeCompatible(model)) return 5;
           const avail = this.availability(model.id);
           const status = avail?.status ?? this.account(model.accountId)?.status ?? "unknown";
           if (status === "available" || status === "ready") return 0;
@@ -2394,28 +3343,33 @@
           if (isDefault) titleRow.append(this.el("span", "pill ready small", "Predefinito"));
           info.append(titleRow, this.el("p", "", `${provider?.label ?? "Provider"} \xB7 ${account?.label ?? "Account"}${model.nodeIds.length ? ` \xB7 ${model.nodeIds.map((id) => this.data?.nodes.find((node) => node.id === id)?.label ?? id).join(" + ")}` : ""}`));
           if (availability) info.append(this.el("p", "route-reason", availability.reason));
+          if (!this.routeCompatible(model)) {
+            button.disabled = true;
+            info.append(this.el("p", "route-reason", "La CLI richiede un workspace locale autorizzato."));
+          }
           const status = this.el("span", "option-quota");
           const statusLabels = { available: "Slot libero", ready: "Slot libero", busy: "Occupato", cooldown: "Quota in attesa", unavailable: "Non disponibile", disabled: "Disabilitato", unknown: "Da verificare" };
           status.append(this.pill(availability?.status === "available" ? "ready" : availability?.status === "busy" ? "pending" : availability?.status ?? account?.status ?? "unknown", availability ? statusLabels[availability.status] : labels[account?.status ?? "unknown"]));
           if (availability?.queueCount) status.append(this.el("small", "", `${availability.queueCount} in coda`));
           if (availability && (availability.externalActiveRequests !== void 0 || availability.externalQueuedRequests !== void 0)) status.append(this.el("small", "", `Motore: ${availability.externalActiveRequests ?? "\u2014"} attive \xB7 ${availability.externalQueuedRequests ?? "\u2014"} in coda`));
           if (account?.quota?.windows?.[0]?.usedPercent !== void 0) status.append(this.el("small", "", `${value(100 - account.quota.windows[0].usedPercent, "%")} quota`));
+          const reset = account?.quota?.cooldownUntil ?? account?.quota?.windows?.find((window2) => window2.resetAt)?.resetAt ?? account?.quota?.resetAt;
+          if (reset) status.append(this.el("small", "", `Quota \xB7 ${relativeTime(reset)}`));
           button.append(check, info, status);
           button.addEventListener("click", () => {
-            void this.perform(button, async () => {
+            if (button.disabled) return;
+            void this.formAction(button, pickerError, async () => {
               if (task) {
                 await this.api.request("POST", `/api/tasks/${encodeURIComponent(task.id)}/route`, { routeId: model.id });
               } else {
-                this.routeId = model.id;
                 const makeDefault = searchWrap.querySelector("#make-default-orchestrator")?.checked;
                 if (makeDefault && this.project && this.canWrite && this.project.routes.primary !== model.id) {
-                  try {
-                    await this.api.request("PATCH", `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { ...this.project.routes, primary: model.id } });
-                    this.project.routes.primary = model.id;
-                    this.toast(`${model.label} impostato come orchestratore predefinito.`);
-                  } catch {
-                  }
+                  await this.api.request("PATCH", `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { primary: model.id } });
+                  this.project.routes.primary = model.id;
+                  this.toast(`${model.label} impostato come modello predefinito del progetto.`);
                 }
+                this.routeId = model.id;
+                this.saveDraft();
               }
               dialog.close();
               if (task) await this.refresh();
@@ -2457,34 +3411,29 @@
       body.append(footer);
       search.focus();
     }
-    connectionDialog(existing) {
+    connectionDialog(existing, existingAccount) {
       if (!this.data || !this.canWrite) return;
-      const { dialog, body } = this.modal("Collega un modello", "Scegli il servizio. Accesso, verifica e discovery nello stesso percorso.", "connection-dialog");
+      const { dialog, body } = this.modal(existingAccount ? `Verifica ${existingAccount.label}` : "Collega un modello", "Il coordinator verifica accesso e catalogo. La scelta del modello resta nella conversazione.", "connection-dialog");
       mountConnectionWizard({
         body,
         dialog,
         api: this.api,
         data: this.data,
         existing,
+        existingAccount,
+        canUse: (model, provider) => !(model.capabilities.includes("embedding") && !model.capabilities.includes("chat")) && (!["codex", "antigravity"].includes(provider.kind) || this.operator && this.data?.targets.some((target) => target.id === this.project?.targetId && target.kind === "local") === true),
         connected: async (result, routeId) => {
-          if (routeId && result.provider.kind === "antigravity" && this.project) await this.api.request("PATCH", `/api/projects/${encodeURIComponent(this.project.id)}`, { routes: { primary: routeId, coder: routeId } });
           await this.refresh();
-          if (routeId && this.route(routeId) && this.usableRoute(this.route(routeId))) this.routeId = routeId;
+          const route = this.route(routeId);
+          if (route && this.usableRoute(route) && this.routeCompatible(route)) {
+            this.routeId = route.id;
+            this.saveDraft();
+          }
           this.updateComposer();
           this.renderActivity();
           this.toast(`${result.provider.label}: ${result.models.length} modelli nel catalogo.`);
         },
-        login: async (accountId) => {
-          const waiting = this.modal("Accesso a Codex", "Avvio del login ufficiale. Le istruzioni compariranno qui.", "login-dialog");
-          this.accountLoginDialog = waiting.dialog;
-          waiting.body.append(this.el("p", "connection-progress", "Attendo il codice di autorizzazione\u2026"));
-          try {
-            await this.api.request("POST", `/api/accounts/${encodeURIComponent(accountId)}/login`, {});
-          } catch (error) {
-            waiting.dialog.close();
-            this.showBanner(errorMessage(error), true);
-          }
-        }
+        login: (accountId, fallback) => this.startAccountLogin(accountId, fallback)
       });
     }
     modelSettingsDialog(model) {
@@ -2538,8 +3487,12 @@
       kind.disabled = !!memory;
       const scope = this.select([{ value: "private", label: "Solo per me" }, { value: "project", label: "Condivisa nel progetto" }], memory?.scope ?? "private");
       form.append(this.field("Titolo", title), this.field("Contenuto", content), this.field("Tipo", kind), this.field("Visibilit\xE0", scope, "La condivisione richiede i permessi del progetto. Nessun dato viene promosso a memoria personale in modo nascosto."));
-      const source = this.select([{ value: "", label: "Inserimento esplicito" }, ...this.data.artifacts.filter((item) => item.projectId === this.projectId).map((item) => ({ value: item.id, label: item.name }))], memory?.sourceIds[0] ?? "");
-      if (!memory) form.append(this.field("Documento di origine", source));
+      const source = this.select([
+        { value: "", label: "Inserimento esplicito" },
+        ...this.data.artifacts.filter((item) => item.projectId === this.projectId).map((item) => ({ value: item.id, label: item.name })),
+        ...this.data.conversations.filter((item) => item.projectId === this.projectId).map((item) => ({ value: item.id, label: `Conversazione \xB7 ${item.title}` }))
+      ], memory?.sourceIds[0] ?? "");
+      if (!memory) form.append(this.field("Fonte della proposta", source));
       const error = this.el("p", "form-error");
       error.hidden = true;
       const submit = this.el("button", "button primary full", memory ? "Salva revisione" : "Crea proposta");
@@ -2580,6 +3533,9 @@
       const grid = this.el("div", "form-grid");
       grid.append(this.field("Agenti in parallelo", parallel, "La capacit\xE0 dei nodi pu\xF2 ridurre il parallelismo effettivo."), this.field("Iterazioni massime", iterations, "Quando raggiunge il limite, la squadra si ferma con un resoconto."));
       form.append(grid);
+      const local = this.data?.targets.some((target) => target.id === this.project?.targetId && target.kind === "local");
+      const isolation = this.select([{ value: "", label: "Usa configurazione del progetto" }, { value: "shared", label: "Workspace del progetto" }, { value: "git-worktree", label: "Checkout Git separato" }], this.nextWorkspaceIsolation ?? "");
+      if (local) form.append(this.field("Workspace della prossima missione", isolation, "L\u2019isolamento usa un checkout Git dedicato sul target locale."));
       const submit = this.el("button", "button primary full", "Usa questi limiti");
       submit.type = "submit";
       form.append(submit);
@@ -2587,6 +3543,7 @@
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         this.autonomy = { write: checks.write.checked, commands: checks.commands.checked, deploy: this.operator && checks.deploy.checked, maxParallel: Number(parallel.value), maxIterations: Number(iterations.value) };
+        this.nextWorkspaceIsolation = local && (isolation.value === "shared" || isolation.value === "git-worktree") ? isolation.value : void 0;
         dialog.close();
         this.toast("Limiti aggiornati per la prossima missione.");
       });
@@ -2650,52 +3607,64 @@
       const text = input.value.trim();
       if (!text) return;
       const mode = this.q("#mode-select").value;
-      const intent = classifyRequest(text, { mode, attachmentCount: this.selectedAttachments.length });
-      if (!this.routeId && intent.kind !== "service") {
-        this.connectionDialog();
+      const intent = this.requestIntent();
+      const mission = this.activeMission;
+      const steer = mode === "steer" && intent.kind !== "service" ? mission : void 0;
+      const blocker = this.composerBlocker(intent, !!steer);
+      if (blocker) {
+        blocker.action?.();
         return;
       }
-      const active = this.currentRun && !closedRunStatuses.has(this.currentRun.status) && intent.kind !== "service";
-      if (!active && intent.mode === "mission" && (!this.project.targetId || !this.project.verifyRecipeIds.length)) {
-        this.toast("Per avviare la squadra, scegli workspace e verifiche del progetto. La bozza resta qui.");
-        this.projectDialog(this.project);
-        const advanced = this.root.querySelector("dialog details");
-        if (advanced) advanced.open = true;
-        return;
-      }
+      const epoch = this.identityEpoch, projectId = this.projectId, originalThread = this.conversationId;
+      const routeId = this.routeId, routing = this.routing, autonomy = this.autonomy;
+      const attachmentIds = this.selectedAttachments.map((item) => item.id);
+      const branch = this.conversation?.branch;
+      const parentId = branch && this.data?.conversations.find((item) => item.id === branch.conversationId)?.messages.find((message2) => message2.id === branch.messageId)?.runId;
+      const parentRunId = parentId && this.data?.runs.some((item) => item.id === parentId) ? parentId : void 0;
+      const workspaceIsolation = intent.mode === "mission" ? this.nextWorkspaceIsolation : void 0;
+      const viewing = () => epoch === this.identityEpoch && this.projectId === projectId && this.conversationId === thread;
+      let thread = originalThread;
       this.sending = true;
       this.updateComposer();
       try {
-        if (active) {
-          await this.api.request("POST", `/api/runs/${encodeURIComponent(this.currentRun.id)}/steer`, { text, attachmentIds: this.selectedAttachments.map((item) => item.id) });
-          input.value = "";
-          this.selectedAttachments = [];
+        let run;
+        if (steer) await this.api.request("POST", `/api/runs/${encodeURIComponent(steer.id)}/steer`, { text, attachmentIds });
+        else {
+          if (!thread) {
+            const conversation = await this.api.request("POST", "/api/conversations", { projectId, routeId });
+            if (epoch !== this.identityEpoch) return;
+            if (viewing()) this.conversationId = conversation.id;
+            thread = conversation.id;
+          }
+          run = await this.api.request("POST", `/api/conversations/${encodeURIComponent(thread)}/messages`, { text, routeId, mode: mode === "steer" ? "auto" : mode, routing, attachmentIds, permissions: { write: autonomy.write, commands: autonomy.commands, deploy: autonomy.deploy }, maxIterations: autonomy.maxIterations, maxParallel: autonomy.maxParallel, ...workspaceIsolation ? { workspaceIsolation } : {}, ...parentRunId ? { parentRunId } : {} });
+        }
+        if (epoch !== this.identityEpoch) return;
+        if (intent.mode === "mission") this.nextWorkspaceIsolation = void 0;
+        const draftKey = `${projectId}/${originalThread || "new"}`;
+        const draft = this.drafts.get(draftKey);
+        if (draft?.text.trim() === text && draft.attachmentIds.join("/") === attachmentIds.join("/")) this.drafts.delete(draftKey);
+        if (viewing()) {
+          if (run && (!mission || intent.mode === "mission")) {
+            this.runId = run.id;
+            this.taskId = "";
+          }
+          if (input.value.trim() === text && this.selectedAttachments.map((item) => item.id).join("/") === attachmentIds.join("/")) {
+            input.value = "";
+            this.selectedAttachments = [];
+          }
           this.saveDraft();
-          await this.refresh();
           this.renderAttachments();
-          this.toast("Indicazione salvata. La missione si mette in pausa: usa Riprendi per ripianificare.");
-          return;
+          if (steer) this.toast("Indicazione salvata. La missione si mette in pausa: usa Riprendi per ripianificare.");
+          this.savePosition();
         }
-        if (!this.conversationId) {
-          const conversation = await this.api.request("POST", "/api/conversations", { projectId: this.projectId, routeId: this.routeId });
-          this.conversationId = conversation.id;
-        }
-        const run = await this.api.request("POST", `/api/conversations/${encodeURIComponent(this.conversationId)}/messages`, { text, routeId: this.routeId, mode, routing: this.routing, attachmentIds: this.selectedAttachments.map((item) => item.id), permissions: { write: this.autonomy.write, commands: this.autonomy.commands, deploy: this.autonomy.deploy }, maxIterations: this.autonomy.maxIterations, maxParallel: this.autonomy.maxParallel });
-        if (intent.kind !== "service" || !this.currentRun || closedRunStatuses.has(this.currentRun.status)) {
-          this.runId = run.id;
-          this.taskId = "";
-        }
-        input.value = "";
-        this.selectedAttachments = [];
-        this.saveDraft();
         await this.refresh();
-        this.renderAttachments();
-        this.setView("control");
       } catch (error) {
-        this.showBanner(errorMessage(error), true);
+        if (epoch === this.identityEpoch) this.showBanner(errorMessage(error), true);
       } finally {
-        this.sending = false;
-        this.updateComposer();
+        if (epoch === this.identityEpoch) {
+          this.sending = false;
+          this.updateComposer();
+        }
       }
     }
     async runAction(run, action) {
@@ -2771,9 +3740,11 @@
     }
     releaseDialog(run) {
       const project = this.data.projects.find((item) => item.id === run.projectId);
-      const target = this.data.targets.find((item) => item.id === project?.targetId);
+      const target = this.data.targets.find((item) => item.id === (run.spec?.targetId ?? project?.targetId));
+      const recipe = run.spec?.deploymentRecipeId ?? project?.deploymentRecipeId;
       const { dialog, body } = this.modal("Rilascio in produzione", "Approvi questa consegna e la ricetta configurata, con le evidenze registrate.");
-      body.append(this.el("h3", "", run.goal), this.el("p", "fine-print", `Target: ${target?.label ?? "Non configurato"} \xB7 Ricetta: ${project?.deploymentRecipeId ?? "Non configurata"}`));
+      body.append(this.el("h3", "", run.goal), this.el("p", "fine-print", `Target ${target?.label ?? "non configurato"} \xB7 Ricetta ${recipe ?? "non configurata"}`));
+      if (run.verification?.digest) body.append(this.el("p", "fine-print", "Revisione verificata"), this.el("code", "release-digest", run.verification.digest));
       for (const evidence of this.data.evidence.filter((item) => item.runId === run.id)) {
         const row = this.el("p", "fine-print");
         row.textContent = `${evidence.ok ? "\u2713" : "!"} ${evidence.title}`;
@@ -2784,10 +3755,10 @@
       error.hidden = true;
       body.append(error);
       const button = this.button("Autorizza questo rilascio", () => this.formAction(button, error, async () => {
-        await this.api.request("POST", `/api/runs/${encodeURIComponent(run.id)}/release`, {});
+        await this.api.request("POST", `/api/runs/${encodeURIComponent(run.id)}/release`, run.verification ? { verificationDigest: run.verification.digest } : {});
         dialog.close();
         await this.refresh();
-      }), { className: "button primary full", icon: "rocket", disabled: !this.operator || !run.verificationPassed || !project?.deploymentRecipeId });
+      }), { className: "button primary full", icon: "rocket", disabled: !this.operator || !run.verificationPassed || !recipe });
       body.append(button);
     }
     attachmentDialog() {
@@ -2849,27 +3820,42 @@
         container.append(chip);
       }
     }
-    async openArtifact(id) {
-      const value2 = await this.api.request("GET", `/api/artifacts/${encodeURIComponent(id)}`);
-      this.textDialog(value2.name, value2.content);
+    async openArtifact(id, diff = false) {
+      const artifact = await this.api.request("GET", `/api/artifacts/${encodeURIComponent(id)}`);
+      if (!diff) {
+        this.textDialog(artifact.name, artifact.content);
+        return;
+      }
+      if (this.api.openDiff) {
+        this.api.openDiff(artifact.content);
+        return;
+      }
+      const { body } = this.modal(artifact.name);
+      const preview = this.el("pre", "verified-diff");
+      preview.append(this.el("code", "", artifact.content));
+      body.append(preview);
     }
     async downloadArtifact(artifact) {
       const value2 = await this.api.request("GET", `/api/artifacts/${encodeURIComponent(artifact.id)}`);
       await this.downloadText(artifact.name, value2.content, "text/plain;charset=utf-8");
     }
     contextElement(report) {
-      const fragment = this.el("div");
-      fragment.append(this.el("p", "context-summary", `${formatNumber(report.estimatedTokens)} token stimati / ${formatNumber(report.budgetTokens)} disponibili \xB7 ${formatNumber(report.reservedOutputTokens)} riservati alla risposta. ${report.truncated ? "Alcune fonti sono state escluse o ridotte." : "Le fonti selezionate rientrano nel budget."}`));
+      const summary = this.el("div");
+      const budget = `${formatNumber(report.estimatedTokens)} token stimati / ${formatNumber(report.budgetTokens)} disponibili \xB7 ${formatNumber(report.reservedOutputTokens)} riservati alla risposta.`;
+      summary.append(this.el("p", "context-summary", report.truncated ? `${budget} Alcune fonti sono state escluse o ridotte.` : budget));
       const list = this.el("ul", "context-list");
+      const projectId = this.projectId;
       for (const source of report.sources) {
         const item = this.el("li");
         const copy = this.el("span", "", `${source.included ? "\u2713" : "\u2212"} ${source.title}`);
-        copy.append(this.el("p", "fine-print", source.reason));
+        copy.append(this.el("p", "fine-print", `${source.reason}${source.revision === void 0 ? "" : ` \xB7 revisione ${source.revision}`}`));
+        const citation = source.citation;
+        if (citation) copy.append(this.button("Apri fonte citata", () => this.openKnowledgeSource(projectId, citation), { className: "text-button" }));
         item.append(copy, this.el("small", "", `${formatNumber(source.estimatedTokens)} tok`));
         list.append(item);
       }
-      fragment.append(list, this.el("p", "fine-print", `Stima: ${report.estimator}. L\u2019occupazione del contesto non equivale alla memoria GPU o alla KV cache.`));
-      return fragment;
+      summary.append(list, this.el("p", "fine-print", `Metodo di stima \xB7 ${report.estimator}`));
+      return summary;
     }
     contextDialog(report) {
       const { body } = this.modal("Il contesto dell\u2019agente", "Fonti incluse, esclusioni e budget della richiesta.");
@@ -2911,39 +3897,81 @@
         });
       });
     }
+    async startAccountLogin(accountId, fallback) {
+      const previous = this.accountLoginDialog;
+      this.accountLoginDialog = void 0;
+      previous?.close();
+      this.loginAccountId = accountId;
+      this.loginFallback = fallback;
+      this.loginFingerprint = void 0;
+      this.renderLoginSnapshot({ accountId, status: "starting" });
+      const loginPath = `/api/accounts/${encodeURIComponent(accountId)}/login`;
+      try {
+        const pending = await this.api.request("GET", loginPath);
+        if (this.loginAccountId !== accountId) return;
+        if (pending.status === "starting" || pending.status === "pending") {
+          this.renderLoginSnapshot(pending);
+          return;
+        }
+        const login = await this.api.request("POST", loginPath, {});
+        if (this.loginAccountId === accountId && typeof login.status === "string") this.renderLoginSnapshot(login);
+      } catch (error) {
+        if (this.loginAccountId === accountId) this.renderLoginSnapshot({ accountId, status: "error", message: errorMessage(error) });
+      }
+    }
     loginEvent(event) {
       const data = event.data;
-      if (!data) return;
-      if (data.status === "complete") {
+      if (!data || typeof data.accountId === "string" && data.accountId !== this.loginAccountId) return;
+      this.renderLoginSnapshot(data);
+    }
+    renderLoginSnapshot(data) {
+      const accountId = typeof data.accountId === "string" ? data.accountId : this.loginAccountId;
+      if (data.status === "complete" || data.status === "cancelled") {
         this.accountLoginDialog?.close();
         this.accountLoginDialog = void 0;
-        this.toast("Accesso completato. Scegli il modello del nuovo account.");
-        void this.refresh().then(() => {
-          const accountId = typeof data.accountId === "string" ? data.accountId : void 0;
-          if (accountId && this.data?.models.some((model) => model.accountId === accountId)) this.modelDialog(void 0, accountId);
+        this.loginAccountId = void 0;
+        this.loginFallback = void 0;
+        this.loginFingerprint = void 0;
+        if (this.loginTimer) clearTimeout(this.loginTimer);
+        if (data.status === "complete") {
+          this.toast("Accesso completato. Scegli il modello dell\u2019account.");
+          void this.refresh().then(() => {
+            if (accountId && this.data?.models.some((model) => model.accountId === accountId)) this.modelDialog(void 0, accountId);
+          });
+        }
+        return;
+      }
+      const pending = data.status === "pending" || data.status === "starting";
+      if (!pending && data.status !== "error") return;
+      if (!this.accountLoginDialog?.isConnected) {
+        const { dialog } = this.modal("Accedi con il servizio ufficiale", "Completa l\u2019autorizzazione nel sito del provider. Puoi riprendere la procedura da Modelli e account.", "login-dialog");
+        this.accountLoginDialog = dialog;
+        dialog.addEventListener("close", () => {
+          if (this.accountLoginDialog === dialog) {
+            this.accountLoginDialog = void 0;
+            this.loginAccountId = void 0;
+            this.loginFallback = void 0;
+            this.loginFingerprint = void 0;
+            if (this.loginTimer) clearTimeout(this.loginTimer);
+          }
         });
-        return;
       }
-      if (data.status === "error") {
-        this.accountLoginDialog?.close();
-        this.accountLoginDialog = void 0;
-        this.showBanner(typeof data.message === "string" ? data.message : "Accesso non riuscito.", true);
-        return;
-      }
-      if (typeof data.verificationUri !== "string" && typeof data.userCode !== "string") return;
-      this.accountLoginDialog?.close();
-      const { dialog, body } = this.modal("Accedi con il servizio ufficiale", "Completa l\u2019autorizzazione nel sito del provider. I codici sono temporanei e non entrano nella cronologia.");
-      this.accountLoginDialog = dialog;
+      const fingerprint = JSON.stringify([accountId, data.status, data.operationId, data.userCode, data.verificationUri, data.responseRequired, data.message]);
+      this.scheduleLoginCheck(pending ? accountId : void 0);
+      if (this.loginFingerprint === fingerprint) return;
+      this.loginFingerprint = fingerprint;
+      const body = this.accountLoginDialog.querySelector(".dialog-body");
+      body.replaceChildren();
       if (typeof data.userCode === "string") {
         const code = this.input("text", data.userCode);
         code.readOnly = true;
         code.setAttribute("aria-label", "Codice temporaneo di accesso");
-        body.append(code);
+        body.append(this.field("Codice temporaneo", code));
       }
       if (typeof data.verificationUri === "string") {
         try {
           const url = new URL(data.verificationUri);
-          if (url.protocol === "https:" && !url.username && !url.password) {
+          if (url.protocol === "https:" && !url.port && !url.username && !url.password && ["auth.openai.com", "auth0.openai.com", "chatgpt.com", "accounts.google.com"].includes(url.hostname)) {
             if (this.api.native && this.api.openAuth) body.append(this.button("Apri autorizzazione ufficiale", () => this.api.openAuth?.(url.href), { className: "button primary full" }));
             else {
               const link = this.el("a", "button primary full", "Apri autorizzazione ufficiale");
@@ -2956,7 +3984,62 @@
         } catch {
         }
       }
-      body.append(this.el("p", "fine-print", "La finestra si aggiorner\xE0 quando il servizio confermer\xE0 l\u2019accesso."));
+      if (data.responseRequired === true && pending && accountId && typeof data.operationId === "string") this.loginResponseForm(body, accountId, data.operationId);
+      if (data.status === "error") {
+        const error = this.el("p", "form-error", typeof data.message === "string" ? data.message : "Accesso non riuscito.");
+        error.setAttribute("role", "alert");
+        body.append(error);
+        if (accountId) body.append(this.button("Riprova", () => this.startAccountLogin(accountId, this.loginFallback), { className: "button primary" }));
+      } else {
+        const status = this.el("p", "fine-print", data.status === "starting" ? "Attendo le istruzioni di autorizzazione\u2026" : data.responseRequired ? "Completa l\u2019accesso nel browser, poi invia il codice restituito dal provider." : "Attendo la conferma del servizio.");
+        status.setAttribute("role", "status");
+        body.append(status);
+        if (accountId) body.append(this.button("Annulla richiesta di accesso", async () => {
+          const snapshot = await this.api.request("DELETE", `/api/accounts/${encodeURIComponent(accountId)}/login`);
+          this.renderLoginSnapshot({ accountId, ...snapshot, status: snapshot.status ?? "cancelled" });
+        }, { className: "button subtle" }));
+      }
+      if (this.loginFallback?.command) {
+        const fallback = this.el("details", "advanced");
+        fallback.append(this.el("summary", "", "Usa il terminale del coordinator"), this.el("p", "fine-print", "Conserva il comando, annulla la richiesta guidata ed eseguilo con l\u2019utente del servizio. Poi riapri Verifica account."), this.el("pre", "connect-command", this.loginFallback.command));
+        body.append(fallback);
+      }
+    }
+    scheduleLoginCheck(accountId) {
+      if (this.loginTimer) clearTimeout(this.loginTimer);
+      if (accountId) this.loginTimer = setTimeout(() => {
+        if (this.loginAccountId !== accountId || this.disposed) return;
+        void this.api.request("GET", `/api/accounts/${encodeURIComponent(accountId)}/login`).then((snapshot) => {
+          if (this.loginAccountId === accountId && ["starting", "pending", "error", "cancelled", "complete"].includes(String(snapshot.status))) this.renderLoginSnapshot(snapshot);
+        }).catch(() => {
+          if (this.loginAccountId === accountId) this.scheduleLoginCheck(accountId);
+        });
+      }, 3e3);
+    }
+    loginResponseForm(body, accountId, operationId) {
+      const form = this.el("form", "login-response-form");
+      const code = this.input("password", "", "Codice o URL di reindirizzamento");
+      code.maxLength = 4096;
+      code.required = true;
+      code.autocomplete = "off";
+      if (!this.api.native) form.append(this.field("Risposta di autorizzazione", code));
+      const error = this.el("p", "form-error");
+      error.hidden = true;
+      error.setAttribute("role", "alert");
+      const submit = this.el("button", "button primary full", this.api.native ? "Invia codice da VS Code" : "Invia codice");
+      submit.type = "submit";
+      form.append(error, submit);
+      body.append(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const value2 = code.value.trim();
+        code.value = "";
+        if (!this.api.native && !value2) return;
+        void this.formAction(submit, error, async () => {
+          const result = await this.api.request("POST", `/api/accounts/${encodeURIComponent(accountId)}/login/respond`, { operationId, ...this.api.native ? { requestCode: true } : { code: value2 } });
+          if (typeof result.status === "string" && accountId === this.loginAccountId) this.renderLoginSnapshot(result);
+        });
+      });
     }
     confirm(title, detail, action) {
       const { dialog, body } = this.modal(title, detail);
@@ -3027,6 +4110,7 @@
       this.subscription?.();
       if (this.refreshTimer) clearTimeout(this.refreshTimer);
       if (this.packetTimer) clearTimeout(this.packetTimer);
+      if (this.loginTimer) clearTimeout(this.loginTimer);
       if (this.streamFrame !== void 0) this.win.cancelAnimationFrame(this.streamFrame);
       for (const dispose of this.disposers) dispose();
       this.api.dispose?.();
@@ -3062,6 +4146,17 @@
     if (!date) return "\u2014";
     const value2 = new Date(date);
     return Number.isFinite(value2.getTime()) ? value2.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
+  }
+  function dateTime(date) {
+    const value2 = new Date(date);
+    return Number.isFinite(value2.getTime()) ? value2.toLocaleString("it-IT", { dateStyle: "short", timeStyle: "short" }) : "\u2014";
+  }
+  function eventTitle(type) {
+    const titles = { "approval.decided": "Approvazione aggiornata", "task.attempt_started": "Tentativo avviato", "task.attempt_finished": "Tentativo concluso", "operation.started": "Operazione avviata", "operation.updated": "Operazione aggiornata", "operation.reconciled": "Effetto riconciliato", "run.recovered": "Attivit\xE0 recuperata", "plan.created": "Piano registrato" };
+    return titles[type] ?? type;
+  }
+  function reconciliationLabel(outcome) {
+    return { applied: "Effetto applicato", not_applied: "Effetto non applicato", rolled_back: "Effetto annullato sul target" }[outcome];
   }
   function relativeTime(date) {
     if (!date) return "mai";

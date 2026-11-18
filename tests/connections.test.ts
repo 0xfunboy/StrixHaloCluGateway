@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type RequestListener } from 'node:http';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -251,10 +251,33 @@ test('Antigravity discovery uses an actual ACP handshake and only advertised mod
 test('Antigravity auth-required disables stale routes and offers verified terminal instructions without claiming login success', async t => {
   const f = await fixture(t, [{ id: 'agy-profile', label: 'Antigravity fixture', kind: 'antigravity', command: process.execPath, args: [cliFixture, 'unauthenticated'], nodeIds: [], resourceGroupIds: [], enabled: true, models: [{ model: 'old-unverified-model', label: 'Old model' }] }]);
   const result = await f.connections.connect(f.owner, { preset: 'antigravity', providerId: 'agy-profile' }, signal());
-  assert.equal(result.status, 'login-required'); assert.equal(result.account.status, 'unknown'); assert.equal(result.nextAction?.command, 'agy acp --login');
+  assert.equal(result.status, 'login-required'); assert.equal(result.account.status, 'unknown'); assert.match(result.nextAction?.command ?? '', /--gemini-dir.*--login/);
   assert(result.models.every(model => !model.enabled));
-  await assert.rejects(loginNative({ connection: f.catalog.connection(f.store.require<Provider>('provider', result.provider.id), result.account), cwd: f.directory, signal: signal(), onAuth: () => assert.fail('No fabricated OAuth event') }), /agy acp --login/);
-  await assert.rejects(f.connections.connect(f.other, { preset: 'antigravity' }, signal()), isError('ISOLATION'));
+  await assert.rejects(loginNative({ connection: f.catalog.connection(f.store.require<Provider>('provider', result.provider.id), result.account), cwd: f.directory, signal: signal(), onAuth: () => assert.fail('No fabricated OAuth event') }), /CLI Google non ha confermato/);
+  const other = await f.connections.connect(f.other, { providerId: 'agy-profile' }, signal());
+  assert.equal(other.status, 'login-required');
+  assert.notEqual(other.account.id, result.account.id);
+  assert.notEqual(other.nextAction?.command, result.nextAction?.command);
+  await assert.rejects(f.connections.connect(f.other, { accountId: result.account.id }, signal()), isError('NOT_FOUND'));
+});
+
+test('Antigravity model discovery reads the selected private profile without changing the other account', async t => {
+  const f = await fixture(t, [{ id: 'agy-profile', label: 'Antigravity fixture', kind: 'antigravity', command: process.execPath, args: [cliFixture, 'profile-file'], nodeIds: [], resourceGroupIds: [], enabled: true }]);
+  const first = await f.connections.connect(f.owner, { providerId: 'agy-profile', accountLabel: 'First' }, signal());
+  const second = await f.connections.connect(f.owner, { providerId: 'agy-profile', accountLabel: 'Second' }, signal());
+  assert.equal(first.account.nativeProfile, 'isolated');
+  assert.equal(first.status, 'login-required');
+  assert.equal(second.status, 'login-required');
+  const provider = f.store.require<Provider>('provider', 'agy-profile');
+  const dir = (account: Account) => f.catalog.connection(provider, account).isolatedProfilePath!;
+  assert.notEqual(dir(first.account), dir(second.account));
+  for (const account of [first.account, second.account]) {
+    assert.equal((await stat(dir(account))).mode & 0o777, 0o700);
+    assert(first.nextAction?.command?.includes(dir(account)) === (account.id === first.account.id));
+  }
+  await writeFile(path.join(dir(first.account), 'gemini', 'fixture-signed-in'), '', { mode: 0o600 });
+  assert.equal((await f.connections.connect(f.owner, { accountId: first.account.id }, signal())).status, 'ready');
+  assert.equal((await f.connections.connect(f.owner, { accountId: second.account.id }, signal())).status, 'login-required');
 });
 
 test('Antigravity supports advertised legacy selectors and labels an opaque current selection without inventing model IDs', async t => {
@@ -283,6 +306,49 @@ test('Codex enrollment discovers from isolated runtime profiles and distinct acc
   const homeA = f.catalog.connection(p, a.account).env!.CODEX_HOME, homeB = f.catalog.connection(p, b.account).env!.CODEX_HOME;
   assert.notEqual(homeA, homeB); assert.equal((await stat(homeA)).mode & 0o777, 0o700); assert.equal((await stat(homeB)).mode & 0o777, 0o700);
   assert(!JSON.stringify([a, b]).includes('CODEX_HOME')); assert.equal(a.account.shared, false);
+});
+
+test('an explicit quota domain shares observed cooldown with its owner’s other credentials only', async t => {
+  const url = await endpoint(t, (_req, res) => res.end(JSON.stringify({ data: [{ id: 'fixture' }] })));
+  const f = await fixture(t, [{ id: 'quota-fixture', kind: 'openai-compatible', label: 'Quota fixture', baseUrl: url, enabled: true, nodeIds: [], resourceGroupIds: [] }]);
+  const first = await f.connections.connect(f.owner, { providerId: 'quota-fixture', accountLabel: 'First key', shared: true, quotaDomain: 'Work Pool' }, signal());
+  const second = await f.connections.connect(f.owner, { providerId: 'quota-fixture', accountLabel: 'Second key', quotaDomain: 'work pool' }, signal());
+  const other = await f.connections.connect(f.other, { providerId: 'quota-fixture', accountLabel: 'Other owner', quotaDomain: 'Work Pool' }, signal());
+  f.catalog.quota(first.account, { state: 'limited', source: 'provider-headers', observedAt: now(), retryAfterMs: 60000 });
+  assert.throws(() => f.catalog.resolve(f.owner, second.models[0].id), isError('QUOTA'));
+  assert.equal(f.catalog.accounts(f.owner).find(item => item.id === second.account.id)?.status, 'cooldown');
+  assert.equal(f.catalog.resolve(f.other, other.models[0].id).account.id, other.account.id);
+  assert.equal(f.catalog.accounts(f.other).find(item => item.id === first.account.id)?.quotaDomain, undefined);
+  const cleared = await f.connections.connect(f.owner, { accountId: second.account.id, quotaDomain: '' }, signal());
+  assert.equal(cleared.status, 'ready');
+  assert.equal(cleared.account.quotaDomain, undefined);
+  assert.throws(() => f.catalog.resolve(f.owner, first.models[0].id), isError('QUOTA'));
+});
+
+test('Codex login reports an owner-only pending device challenge and clears it on cancellation', async t => {
+  const f = await fixture(t, [{ id: 'codex-profile', label: 'Codex fixture', kind: 'codex', command: process.execPath, args: [codexFixture, 'login-hang'], nodeIds: [], resourceGroupIds: [], enabled: true }]);
+  const { account } = await f.connections.connect(f.owner, { providerId: 'codex-profile' }, signal());
+  const events: string[] = [];
+  let pending!: () => void, cancelled!: () => void;
+  const pendingEvent = new Promise<void>(resolve => { pending = resolve; });
+  const cancelledEvent = new Promise<void>(resolve => { cancelled = resolve; });
+  const started = f.connections.startNativeLogin(f.owner, account.id, signal(), state => {
+    events.push(state.status);
+    if (state.status === 'pending') pending();
+    if (state.status === 'cancelled') cancelled();
+  });
+  assert.equal(started.status, 'starting');
+  await pendingEvent;
+  const snapshot = f.connections.nativeLogin(f.owner, account.id);
+  assert.equal(snapshot.status, 'pending');
+  assert.equal(snapshot.userCode, 'ABCD-EFGH');
+  assert.throws(() => f.connections.nativeLogin(f.other, account.id), isError('NOT_FOUND'));
+  assert.deepEqual(f.connections.startNativeLogin(f.owner, account.id, signal(), () => assert.fail('duplicate login')), snapshot);
+  const stopped = f.connections.cancelNativeLogin(f.owner, account.id);
+  assert.equal(stopped.status, 'cancelled');
+  assert(!('userCode' in stopped));
+  await cancelledEvent;
+  assert.deepEqual(events, ['pending', 'cancelled']);
 });
 
 test('a busy native account is reported promptly without corrupting its valid account state', async t => {
@@ -361,4 +427,30 @@ test('Ollama metadata probes are capped and timeout preserves the discovered cat
   assert.equal(result.models.length, 23); assert.equal(calls, 20); assert.ok(maximum <= 4);
   assert.equal(result.models[0].capabilitySource, 'unknown'); assert.equal(result.models[1].capabilitySource, 'provider'); assert.equal(result.models[22].capabilitySource, 'unknown');
   assert(result.warnings.some(warning => warning.includes('1 modelli'))); assert(result.warnings.some(warning => warning.includes('primi 20')));
+});
+
+test('Google guided login uses one private process and rediscovers only that account after operator consent', async t=>{
+  const f=await fixture(t,[{id:'agy-guided',label:'Google',kind:'antigravity',command:process.execPath,args:[cliFixture,'profile-file'],nodeIds:[],resourceGroupIds:[],enabled:true}]);
+  const a=await f.connections.connect(f.owner,{providerId:'agy-guided',accountLabel:'One'},signal());
+  const b=await f.connections.connect(f.owner,{providerId:'agy-guided',accountLabel:'Two'},signal());
+  assert.equal(a.nextAction?.kind,'login');
+  const controller=new AbortController();t.after(()=>controller.abort());
+  const events:unknown[]=[];
+  const wait=async (status:string) => {
+    for(let n=0;n<200;n++){
+      const current=f.connections.nativeLogin(f.owner,a.account.id); if(current.status===status) return current;
+      await new Promise(r=>setTimeout(r,10));
+    }
+    throw Error('No login event '+status);
+  };
+  f.connections.startNativeLogin(f.owner,a.account.id,controller.signal,s=>events.push(s));
+  const pending=await wait('pending');assert.equal(pending.status,'pending');
+  assert.equal(pending.responseRequired,true);assert.equal(new URL(pending.verificationUri).hostname,'accounts.google.com');
+  assert.throws(()=>f.connections.respondNativeLogin(f.other,a.account.id,pending.operationId,'valid-fixture-code'),isError('NOT_FOUND'));
+  assert.throws(()=>f.connections.respondNativeLogin(f.owner,a.account.id,pending.operationId,'https://other.test/?code=wrong'),isError('LOGIN_CODE'));
+  f.connections.respondNativeLogin(f.owner,a.account.id,pending.operationId,'valid-fixture-code');
+  assert.throws(()=>f.connections.respondNativeLogin(f.owner,a.account.id,pending.operationId,'valid-fixture-code'),isError('LOGIN_STATE'));
+  const done=await wait('complete');assert.equal(done.status,'complete');assert.ok(done.models.some(m=>m.model==='observed-fixture-model'));
+  assert.equal((await f.connections.connect(f.owner,{accountId:b.account.id},signal())).status,'login-required');
+  assert.ok(!JSON.stringify(events).includes('valid-fixture-code'));
 });

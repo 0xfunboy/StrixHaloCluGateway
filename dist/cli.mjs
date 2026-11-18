@@ -188,8 +188,8 @@ var init_local_telemetry = __esm({
 });
 
 // src/cli.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync3, realpathSync as realpathSync2, statSync as statSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import path10 from "node:path";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, realpathSync as realpathSync3, statSync as statSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import path11 from "node:path";
 import { pathToFileURL } from "node:url";
 
 // src/store.ts
@@ -296,6 +296,10 @@ var Store = class {
       CREATE TABLE IF NOT EXISTS secrets(id TEXT PRIMARY KEY,encrypted TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,owner TEXT NOT NULL,project TEXT,run TEXT,data TEXT NOT NULL,created TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_owner ON events(owner,id);
+      CREATE INDEX IF NOT EXISTS events_run ON events(owner,run,id);
+      CREATE INDEX IF NOT EXISTS events_completed_inference ON events(owner,run) WHERE json_extract(data, '$.type')='inference.completed';
+      CREATE TABLE IF NOT EXISTS inference_usage(id TEXT PRIMARY KEY,owner TEXT NOT NULL,route TEXT NOT NULL,account TEXT NOT NULL,input_tokens INTEGER,output_tokens INTEGER,total_ms INTEGER,ttft_ms REAL,decode_tps REAL,prefill_tps REAL,created TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS inference_usage_created ON inference_usage(created);
       CREATE TABLE IF NOT EXISTS memory_versions(id TEXT NOT NULL,revision INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(id,revision));
       CREATE TABLE IF NOT EXISTS chunks(id TEXT PRIMARY KEY,document TEXT NOT NULL,content TEXT NOT NULL,model TEXT,vector TEXT);
       CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document);
@@ -336,29 +340,29 @@ var Store = class {
   }
   createUser(name, role) {
     const user = { id: id("usr"), name, role, createdAt: now() };
-    const token = randomBytes(32).toString("base64url");
+    const token2 = randomBytes(32).toString("base64url");
     this.transaction(() => {
       this.put("user", user);
-      this.db.prepare("INSERT INTO auth VALUES (?,?,?,NULL)").run(hash(token), user.id, "key");
+      this.db.prepare("INSERT INTO auth VALUES (?,?,?,NULL)").run(hash(token2), user.id, "key");
     });
-    return { user, token };
+    return { user, token: token2 };
   }
-  authenticate(token, kind) {
-    if (token.length > 1024)
+  authenticate(token2, kind) {
+    if (token2.length > 1024)
       return;
-    const row = this.db.prepare("SELECT user_id,kind,expires FROM auth WHERE hash=?").get(hash(token));
+    const row = this.db.prepare("SELECT user_id,kind,expires FROM auth WHERE hash=?").get(hash(token2));
     if (!row || kind && row.kind !== kind || row.expires !== null && Number(row.expires) < Date.now())
       return;
     return this.get("user", String(row.user_id));
   }
   session(user) {
-    const token = randomBytes(32).toString("base64url");
-    this.db.prepare("INSERT INTO auth VALUES (?,?,?,?)").run(hash(token), user.id, "session", Date.now() + 12 * 60 * 60 * 1e3);
+    const token2 = randomBytes(32).toString("base64url");
+    this.db.prepare("INSERT INTO auth VALUES (?,?,?,?)").run(hash(token2), user.id, "session", Date.now() + 12 * 60 * 60 * 1e3);
     this.db.prepare("DELETE FROM auth WHERE expires IS NOT NULL AND expires<?").run(Date.now());
-    return token;
+    return token2;
   }
-  logout(token) {
-    this.db.prepare("DELETE FROM auth WHERE hash=? AND kind=?").run(hash(token), "session");
+  logout(token2) {
+    this.db.prepare("DELETE FROM auth WHERE hash=? AND kind=?").run(hash(token2), "session");
   }
   setSecret(key, value2) {
     const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", this.key, iv);
@@ -400,35 +404,115 @@ var Store = class {
     return x;
   }
   recover() {
-    let count4 = 0;
+    let count5 = 0;
+    const recovered = [];
     this.transaction(() => {
-      for (const run of this.all("run"))
+      for (const run of this.all("run")) {
+        const pendingGit = run.operations?.filter((operation) => ["promotion", "cleanup"].includes(operation.kind) && ["dispatched", "running"].includes(operation.state)) ?? [];
+        if (pendingGit.length && ["awaiting_release", "succeeded", "failed", "cancelled"].includes(run.status)) {
+          for (const operation of pendingGit) {
+            const task = run.tasks.find((item) => item.id === operation.taskId);
+            const evidence = task?.evidenceIds.map((key) => this.get("evidence", key)).find((item) => item?.details?.operationId === operation.id);
+            operation.state = evidence ? evidence.ok ? "succeeded" : "failed" : "uncertain";
+            operation.evidenceId = evidence?.id;
+            operation.finishedAt = evidence?.createdAt ?? now();
+            const attempt = task?.attempts?.at(-1);
+            if (task?.status === "running") task.status = evidence ? evidence.ok ? "succeeded" : "failed" : "blocked";
+            if (attempt?.status === "running") {
+              attempt.status = evidence ? evidence.ok ? "succeeded" : "failed" : "interrupted";
+              attempt.finishedAt = operation.finishedAt;
+            }
+          }
+          if (pendingGit.some((operation) => operation.state === "uncertain")) run.phase = "Operazione Git interrotta: ripeti l\u2019azione sullo stesso candidato per leggere lo stato effettivo";
+          run.updatedAt = now();
+          this.put("run", run);
+          recovered.push(run);
+          count5++;
+          continue;
+        }
         if (["queued", "planning", "executing", "reviewing", "verifying", "deploying"].includes(run.status)) {
+          const wasDeploying = run.status === "deploying";
           run.status = "interrupted";
           run.phase = "Coordinator riavviato: controllare evidenze prima di riprendere";
           run.updatedAt = now();
-          for (const task of run.tasks)
+          for (const task of run.tasks) {
             if (task.status === "running") {
               task.status = "blocked";
               task.error = "Esito interrotto: nessun replay automatico.";
             }
+            const attempt = task.attempts?.at(-1);
+            if (attempt?.status === "running") {
+              attempt.status = task.status === "succeeded" ? "succeeded" : "interrupted";
+              attempt.finishedAt = now();
+              attempt.error = task.error;
+            }
+          }
+          for (const operation of run.operations ?? []) {
+            if (!["dispatched", "running", "awaiting_approval"].includes(operation.state)) continue;
+            const task = run.tasks.find((item) => item.id === operation.taskId);
+            const evidence = task?.evidenceIds.map((key) => this.get("evidence", key)).find((item) => item?.details?.operationId === operation.id);
+            const execution = evidence?.details?.execution;
+            const interrupted = execution?.some((item) => item.timedOut || item.cancelled) && !execution.some((item) => item.rollback === "succeeded");
+            if (evidence && !interrupted) {
+              operation.state = evidence.ok ? "succeeded" : evidence.details?.denied ? "denied" : "failed";
+              operation.evidenceId = evidence.id;
+            } else if (operation.kind !== "native" && operation.state === "awaiting_approval" && !operation.approvalIds?.some((key) => this.get("approval", key)?.status === "approved")) {
+              operation.state = "denied";
+            } else {
+              operation.state = "uncertain";
+            }
+            operation.finishedAt = now();
+          }
+          if (run.operations?.some((operation) => operation.state === "uncertain")) {
+            run.phase = "Coordinator riavviato: riconciliare le operazioni incerte";
+          } else if (wasDeploying) {
+            const release = run.operations?.filter((operation) => operation.kind === "deploy").at(-1);
+            const evidence = release?.evidenceId ? this.get("evidence", release.evidenceId) : void 0;
+            const releaseTask = run.tasks.find((task) => task.id === release?.taskId);
+            if (release?.state === "succeeded" && evidence?.ok) {
+              run.status = "succeeded";
+              run.phase = "Distribuzione e health check ricostruiti dalle evidenze registrate";
+              run.releasedAt = evidence.createdAt;
+              if (releaseTask) {
+                releaseTask.status = "succeeded";
+                releaseTask.error = void 0;
+                releaseTask.endedAt = evidence.createdAt;
+                const attempt = releaseTask.attempts?.at(-1);
+                if (attempt) {
+                  attempt.status = "succeeded";
+                  attempt.error = void 0;
+                  attempt.finishedAt = evidence.createdAt;
+                }
+              }
+            } else if (release?.state === "failed") {
+              run.status = "failed";
+              run.phase = "Rilascio fallito: controllare evidenze e rollback";
+            } else if (run.verificationPassed && run.verification) {
+              run.status = "awaiting_release";
+              run.phase = "Rilascio da autorizzare dopo il riavvio";
+            }
+          }
           this.put("run", run);
-          count4++;
+          recovered.push(run);
+          count5++;
           const c = this.get("conversation", run.conversationId);
           if (c) {
             for (const m of c.messages)
-              if (m.status === "streaming")
+              if (m.runId === run.id && m.status === "streaming")
                 m.status = "error";
             this.put("conversation", c);
           }
         }
+      }
       for (const a of this.all("approval"))
         if (a.status === "pending") {
           a.status = "expired";
+          a.decidedAt = now();
           this.put("approval", a);
         }
     });
-    return count4;
+    for (const run of recovered) this.emit({ ownerId: run.ownerId, projectId: run.projectId, runId: run.id, type: "run.recovered", text: run.phase, data: { status: run.status, uncertainOperationIds: run.operations?.filter((operation) => operation.state === "uncertain").map((operation) => operation.id) ?? [] } });
+    return count5;
   }
   async backup(destination) {
     await backup(this.db, destination);
@@ -443,8 +527,7 @@ var Store = class {
 };
 
 // src/catalog.ts
-import { chmodSync as chmodSync2, mkdirSync as mkdirSync2 } from "node:fs";
-import path8 from "node:path";
+import path9 from "node:path";
 
 // src/config.ts
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -1097,15 +1180,23 @@ function loadConfig(file) {
   for (const p of cfg.providers) {
     if (p.loadProbe) validateLoadProbe(p.loadProbe);
     if (p.maxConcurrent !== void 0) p.maxConcurrent = integer(p.maxConcurrent, 4, 1, 16);
+    if (p.maxEmbeddingChars !== void 0)
+      assert(Number.isInteger(p.maxEmbeddingChars) && p.maxEmbeddingChars >= 32 && p.maxEmbeddingChars <= 4096, 400, "CONFIG", "maxEmbeddingChars deve essere un intero tra 32 e 4096.");
     assert(["openai-compatible", "openai-responses", "ollama", "gemini", "codex", "antigravity"].includes(p.kind), 400, "CONFIG", "Provider non valido.");
     if (p.baseUrl)
       p.baseUrl = endpoint(p.baseUrl);
+    for (const model of p.models ?? []) if (model.aliases !== void 0)
+      model.aliases = textList(model.aliases, 64).map((alias) => str(alias, "Alias modello", 200));
     p.nodeIds = textList(p.nodeIds);
     p.resourceGroupIds = textList(p.resourceGroupIds);
     assert(p.nodeIds.every((n) => nodes.has(n)) && p.resourceGroupIds.every((g) => groups.has(g)), 400, "CONFIG", "Risorse provider non valide.");
   }
   for (const p of cfg.providers)
     if (p.activation) {
+      if (p.activation.stop) {
+        p.activation.stop.url = endpoint(p.activation.stop.url);
+        p.activation.stop.healthUrl = endpoint(p.activation.stop.healthUrl);
+      }
       const covered = cfg.resourceGroups.filter((g) => p.resourceGroupIds.includes(g.id) || g.nodeIds.some((n) => p.nodeIds.includes(n)));
       assert(covered.length > 0 && covered.every((g) => g.capacity === 1), 400, "CONFIG", "Gli engine commutabili richiedono risorse esclusive capacity:1.");
       if (p.activation.recipeId) {
@@ -1129,7 +1220,8 @@ var RouteRouter = class {
   }
   candidate(user, route, options = {}) {
     const provider = this.catalog.store.require("provider", route.providerId);
-    const account = this.catalog.store.require("account", route.accountId);
+    const stored = this.catalog.store.require("account", route.accountId);
+    const account = { ...stored, quota: this.catalog.effectiveQuota(stored) };
     const hardware = routeResources({
       ...route,
       nodeIds: [.../* @__PURE__ */ new Set([...route.nodeIds, ...provider.nodeIds])],
@@ -1145,7 +1237,7 @@ var RouteRouter = class {
       candidate.unavailable = { code, reason, status: status2 };
       return candidate;
     };
-    if (account.ownerId !== user.id && !account.shared) return deny("NOT_FOUND", "Modello non disponibile.");
+    if (!this.catalog.canUseAccount(user, account)) return deny("NOT_FOUND", "Modello non disponibile.");
     if (!route.enabled || !provider.enabled) return deny("DISABLED", "Connessione disabilitata.", "disabled");
     if (hardware.some((group) => !this.catalog.scheduler.groups.has(group))) return deny("RESOURCE", "Gruppo di risorse non configurato.");
     if (account.quota?.cooldownUntil && Date.parse(account.quota.cooldownUntil) > Date.now()) return deny("QUOTA", "Account in attesa di ripristino quota.", "cooldown");
@@ -1155,6 +1247,7 @@ var RouteRouter = class {
     const required = new Set(options.requiredCapabilities ?? []);
     if (options.purpose === "embedding") required.add("embedding");
     else if (options.purpose && !(route.capabilities.length === 0 && (!route.capabilitySource || route.capabilitySource === "unknown"))) required.add("chat");
+    if (options.purpose === "coder" && !native) required.add("tools");
     if ([...required].some((capability) => !route.capabilities.includes(capability))) return deny("CAPABILITY", "Capacit\xE0 necessarie non dichiarate per questo modello.");
     if (options.minimumContextTokens !== void 0 && (route.contextWindow ?? 16384) < options.minimumContextTokens)
       return deny("CONTEXT", "Finestra di contesto insufficiente per questa richiesta.");
@@ -1298,6 +1391,25 @@ var RouteRouter = class {
           return available.status === "available" ? 0 : available.status === "unknown" ? 1 : 2;
         };
         eligible.sort((a, b) => rank(a) - rank(b));
+        const equivalent = /* @__PURE__ */ new Map();
+        const at = Date.now();
+        for (const [index, entry] of eligible.entries()) {
+          const q = entry.account.quota;
+          if (!q || at - Date.parse(q.observedAt) > 3e5) continue;
+          const windows = (q.windows ?? []).filter((w) => w.usedPercent !== void 0 && (!w.resetAt || Date.parse(w.resetAt) > at));
+          const budget = windows.length ? Math.min(...windows.map((w) => 100 - w.usedPercent)) : q.remainingRequests;
+          if (budget === void 0 || !Number.isFinite(budget)) continue;
+          const group = JSON.stringify([rank(entry), entry.provider.id, entry.route.model, windows.length ? "percent" : "requests"]);
+          const items = equivalent.get(group) ?? [];
+          items.push({ index, budget, entry });
+          equivalent.set(group, items);
+        }
+        for (const items of equivalent.values()) {
+          const byBudget = items.slice().sort((a, b) => b.budget - a.budget);
+          items.forEach((item, i) => {
+            eligible[item.index] = byBudget[i].entry;
+          });
+        }
       }
       const lease = await this.catalog.scheduler.acquireAny(eligible.map((candidate) => ({ id: candidate.route.id, groups: candidate.groups })), signal, {
         priority: request.priority ?? (request.purpose === "chat" ? "interactive" : "normal"),
@@ -1353,6 +1465,9 @@ var RouteRouter = class {
   }
 };
 
+// src/adapters/inference.ts
+import { performance as performance3 } from "node:perf_hooks";
+
 // src/adapters/ollama-info.ts
 async function enrichOllamaModels(connection, models, secret, signal) {
   const pending = models.filter((model) => model.capabilitySource === "unknown" || !model.contextWindow);
@@ -1373,8 +1488,8 @@ async function enrichOllamaModels(connection, models, secret, signal) {
           model.capabilities = capabilities;
           model.capabilitySource = "provider";
         }
-        const metadata = record(info.model_info), architecture = metadata["general.architecture"];
-        const maximum = typeof architecture === "string" ? integer2(metadata[`${architecture}.context_length`]) : void 0;
+        const metadata2 = record(info.model_info), architecture = metadata2["general.architecture"];
+        const maximum = typeof architecture === "string" ? integer2(metadata2[`${architecture}.context_length`]) : void 0;
         const parameters = record(info.parameters);
         const configured = integer2(parameters.num_ctx) ?? (typeof info.parameters === "string" ? Number(info.parameters.match(/^\s*num_ctx\s+(\d+)\s*$/m)?.[1] ?? 0) : 0);
         if (Number.isSafeInteger(configured) && configured > 0 && configured <= 2e6) model.contextWindow = maximum && maximum > 0 ? Math.min(configured, maximum) : configured;
@@ -1392,9 +1507,784 @@ async function enrichOllamaModels(connection, models, secret, signal) {
 }
 
 // src/adapters/vendor/providers/http.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+
+// src/adapters/vendor/providers/sse.ts
+async function* parseSse(body, signal, maxEventChars = 4 * 1024 * 1024, maxStreamBytes = 64 * 1024 * 1024) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let buffer = "";
+  let data = [];
+  let event;
+  let id2;
+  let eventChars = 0;
+  let finished = false;
+  let streamBytes = 0;
+  const abort = () => {
+    void reader.cancel(signal?.reason).catch(() => {
+    });
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  const line = (value2) => {
+    if (value2 === "") {
+      const result2 = data.length ? { event, id: id2, data: data.join("\n") } : void 0;
+      data = [];
+      event = void 0;
+      eventChars = 0;
+      return result2;
+    }
+    if (value2.startsWith(":")) return;
+    const colon = value2.indexOf(":");
+    const field = colon < 0 ? value2 : value2.slice(0, colon);
+    let payload = colon < 0 ? "" : value2.slice(colon + 1);
+    if (payload.startsWith(" ")) payload = payload.slice(1);
+    if (field === "data") {
+      eventChars += payload.length + 1;
+      if (eventChars > maxEventChars) throw new Error("Provider SSE event exceeds the size limit.");
+      data.push(payload);
+    } else if (field === "event") event = payload;
+    else if (field === "id" && !payload.includes("\0")) id2 = payload;
+  };
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const chunk = await reader.read();
+      signal?.throwIfAborted();
+      if (chunk.done) {
+        buffer += decoder.decode();
+        finished = true;
+      } else {
+        streamBytes += chunk.value.byteLength;
+        if (streamBytes > maxStreamBytes) throw new Error("Provider SSE stream exceeds the size limit.");
+        buffer += decoder.decode(chunk.value, { stream: true });
+      }
+      if (buffer.length > maxEventChars) throw new Error("Provider SSE line exceeds the size limit.");
+      while (true) {
+        const end = buffer.search(/[\r\n]/);
+        if (end < 0 || !finished && end === buffer.length - 1 && buffer[end] === "\r") break;
+        const value2 = buffer.slice(0, end);
+        const width = buffer[end] === "\r" && buffer[end + 1] === "\n" ? 2 : 1;
+        buffer = buffer.slice(end + width);
+        const result2 = line(value2);
+        if (result2) yield result2;
+      }
+      if (finished) break;
+    }
+    if (buffer) {
+      const result2 = line(buffer);
+      if (result2) yield result2;
+    }
+    const tail = line("");
+    if (tail) yield tail;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    if (!finished) await reader.cancel().catch(() => {
+    });
+    reader.releaseLock();
+  }
+}
+
+// src/adapters/vendor/providers/http.ts
 var MAX_BODY_BYTES = 16 * 1024 * 1024;
 var MAX_TEXT_CHARS = 4 * 1024 * 1024;
 var MAX_ARGUMENT_CHARS = 2 * 1024 * 1024;
+var MAX_TOOL_CALLS = 128;
+var HttpProviderError = class extends Error {
+  status;
+  retryAfterMs;
+  remainingRequests;
+  code;
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "HttpProviderError";
+    this.status = details.status;
+    this.retryAfterMs = details.retryAfterMs;
+    this.remainingRequests = details.remainingRequests;
+    this.code = details.code;
+  }
+};
+function createHttpCompleter(options = {}) {
+  const timeoutMs = options.requestTimeoutMs ?? 15 * 60 * 1e3;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("requestTimeoutMs must be positive.");
+  return {
+    async complete(request) {
+      request.signal.throwIfAborted();
+      const controller = new AbortController();
+      const timeout2 = setTimeout(() => controller.abort(new DOMException("Provider request timed out.", "TimeoutError")), timeoutMs);
+      timeout2.unref();
+      const signal = AbortSignal.any([request.signal, controller.signal]);
+      let details = {};
+      try {
+        const url2 = endpoint3(request.profile);
+        const messages = prepareHistory(request, url2);
+        const body = requestBody(request, messages, url2);
+        const serialized = JSON.stringify(body);
+        if (Buffer.byteLength(serialized) > MAX_BODY_BYTES) throw new HttpProviderError("The model request exceeds the 16 MiB limit. Reduce the conversation or attached context.");
+        const headers2 = requestHeaders(request);
+        const response = await pinnedFetch(url2, { method: "POST", headers: headers2, body: serialized, signal, redirect: "error" });
+        details = observedLimits(response.headers);
+        details.status = response.status;
+        if (!response.ok) {
+          const raw = await readBody(response, signal, 16 * 1024, true);
+          throw new HttpProviderError(`Provider returned HTTP ${response.status}: ${safeError2(errorText(raw), request)}`, details);
+        }
+        const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+        let result2;
+        if (contentType.includes("text/event-stream")) {
+          if (!response.body) throw new HttpProviderError("The provider returned an empty event stream.", details);
+          const events = parseSse(response.body, signal);
+          if (request.profile.kind === "openai-compatible") result2 = await chatStream(events, request);
+          else if (request.profile.kind === "openai-responses") result2 = await responsesStream(events, request, url2);
+          else result2 = await geminiStream(events, request, url2);
+        } else if (contentType.includes("json")) {
+          const raw = await readBody(response, signal, MAX_BODY_BYTES);
+          const value2 = parseJson(raw);
+          if (request.profile.kind === "openai-compatible") result2 = chatJson(object2(value2), request);
+          else if (request.profile.kind === "openai-responses") result2 = responsesJson(object2(value2), request, url2);
+          else result2 = geminiJson(value2, request, url2);
+        } else {
+          await response.body?.cancel();
+          throw new HttpProviderError("The provider returned neither JSON nor an SSE event stream. Check the endpoint URL.", details);
+        }
+        signal.throwIfAborted();
+        if (details.remainingRequests !== void 0) result2.remainingRequests = details.remainingRequests;
+        return result2;
+      } catch (error) {
+        if (request.signal.aborted) throw request.signal.reason ?? new DOMException("Cancelled.", "AbortError");
+        if (controller.signal.aborted) throw new HttpProviderError("The model request timed out. Check the server or reduce the context.", { ...details, code: "timeout" });
+        const known = error instanceof HttpProviderError ? error : void 0;
+        const message = error instanceof Error ? error.message : "The model request failed.";
+        throw new HttpProviderError(safeError2(message, request), {
+          ...details,
+          ...known ? { status: known.status ?? details.status, retryAfterMs: known.retryAfterMs ?? details.retryAfterMs, remainingRequests: known.remainingRequests ?? details.remainingRequests, code: known.code ? safeError2(known.code, request).slice(0, 256) : void 0 } : {}
+        });
+      } finally {
+        clearTimeout(timeout2);
+      }
+    }
+  };
+}
+function object2(value2) {
+  return value2 !== null && typeof value2 === "object" && !Array.isArray(value2) ? value2 : {};
+}
+function array(value2) {
+  return Array.isArray(value2) ? value2 : [];
+}
+function string(value2) {
+  return typeof value2 === "string" ? value2 : "";
+}
+function count2(value2) {
+  return typeof value2 === "number" && Number.isFinite(value2) && value2 >= 0 ? value2 : void 0;
+}
+function parseJson(value2) {
+  try {
+    return JSON.parse(value2);
+  } catch {
+    throw new HttpProviderError("The provider returned malformed JSON.");
+  }
+}
+function newCallId() {
+  return `call_${randomUUID2().replaceAll("-", "")}`;
+}
+function wireId(value2) {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(value2) ? value2 : `call_${createHash2("sha256").update(value2).digest("hex").slice(0, 40)}`;
+}
+function append(current, delta, max = MAX_TEXT_CHARS) {
+  if (current.length + delta.length > max) throw new HttpProviderError("The provider output exceeds the size limit.");
+  return current + delta;
+}
+function safeError2(value2, request) {
+  let text2 = value2;
+  const secrets = [request.apiKey, ...Object.values(request.profile.headers ?? {})].filter((secret) => Boolean(secret));
+  if (request.profile.baseUrl) {
+    try {
+      const url2 = new URL(request.profile.baseUrl);
+      secrets.push(...url2.searchParams.values());
+      if (url2.password) secrets.push(url2.password);
+    } catch {
+    }
+  }
+  for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) text2 = text2.split(secret).join("[redacted]");
+  return text2.replace(/Bearer\s+[^\s"'<>]+/gi, "Bearer [redacted]").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, 2e3);
+}
+function errorText(raw) {
+  try {
+    const parsed = object2(JSON.parse(raw));
+    const error = object2(parsed.error);
+    return string(error.message) || string(parsed.message) || string(parsed.error) || "Request rejected.";
+  } catch {
+    return raw.trimStart().startsWith("<") ? "The endpoint returned an HTML error page." : raw.trim() || "Request rejected.";
+  }
+}
+function observedLimits(headers2) {
+  const result2 = {};
+  const remaining = headers2.get("x-ratelimit-remaining-requests") ?? headers2.get("ratelimit-remaining");
+  if (remaining !== null && /^\d+(?:\.\d+)?$/.test(remaining.trim())) result2.remainingRequests = Number(remaining);
+  const retryAfter = headers2.get("retry-after");
+  if (retryAfter !== null) {
+    const numeric2 = Number(retryAfter);
+    if (retryAfter.trim() && Number.isFinite(numeric2) && numeric2 >= 0) result2.retryAfterMs = numeric2 * 1e3;
+    else {
+      const date2 = Date.parse(retryAfter);
+      if (Number.isFinite(date2)) result2.retryAfterMs = Math.max(0, date2 - Date.now());
+    }
+  }
+  return result2;
+}
+async function readBody(response, signal, limit, truncate = false) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  let done = false;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const chunk = await reader.read();
+      if (chunk.done) {
+        done = true;
+        break;
+      }
+      const available = limit - size;
+      if (chunk.value.length > available) {
+        if (!truncate) throw new HttpProviderError("The provider response exceeds the size limit.");
+        chunks.push(chunk.value.slice(0, Math.max(0, available)));
+        break;
+      }
+      chunks.push(chunk.value);
+      size += chunk.value.length;
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    if (!done) await reader.cancel().catch(() => {
+    });
+    reader.releaseLock();
+  }
+}
+function endpoint3(profile2) {
+  if (!["openai-compatible", "openai-responses", "gemini"].includes(profile2.kind)) throw new HttpProviderError("This profile requires its external agent runtime, not the HTTP adapter.");
+  let url2;
+  try {
+    url2 = new URL(profile2.baseUrl || (profile2.kind === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.openai.com/v1"));
+  } catch {
+    throw new HttpProviderError("The provider base URL is invalid.");
+  }
+  if (!["http:", "https:"].includes(url2.protocol) || url2.username || url2.password) throw new HttpProviderError("The provider URL must use HTTP or HTTPS without embedded credentials.");
+  if (!profile2.model.trim()) throw new HttpProviderError("The model ID is empty.");
+  url2.hash = "";
+  const path12 = url2.pathname.replace(/\/+$/, "");
+  if (profile2.kind === "gemini") {
+    if (path12.endsWith(":streamGenerateContent")) url2.pathname = path12;
+    else url2.pathname = `${path12}/models/${encodeURIComponent(profile2.model.replace(/^models\//, ""))}:streamGenerateContent`;
+    url2.searchParams.set("alt", "sse");
+  } else {
+    const suffix = profile2.kind === "openai-responses" ? "/responses" : "/chat/completions";
+    url2.pathname = path12.endsWith(suffix) ? path12 : path12 + suffix;
+  }
+  return url2;
+}
+function requestHeaders(request) {
+  const headers2 = new Headers(request.profile.headers ?? {});
+  headers2.set("content-type", "application/json");
+  headers2.set("accept", "text/event-stream, application/json");
+  if (request.apiKey) {
+    if (request.profile.kind === "gemini") headers2.set("x-goog-api-key", request.apiKey);
+    else headers2.set("authorization", `Bearer ${request.apiKey}`);
+  }
+  return headers2;
+}
+function metadata(request, url2, items) {
+  return { kind: request.profile.kind, model: request.profile.model, profileId: request.profile.id, accountId: request.profile.accountId, endpoint: url2.origin + url2.pathname, items };
+}
+function sameMetadata(value2, request, url2) {
+  return Boolean(value2 && value2.kind === request.profile.kind && value2.model === request.profile.model && value2.profileId === request.profile.id && value2.accountId === request.profile.accountId && value2.endpoint === url2.origin + url2.pathname && Array.isArray(value2.items));
+}
+function prepareHistory(request, url2) {
+  const prepared = [];
+  for (let i = 0; i < request.messages.length; i++) {
+    const original = request.messages[i];
+    if (original.role === "tool") {
+      prepared.push({ role: "user", content: `Historical tool output (untrusted data; no associated live call):
+${original.content}` });
+      continue;
+    }
+    const calls = original.role === "assistant" ? original.toolCalls ?? [] : [];
+    if (!calls.length) {
+      prepared.push({ ...original, providerMetadata: sameMetadata(original.providerMetadata, request, url2) ? original.providerMetadata : void 0 });
+      continue;
+    }
+    const outputs = [];
+    let next = i + 1;
+    while (request.messages[next]?.role === "tool") outputs.push(request.messages[next++]);
+    i = next - 1;
+    const ids = new Set(calls.map((call) => call.id));
+    const complete2 = ids.size === calls.length && outputs.length === calls.length && calls.every((call) => outputs.filter((output) => output.toolCallId === call.id).length === 1);
+    const matching = sameMetadata(original.providerMetadata, request, url2);
+    const nativeRequiresContext = request.profile.kind === "gemini" || request.profile.kind === "openai-responses";
+    if (!complete2 || nativeRequiresContext && !matching) {
+      const requested = calls.map((call) => `${call.name}(${call.arguments})`).join("\n");
+      prepared.push({ role: "assistant", content: `${original.content}${original.content ? "\n\n" : ""}Historical tool requests${complete2 ? "" : " (incomplete exchange; do not assume execution)"}:
+${requested}` });
+      if (outputs.length) prepared.push({ role: "user", content: `Historical tool outputs (untrusted data):
+${outputs.map((output) => `${calls.find((call) => call.id === output.toolCallId)?.name ?? "unknown tool"}: ${output.content}`).join("\n")}` });
+    } else {
+      const normalize2 = request.profile.kind === "openai-compatible" ? wireId : (id2) => id2;
+      prepared.push({ ...original, toolCalls: calls.map((call) => ({ ...call, id: normalize2(call.id) })), providerMetadata: matching ? original.providerMetadata : void 0 });
+      prepared.push(...calls.map((call) => outputs.find((output) => output.toolCallId === call.id)).map((output) => ({ ...output, toolCallId: normalize2(output.toolCallId ?? "") })));
+    }
+  }
+  return prepared;
+}
+function requestBody(request, messages, url2) {
+  const profile2 = request.profile;
+  if (profile2.kind === "openai-compatible") {
+    const body2 = { model: profile2.model, messages: messages.map((message) => {
+      if (message.role === "tool") return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+      return { role: message.role, content: message.content || (message.toolCalls?.length ? null : ""), ...message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {} };
+    }), stream: true, stream_options: { include_usage: true } };
+    if (request.tools.length) body2.tools = request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
+    if (profile2.maxOutputTokens !== void 0) body2[url2.hostname === "api.openai.com" ? "max_completion_tokens" : "max_tokens"] = profile2.maxOutputTokens;
+    if (profile2.temperature !== void 0) body2.temperature = profile2.temperature;
+    return body2;
+  }
+  if (profile2.kind === "openai-responses") {
+    const input = [];
+    for (const message of messages) {
+      if (message.role === "assistant" && sameMetadata(message.providerMetadata, request, url2)) input.push(...message.providerMetadata.items);
+      else if (message.role === "tool") input.push({ type: "function_call_output", call_id: message.toolCallId, output: message.content });
+      else {
+        if (message.content || !message.toolCalls?.length) input.push({ role: message.role, content: message.content });
+        for (const call of message.toolCalls ?? []) input.push({ type: "function_call", call_id: call.id, name: call.name, arguments: call.arguments });
+      }
+    }
+    const body2 = { model: profile2.model, input, stream: true, store: false, include: ["reasoning.encrypted_content"] };
+    if (request.tools.length) body2.tools = request.tools.map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: tool.parameters, strict: false }));
+    if (profile2.maxOutputTokens !== void 0) body2.max_output_tokens = profile2.maxOutputTokens;
+    if (profile2.temperature !== void 0) body2.temperature = profile2.temperature;
+    return body2;
+  }
+  const contents = [];
+  const system = [];
+  const calls = /* @__PURE__ */ new Map();
+  for (const message of messages) {
+    if (message.role === "system") {
+      system.push(message.content);
+      continue;
+    }
+    const parts = [];
+    if (message.role === "tool") {
+      const call = calls.get(message.toolCallId ?? "");
+      if (!call) throw new HttpProviderError("A Gemini tool output has no matching function name.");
+      const response = { result: message.content };
+      try {
+        response.result = JSON.parse(message.content);
+      } catch {
+      }
+      parts.push({ functionResponse: { name: call.name, ...call.id ? { id: call.id } : {}, response } });
+    } else if (message.role === "assistant" && sameMetadata(message.providerMetadata, request, url2)) {
+      parts.push(...message.providerMetadata.items);
+      const nativeCalls = parts.map((part) => object2(part.functionCall)).filter((call) => typeof call.name === "string");
+      for (const [index, call] of (message.toolCalls ?? []).entries()) calls.set(call.id, { name: call.name, id: string(nativeCalls[index]?.id) || void 0 });
+    } else {
+      if (message.content) parts.push({ text: message.content });
+      for (const call of message.toolCalls ?? []) {
+        parts.push({ functionCall: { name: call.name, args: parseJson(call.arguments) } });
+        calls.set(call.id, { name: call.name });
+      }
+    }
+    if (!parts.length) parts.push({ text: "" });
+    const role = message.role === "assistant" ? "model" : "user";
+    const previous = contents.at(-1);
+    if (previous?.role === role) previous.parts.push(...parts);
+    else contents.push({ role, parts });
+  }
+  const body = { contents };
+  if (system.length) body.systemInstruction = { parts: [{ text: system.join("\n\n") }] };
+  if (request.tools.length) body.tools = [{ functionDeclarations: request.tools.map((tool) => ({ name: tool.name, description: tool.description, parametersJsonSchema: tool.parameters })) }];
+  const config2 = {};
+  if (profile2.maxOutputTokens !== void 0) config2.maxOutputTokens = profile2.maxOutputTokens;
+  if (profile2.temperature !== void 0) config2.temperature = profile2.temperature;
+  if (Object.keys(config2).length) body.generationConfig = config2;
+  return body;
+}
+function checkedCalls(calls, finishReason) {
+  if (calls.length > MAX_TOOL_CALLS) throw new HttpProviderError("The provider returned too many tool calls in one turn.");
+  if (calls.length && ["length", "max_tokens", "max_output_tokens", "MAX_TOKENS", "incomplete"].includes(finishReason ?? "")) throw new HttpProviderError("The model reached its output limit during a tool call. No partial call will be executed. Increase maxOutputTokens.");
+  const ids = /* @__PURE__ */ new Set();
+  return calls.map((call) => {
+    if (!call.name || call.name.length > 256) throw new HttpProviderError("The provider returned a tool call without a valid function name.");
+    if (call.arguments.length > MAX_ARGUMENT_CHARS) throw new HttpProviderError("Tool arguments exceed the size limit.");
+    const args = call.arguments.trim() || "{}";
+    const parsed = parseJson(args);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpProviderError(`Tool ${call.name} returned arguments that are not a JSON object.`);
+    const id2 = call.id || newCallId();
+    if (ids.has(id2)) throw new HttpProviderError("The provider returned duplicate tool-call identifiers.");
+    ids.add(id2);
+    return { id: id2, name: call.name, arguments: args };
+  });
+}
+function chatUsage(value2) {
+  const usage2 = object2(value2);
+  const inputTokens = count2(usage2.prompt_tokens), outputTokens = count2(usage2.completion_tokens);
+  if (inputTokens === void 0 || outputTokens === void 0) return;
+  return { inputTokens, outputTokens, cachedInputTokens: count2(object2(usage2.prompt_tokens_details).cached_tokens) };
+}
+function responsesUsage(value2) {
+  const usage2 = object2(value2);
+  const inputTokens = count2(usage2.input_tokens), outputTokens = count2(usage2.output_tokens);
+  if (inputTokens === void 0 || outputTokens === void 0) return;
+  return { inputTokens, outputTokens, cachedInputTokens: count2(object2(usage2.input_tokens_details).cached_tokens) };
+}
+function geminiUsage(value2) {
+  const usage2 = object2(value2);
+  const inputTokens = count2(usage2.promptTokenCount), candidates = count2(usage2.candidatesTokenCount), total = count2(usage2.totalTokenCount);
+  if (inputTokens === void 0 || candidates === void 0 && total === void 0) return;
+  return { inputTokens, outputTokens: candidates !== void 0 ? candidates + (count2(usage2.thoughtsTokenCount) ?? 0) : Math.max(0, (total ?? inputTokens) - inputTokens), cachedInputTokens: count2(usage2.cachedContentTokenCount) };
+}
+function contentText(value2) {
+  if (typeof value2 === "string") return value2;
+  return array(value2).map((part) => string(object2(part).text)).join("");
+}
+function inlineError(value2) {
+  if (value2.error) {
+    const error = object2(value2.error);
+    throw new HttpProviderError(string(error.message) || string(value2.error) || "The provider reported a stream error.", { code: string(error.code) || void 0 });
+  }
+}
+function engineTiming(value2) {
+  const timings = object2(value2.timings), strix = object2(value2.strix);
+  const result2 = {};
+  const prefillMs = count2(timings.prompt_ms ?? strix.prefill_ms);
+  const prefillTokensPerSecond = count2(timings.prompt_per_second ?? strix.prefill_tokens_per_second);
+  const decodeTokensPerSecond = count2(timings.predicted_per_second ?? strix.decode_tokens_per_second);
+  if (prefillMs !== void 0) result2.prefillMs = prefillMs;
+  if (prefillTokensPerSecond !== void 0) result2.prefillTokensPerSecond = prefillTokensPerSecond;
+  if (decodeTokensPerSecond !== void 0) result2.decodeTokensPerSecond = decodeTokensPerSecond;
+  return result2;
+}
+async function chatStream(events, request) {
+  let text2 = "", finishReason, usage2, done = false;
+  let timing = {};
+  const calls = /* @__PURE__ */ new Map();
+  for await (const event of events) {
+    if (event.data.trim() === "[DONE]") {
+      done = true;
+      break;
+    }
+    const chunk = object2(parseJson(event.data));
+    inlineError(chunk);
+    usage2 = chatUsage(chunk.usage) ?? usage2;
+    timing = { ...timing, ...engineTiming(chunk) };
+    const choices = array(chunk.choices).map(object2);
+    const choice = choices.find((item) => item.index === 0) ?? (choices.length === 1 && choices[0].index === void 0 ? choices[0] : void 0);
+    if (!choice) continue;
+    if (typeof choice.finish_reason === "string") finishReason = choice.finish_reason;
+    const delta = object2(choice.delta);
+    const added = contentText(delta.content) || string(delta.refusal);
+    if (added) {
+      text2 = append(text2, added);
+      request.onText(added);
+    }
+    for (const raw of array(delta.tool_calls)) {
+      const part = object2(raw), fn = object2(part.function), index = count2(part.index);
+      if (index === void 0 || !Number.isInteger(index) || index >= MAX_TOOL_CALLS) throw new HttpProviderError("The provider returned an invalid tool-call index.");
+      const call = calls.get(index) ?? { id: "", name: "", arguments: "" };
+      const id2 = string(part.id);
+      if (id2) {
+        if (call.id && call.id !== id2) throw new HttpProviderError("A streamed tool-call identifier changed unexpectedly.");
+        call.id = id2;
+      }
+      call.name = append(call.name, string(fn.name), 256);
+      call.arguments = append(call.arguments, string(fn.arguments), MAX_ARGUMENT_CHARS);
+      calls.set(index, call);
+    }
+  }
+  if (!done && !finishReason) throw new HttpProviderError("The provider stream ended before a completion marker. Retry the request.");
+  if (finishReason === "content_filter") throw new HttpProviderError("The provider stopped the response because of its content filter.");
+  return { text: text2, toolCalls: checkedCalls([...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call), finishReason), usage: usage2, finishReason, engineTiming: timing };
+}
+function chatJson(value2, request) {
+  inlineError(value2);
+  const choice = object2(array(value2.choices)[0]);
+  if (!Object.keys(choice).length) throw new HttpProviderError("The provider returned no completion choice.");
+  const message = object2(choice.message), finishReason = string(choice.finish_reason) || void 0;
+  const text2 = contentText(message.content) || string(message.refusal);
+  if (text2.length > MAX_TEXT_CHARS) throw new HttpProviderError("The provider output exceeds the size limit.");
+  const toolCalls = checkedCalls(array(message.tool_calls).map((raw) => {
+    const call = object2(raw), fn = object2(call.function);
+    return { id: string(call.id), name: string(fn.name), arguments: string(fn.arguments) };
+  }), finishReason);
+  if (finishReason === "content_filter") throw new HttpProviderError("The provider stopped the response because of its content filter.");
+  if (text2) request.onText(text2);
+  return { text: text2, toolCalls, usage: chatUsage(value2.usage), finishReason, engineTiming: engineTiming(value2) };
+}
+function responseOutput(value2) {
+  return array(value2.output).map(object2).filter((item) => ["message", "reasoning", "function_call"].includes(string(item.type)));
+}
+function responseText(items) {
+  return items.filter((item) => item.type === "message").map((item) => array(item.content).map((part) => {
+    const content = object2(part);
+    return content.type === "output_text" ? string(content.text) : content.type === "refusal" ? string(content.refusal) : "";
+  }).join("")).join("");
+}
+function emitRemainder(finalText, streamed, request) {
+  if (finalText.length > MAX_TEXT_CHARS) throw new HttpProviderError("The provider output exceeds the size limit.");
+  if (!finalText.startsWith(streamed)) throw new HttpProviderError("The final provider response does not match its streamed text.");
+  const remainder = finalText.slice(streamed.length);
+  if (remainder) request.onText(remainder);
+}
+function responsesJson(value2, request, url2, streamed = "") {
+  inlineError(value2);
+  if (value2.status === "failed" || value2.status === "cancelled") throw new HttpProviderError(string(object2(value2.error).message) || `The provider response ${string(value2.status)}.`);
+  const output = responseOutput(value2);
+  const text2 = responseText(output);
+  const status2 = string(value2.status);
+  if (status2 && status2 !== "completed" && status2 !== "incomplete") throw new HttpProviderError(`The provider returned a nonterminal response (${status2}).`);
+  if (!Array.isArray(value2.output)) throw new HttpProviderError("The provider returned no Responses output array.");
+  const finishReason = status2 === "incomplete" ? string(object2(value2.incomplete_details).reason) || "incomplete" : status2 || "completed";
+  const toolCalls = checkedCalls(output.filter((item) => item.type === "function_call").map((item) => ({ id: string(item.call_id), name: string(item.name), arguments: string(item.arguments) })), status2 === "incomplete" ? "incomplete" : finishReason);
+  emitRemainder(text2, streamed, request);
+  return { text: text2, toolCalls, finishReason, usage: responsesUsage(value2.usage), providerMetadata: metadata(request, url2, output) };
+}
+async function responsesStream(events, request, url2) {
+  let text2 = "";
+  const items = /* @__PURE__ */ new Map();
+  for await (const event of events) {
+    if (event.data.trim() === "[DONE]") break;
+    const chunk = object2(parseJson(event.data));
+    inlineError(chunk);
+    const type = string(chunk.type) || event.event;
+    if (type === "error") throw new HttpProviderError(string(chunk.message) || "The Responses API reported a stream error.", { code: string(chunk.code) || void 0 });
+    if (type === "response.output_text.delta" || type === "response.refusal.delta") {
+      const delta = string(chunk.delta);
+      text2 = append(text2, delta);
+      if (delta) request.onText(delta);
+    } else if (type === "response.output_item.added" || type === "response.output_item.done") {
+      const index = count2(chunk.output_index);
+      if (index === void 0 || !Number.isInteger(index) || index >= 1024) throw new HttpProviderError("The Responses stream returned an invalid output index.");
+      items.set(index, object2(chunk.item));
+    } else if (type === "response.function_call_arguments.delta") {
+      const index = count2(chunk.output_index);
+      const item = index === void 0 ? void 0 : items.get(index);
+      if (!item || item.type !== "function_call") throw new HttpProviderError("The Responses stream sent function arguments before their call.");
+      item.arguments = append(string(item.arguments), string(chunk.delta), MAX_ARGUMENT_CHARS);
+    } else if (type === "response.function_call_arguments.done") {
+      const index = count2(chunk.output_index);
+      const item = index === void 0 ? void 0 : items.get(index);
+      if (item && typeof chunk.arguments === "string") item.arguments = chunk.arguments;
+    } else if (type === "response.completed" || type === "response.incomplete") {
+      const response = object2(chunk.response);
+      if (!response.status) response.status = type === "response.completed" ? "completed" : "incomplete";
+      if (!Array.isArray(response.output)) response.output = [...items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+      return responsesJson(response, request, url2, text2);
+    } else if (type === "response.failed") {
+      const response = object2(chunk.response);
+      throw new HttpProviderError(string(object2(response.error).message) || "The Responses API failed to complete the request.");
+    }
+  }
+  throw new HttpProviderError("The Responses stream ended before a terminal response. Retry the request.");
+}
+function geminiChunk(value2, state, request) {
+  inlineError(value2);
+  const blocked = string(object2(value2.promptFeedback).blockReason);
+  if (blocked) throw new HttpProviderError(`Gemini blocked the prompt (${blocked}).`);
+  state.usage = geminiUsage(value2.usageMetadata) ?? state.usage;
+  const candidates = array(value2.candidates).map(object2);
+  const candidate = candidates.find((item) => item.index === 0) ?? candidates[0];
+  if (!candidate) return;
+  const finishReason = string(candidate.finishReason);
+  if (finishReason) state.finishReason = finishReason;
+  for (const raw of array(object2(candidate.content).parts)) {
+    const part = object2(raw);
+    state.metadataBytes += Buffer.byteLength(JSON.stringify(part));
+    if (state.metadataBytes > MAX_BODY_BYTES) throw new HttpProviderError("Gemini response metadata exceeds the size limit.");
+    state.parts.push(part);
+    const fn = object2(part.functionCall);
+    if (Object.keys(fn).length) {
+      if (state.calls.length >= MAX_TOOL_CALLS) throw new HttpProviderError("Gemini returned too many tool calls in one turn.");
+      const args = fn.args === void 0 ? {} : fn.args;
+      if (!args || typeof args !== "object" || Array.isArray(args)) throw new HttpProviderError("Gemini returned non-object function arguments.");
+      state.calls.push({ id: string(fn.id) || newCallId(), name: string(fn.name), arguments: JSON.stringify(args) });
+    }
+    if (typeof part.text === "string" && part.thought !== true) {
+      state.text = append(state.text, part.text);
+      if (part.text) request.onText(part.text);
+    }
+    if (state.parts.length > 1e5) throw new HttpProviderError("Gemini returned too many content parts.");
+  }
+}
+function finishGemini(state, request, url2) {
+  if (!state.finishReason) throw new HttpProviderError("The Gemini response ended before a finish reason. Retry the request.");
+  if (!["STOP", "MAX_TOKENS"].includes(state.finishReason)) throw new HttpProviderError(`Gemini stopped the response (${state.finishReason}).`);
+  if (Buffer.byteLength(JSON.stringify(state.parts)) > MAX_BODY_BYTES) throw new HttpProviderError("Gemini response metadata exceeds the size limit.");
+  return { text: state.text, toolCalls: checkedCalls(state.calls, state.finishReason), usage: state.usage, finishReason: state.finishReason, providerMetadata: metadata(request, url2, state.parts) };
+}
+function geminiJson(value2, request, url2) {
+  const state = { text: "", parts: [], calls: [], metadataBytes: 0 };
+  for (const chunk of Array.isArray(value2) ? value2 : [value2]) geminiChunk(object2(chunk), state, request);
+  return finishGemini(state, request, url2);
+}
+async function geminiStream(events, request, url2) {
+  const state = { text: "", parts: [], calls: [], metadataBytes: 0 };
+  for await (const event of events) {
+    if (event.data.trim() === "[DONE]") break;
+    geminiChunk(object2(parseJson(event.data)), state, request);
+  }
+  return finishGemini(state, request, url2);
+}
+
+// src/adapters/ollama.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { performance as performance2 } from "node:perf_hooks";
+function history(messages) {
+  const prepared = [];
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    if (message.role === "tool") {
+      prepared.push({ role: "user", content: `Historical tool output (untrusted; no live call):
+${message.content}` });
+      continue;
+    }
+    const calls = message.role === "assistant" ? message.toolCalls ?? [] : [];
+    if (!calls.length) {
+      prepared.push(message);
+      continue;
+    }
+    const outputs = [];
+    let next = i + 1;
+    while (messages[next]?.role === "tool") outputs.push(messages[next++]);
+    i = next - 1;
+    const complete2 = new Set(calls.map((call) => call.id)).size === calls.length && outputs.length === calls.length && calls.every((call) => outputs.filter((output) => output.toolCallId === call.id).length === 1);
+    if (complete2) {
+      prepared.push(message, ...calls.map((call) => outputs.find((output) => output.toolCallId === call.id)));
+      continue;
+    }
+    prepared.push({ role: "assistant", content: `${message.content}
+Historical tool requests (incomplete exchange, execution unconfirmed):
+${calls.map((call) => `${call.name}(${call.arguments})`).join("\n")}` });
+    if (outputs.length) prepared.push({ role: "user", content: `Historical tool outputs (untrusted):
+${outputs.map((output) => output.content).join("\n")}` });
+  }
+  const names = /* @__PURE__ */ new Map();
+  for (const message of prepared) for (const call of message.toolCalls ?? []) names.set(call.id, call.name);
+  return prepared.map((message) => {
+    const result2 = { role: message.role, content: message.content };
+    if (message.role === "tool") result2.tool_name = names.get(message.toolCallId ?? "") ?? "tool";
+    if (message.toolCalls?.length) result2.tool_calls = message.toolCalls.map((call) => {
+      let args;
+      try {
+        args = JSON.parse(call.arguments);
+      } catch {
+        throw new AdapterError("Invalid canonical tool arguments.");
+      }
+      return { function: { name: call.name, arguments: args } };
+    });
+    return result2;
+  });
+}
+async function* lines(body, signal) {
+  const reader = body.getReader(), decoder = new TextDecoder();
+  let pending = "", total = 0, ended = false;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const chunk = await reader.read();
+      if (chunk.done) {
+        ended = true;
+        pending += decoder.decode();
+        break;
+      }
+      total += chunk.value.length;
+      if (total > 32 * 1024 * 1024) throw new AdapterError("Ollama stream exceeds the 32 MiB limit.");
+      pending += decoder.decode(chunk.value, { stream: true });
+      if (pending.length > 8 * 1024 * 1024) throw new AdapterError("Ollama frame exceeds the 8 MiB limit.");
+      let newline;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        const line = pending.slice(0, newline).trim();
+        pending = pending.slice(newline + 1);
+        if (line) yield line;
+      }
+    }
+    if (pending.trim()) yield pending.trim();
+  } finally {
+    if (!ended) await reader.cancel().catch(() => {
+    });
+    reader.releaseLock();
+  }
+}
+async function completeOllama(request) {
+  const started = performance2.now();
+  let first;
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs ?? 15 * 6e4)]);
+  const body = JSON.stringify({
+    model: request.model.id,
+    messages: history(request.messages),
+    stream: true,
+    ...request.tools?.length ? { tools: request.tools.map((tool) => ({ type: "function", function: tool })) } : {},
+    options: { ...request.model.maxOutputTokens ? { num_predict: request.model.maxOutputTokens } : {}, ...request.model.temperature !== void 0 ? { temperature: request.model.temperature } : {} }
+  });
+  if (Buffer.byteLength(body) > 16 * 1024 * 1024) throw new AdapterError("The Ollama request exceeds 16 MiB.");
+  const response = await pinnedFetch(endpoint2(request.connection, "/api/chat"), { method: "POST", body, headers: headers(request.connection, request.secret), signal });
+  const quota = quotaHeaders(response.headers, response.status);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new AdapterError(`Ollama returned HTTP ${response.status}.`, response.status, quota);
+  }
+  if (!response.body) throw new AdapterError("Ollama returned an empty response.");
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!/json/i.test(contentType)) {
+    await response.body.cancel();
+    throw new AdapterError("Ollama returned an unsupported content type.");
+  }
+  let text2 = "", terminal;
+  const calls = [];
+  for await (const line of lines(response.body, signal)) {
+    let chunk;
+    try {
+      chunk = record(JSON.parse(line));
+    } catch {
+      throw new AdapterError("Ollama returned malformed JSON.");
+    }
+    if (chunk.error) throw new AdapterError("Ollama reported an inference error.");
+    const message = record(chunk.message);
+    if (typeof message.content === "string" && message.content) {
+      first ??= performance2.now();
+      text2 += message.content;
+      if (text2.length > 4 * 1024 * 1024) throw new AdapterError("Ollama output exceeds the size limit.");
+      request.onText(message.content);
+    }
+    for (const raw of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+      const fn = record(record(raw).function);
+      const name = typeof fn.name === "string" ? fn.name : "";
+      if (!/^[A-Za-z0-9_.-]{1,128}$/.test(name) || !fn.arguments || typeof fn.arguments !== "object" || Array.isArray(fn.arguments)) throw new AdapterError("Ollama returned an invalid tool call.");
+      const args = JSON.stringify(fn.arguments);
+      if (args.length > 2 * 1024 * 1024 || calls.length >= 128) throw new AdapterError("Ollama tool arguments exceed the size limit.");
+      calls.push({ id: `call_${randomUUID3().replaceAll("-", "")}`, name, arguments: args });
+    }
+    if (chunk.done === true) {
+      terminal = chunk;
+      break;
+    }
+  }
+  if (!terminal) throw new AdapterError("Ollama stream ended before its completion marker.");
+  signal.throwIfAborted();
+  const metrics = baseMetrics(started, first, request.model);
+  const inputTokens = integer2(terminal.prompt_eval_count), outputTokens = integer2(terminal.eval_count), cachedInputTokens = integer2(terminal.prompt_eval_cached_count);
+  const usage2 = inputTokens !== void 0 && outputTokens !== void 0 ? { inputTokens, outputTokens, ...cachedInputTokens !== void 0 ? { cachedInputTokens } : {} } : void 0;
+  if (usage2) metrics.sources.usage = "engine";
+  addUsageMetrics(metrics, usage2);
+  const prefill = count(terminal.prompt_eval_duration), decode = count(terminal.eval_duration);
+  if (prefill !== void 0) {
+    metrics.prefillMs = prefill / 1e6;
+    metrics.sources.prefill = "engine";
+  }
+  if (prefill && inputTokens !== void 0 && cachedInputTokens !== void 0) metrics.prefillTokensPerSecond = Math.max(0, inputTokens - cachedInputTokens) / (prefill / 1e9);
+  if (decode && outputTokens !== void 0) {
+    metrics.decodeTokensPerSecond = outputTokens / (decode / 1e9);
+    metrics.sources.decode = "engine";
+  }
+  return { text: text2, toolCalls: calls, usage: usage2, metrics, quota, finishReason: typeof terminal.done_reason === "string" ? terminal.done_reason : "stop" };
+}
 
 // src/adapters/inference.ts
 function profile(connection, model) {
@@ -1414,6 +2304,58 @@ function profile(connection, model) {
     ...model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {},
     ...model.temperature !== void 0 ? { temperature: model.temperature } : {}
   };
+}
+function baseMetrics(started, first, model) {
+  return {
+    totalMs: performance3.now() - started,
+    ...first !== void 0 ? { ttftMs: first - started } : {},
+    ...model.contextWindow ? { contextLimit: model.contextWindow } : {},
+    sources: { usage: "unknown", ttft: "gateway", prefill: "unknown", decode: "unknown", context: model.contextWindow ? "configured" : "unknown" }
+  };
+}
+function addUsageMetrics(metrics, usage2) {
+  if (!usage2) return;
+  metrics.contextUsed = usage2.inputTokens + usage2.outputTokens;
+  if (metrics.contextLimit !== void 0) metrics.contextRemaining = Math.max(0, metrics.contextLimit - metrics.contextUsed);
+}
+async function complete(request) {
+  if (request.connection.kind === "ollama") return completeOllama(request);
+  if (["codex", "antigravity"].includes(request.connection.kind)) throw new AdapterError("Use runNativeAgent for an official coding-agent runtime.");
+  baseURL(request.connection);
+  request.signal.throwIfAborted();
+  const started = performance3.now();
+  let first;
+  try {
+    const result2 = await createHttpCompleter({ requestTimeoutMs: request.timeoutMs ?? 15 * 6e4 }).complete({
+      profile: profile(request.connection, request.model),
+      apiKey: request.secret,
+      messages: request.messages,
+      tools: request.tools ?? [],
+      signal: request.signal,
+      onText: (text2) => {
+        first ??= performance3.now();
+        request.onText(text2);
+      }
+    });
+    const metrics = baseMetrics(started, first, request.model);
+    addUsageMetrics(metrics, result2.usage);
+    if (result2.usage) metrics.sources.usage = "provider";
+    if (result2.engineTiming) {
+      Object.assign(metrics, result2.engineTiming);
+      if (metrics.prefillMs !== void 0 || metrics.prefillTokensPerSecond !== void 0) metrics.sources.prefill = "engine";
+      if (metrics.decodeTokensPerSecond !== void 0) metrics.sources.decode = "engine";
+    }
+    const quota = unknownQuota();
+    if (result2.remainingRequests !== void 0) Object.assign(quota, { state: result2.remainingRequests === 0 ? "limited" : "known", source: "provider-headers", remainingRequests: result2.remainingRequests });
+    return { text: result2.text, toolCalls: result2.toolCalls, usage: result2.usage, finishReason: result2.finishReason, providerMetadata: result2.providerMetadata, metrics, quota };
+  } catch (error) {
+    request.signal.throwIfAborted();
+    if (error instanceof HttpProviderError) {
+      const quota = { state: error.status === 429 ? "limited" : "unknown", source: error.status === 429 || error.remainingRequests !== void 0 ? "provider-headers" : "unknown", observedAt: (/* @__PURE__ */ new Date()).toISOString(), ...error.remainingRequests !== void 0 ? { remainingRequests: error.remainingRequests } : {}, ...error.retryAfterMs !== void 0 ? { retryAfterMs: error.retryAfterMs } : {} };
+      throw new AdapterError(error.message, error.status, quota);
+    }
+    throw error;
+  }
 }
 async function discoverModels(connection, secret, providedSignal, options = {}) {
   if (["codex", "antigravity"].includes(connection.kind)) throw new AdapterError("Use inspectNative for official CLI model discovery.");
@@ -1465,40 +2407,79 @@ async function embed(request) {
   if (!["ollama", "cluster", "gemrouter", "openai-compatible", "openai-responses"].includes(request.connection.kind)) throw new AdapterError("This connection has no embedding adapter. Select an Ollama or OpenAI-compatible embedding model.");
   if (!request.model || request.model.length > 300 || !Array.isArray(request.texts) || request.texts.length < 1 || request.texts.length > 128 || request.texts.some((text2) => typeof text2 !== "string" || text2.length > 5e5) || Buffer.byteLength(JSON.stringify(request.texts)) > 4 * 1024 * 1024) throw new AdapterError("Invalid or oversized embedding batch.");
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(12e4)]);
+  const limit = request.maxEmbeddingChars;
+  if (limit === void 0) return embedBatch(request, request.texts, signal);
+  if (!Number.isInteger(limit) || limit < 32 || limit > 4096) throw new AdapterError("Invalid embedding input character limit.");
+  if (request.texts.every((text2) => text2.length <= limit)) return embedBatch(request, request.texts, signal);
+  const vectors = [];
+  let model, dimensions = 0, inputTokens = 0;
+  let batch = [];
+  for (const part of embeddingParts(request.texts, limit)) {
+    batch.push(part);
+    if (batch.length === 16) {
+      await consume(batch);
+      batch = [];
+    }
+  }
+  if (batch.length) await consume(batch);
+  if (vectors.some((vector) => vector.some((value2) => !Number.isFinite(value2)))) throw new AdapterError("Embedding pooling produced a non-finite value.");
+  return { model: model ?? request.model, dimensions, vectors, ...inputTokens !== void 0 ? { inputTokens } : {} };
+  async function consume(parts) {
+    const result2 = await embedBatch(request, parts.map((part) => part.text), signal);
+    if (model !== void 0 && (result2.model !== model || result2.dimensions !== dimensions)) throw new AdapterError("Embedding response changed model or dimensions between batches.");
+    model = result2.model;
+    dimensions = result2.dimensions;
+    inputTokens = inputTokens === void 0 || result2.inputTokens === void 0 ? void 0 : inputTokens + result2.inputTokens;
+    for (const [index, part] of parts.entries()) {
+      const vector = result2.vectors[index];
+      const pooled = vectors[part.input];
+      if (!pooled) vectors[part.input] = vector.map((value2) => value2 * part.weight);
+      else for (let i = 0; i < vector.length; i++) pooled[i] += vector[i] * part.weight;
+    }
+  }
+}
+function* embeddingParts(texts, limit) {
+  for (const [input, text2] of texts.entries()) {
+    if (text2.length <= limit) {
+      yield { input, text: text2, weight: 1 };
+      continue;
+    }
+    let start = 0;
+    while (start < text2.length) {
+      let end = Math.min(start + limit, text2.length);
+      if (/^[\uDC00-\uDFFF]/u.test(text2.slice(end, end + 1))) end--;
+      yield { input, text: text2.slice(start, end), weight: (end - start) / text2.length };
+      start = end;
+    }
+  }
+}
+async function embedBatch(request, texts, signal) {
   const ollama = request.connection.kind === "ollama";
   const { data } = await checkedJSON(
     request.connection,
     ollama ? "/api/embed" : "/embeddings",
     request.secret,
     signal,
-    { model: request.model, input: request.texts, ...ollama ? { truncate: false } : { encoding_format: "float" } }
+    { model: request.model, input: texts, ...ollama ? { truncate: false } : { encoding_format: "float" } }
   );
   const raw = record(data);
   let vectors;
   if (ollama) vectors = Array.isArray(raw.embeddings) ? raw.embeddings : [];
   else {
     const rows = Array.isArray(raw.data) ? raw.data.map(record) : [];
-    if (rows.length !== request.texts.length || rows.some((row) => integer2(row.index) === void 0) || new Set(rows.map((row) => row.index)).size !== rows.length || rows.some((row) => Number(row.index) >= rows.length)) throw new AdapterError("Embedding response has invalid input indices.");
+    if (rows.length !== texts.length || rows.some((row) => integer2(row.index) === void 0) || new Set(rows.map((row) => row.index)).size !== rows.length || rows.some((row) => Number(row.index) >= rows.length)) throw new AdapterError("Embedding response has invalid input indices.");
     vectors = rows.sort((a, b) => Number(a.index) - Number(b.index)).map((row) => row.embedding);
   }
   const dimensions = Array.isArray(vectors[0]) ? vectors[0].length : 0;
-  if (vectors.length !== request.texts.length || dimensions < 1 || dimensions > 65536 || vectors.some((vector) => !Array.isArray(vector) || vector.length !== dimensions || vector.some((n) => typeof n !== "number" || !Number.isFinite(n)))) throw new AdapterError("Embedding response has invalid dimensions or non-finite values.");
-  const usage = record(raw.usage);
-  const inputTokens = integer2(ollama ? raw.prompt_eval_count : usage.prompt_tokens ?? usage.total_tokens);
+  if (vectors.length !== texts.length || dimensions < 1 || dimensions > 65536 || vectors.some((vector) => !Array.isArray(vector) || vector.length !== dimensions || vector.some((n) => typeof n !== "number" || !Number.isFinite(n)))) throw new AdapterError("Embedding response has invalid dimensions or non-finite values.");
+  const usage2 = record(raw.usage);
+  const inputTokens = integer2(ollama ? raw.prompt_eval_count : usage2.prompt_tokens ?? usage2.total_tokens);
   return { model: cleanLabel(raw.model, request.model), dimensions, vectors, ...inputTokens !== void 0 ? { inputTokens } : {} };
 }
 
 // src/adapters/native.ts
 import { lstat as lstat2, realpath as realpath2 } from "node:fs/promises";
 import path5 from "node:path";
-
-// src/adapters/vendor/backends/codex-profile.ts
-function codexArgs(profile2, login = false) {
-  const args = [...profile2.args ?? ["app-server", "--listen", "stdio://"]];
-  if (profile2.env?.CODEX_HOME) args.push("-c", 'cli_auth_credentials_store="file"');
-  if (login) args.push("-c", 'forced_login_method="chatgpt"');
-  return args;
-}
 
 // src/adapters/vendor/backends/rpc.ts
 import { spawn } from "node:child_process";
@@ -1546,7 +2527,7 @@ function runtimeEnvironment(overrides) {
 function record2(value2) {
   return value2 !== null && typeof value2 === "object" && !Array.isArray(value2) ? value2 : {};
 }
-function string(value2) {
+function string2(value2) {
   return typeof value2 === "string" ? value2 : "";
 }
 function cancelled() {
@@ -1567,7 +2548,7 @@ var RpcRemoteError = class extends Error {
   category;
   constructor(label3, method, value2) {
     const error = record2(value2);
-    const category = string(record2(error.data).type);
+    const category = string2(record2(error.data).type);
     const knownCategory = category === "modelProviderMismatch" ? category : "";
     const code = typeof error.code === "number" ? error.code : -32603;
     super(`${label3}: ${method} failed (RPC ${code}${knownCategory ? `, ${knownCategory}` : ""}). Check the official CLI's login and configuration.`);
@@ -1787,12 +2768,37 @@ var JsonRpcProcess = class _JsonRpcProcess {
   }
 };
 
+// src/adapters/vendor/backends/codex-profile.ts
+function codexArgs(profile2, login = false, workspaceBound = false) {
+  const args = [...profile2.args ?? ["app-server", "--listen", "stdio://"]];
+  if (profile2.env?.CODEX_HOME) args.push("-c", 'cli_auth_credentials_store="file"');
+  if (login) args.push("-c", 'forced_login_method="chatgpt"');
+  if (workspaceBound) args.push("-c", "features.apps=false", "-c", "features.plugins=false");
+  return args;
+}
+async function confirmCodexProfile(rpc, initialized, directory, signal, login = false, workspace) {
+  if (!directory || record2(initialized).codexHome !== directory) {
+    throw new Error("Codex did not confirm the isolated account directory. Check the official CLI configuration.");
+  }
+  const effective = record2(record2(await rpc.request("config/read", { includeLayers: false, cwd: workspace }, { signal })).config);
+  if (effective.cli_auth_credentials_store !== "file" || login && effective.forced_login_method !== "chatgpt") {
+    throw new Error("Codex did not confirm the isolated file credential store for this account.");
+  }
+  if (workspace) {
+    const features = record2(effective.features);
+    const activeMcp = Object.values(record2(effective.mcp_servers)).some((server) => record2(server).enabled !== false);
+    if (features.apps !== false || features.plugins !== false || activeMcp) {
+      throw Object.assign(new Error("Codex did not confirm restricted workspace tools. Disable configured external MCP servers in the managed workspace profile."), { code: "NATIVE_WORKSPACE_SETUP" });
+    }
+  }
+}
+
 // src/adapters/vendor/inspect.ts
 function nonnegative(value2) {
   return typeof value2 === "number" && Number.isFinite(value2) && value2 >= 0;
 }
 function label(value2, fallback) {
-  const text2 = string(value2).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 160);
+  const text2 = string2(value2).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 160);
   return text2 || fallback;
 }
 function quotaSnapshot(value2) {
@@ -1844,11 +2850,12 @@ async function inspectCodex(profile2, cwd, signal, timeoutMs) {
     }
   });
   const run = async () => {
-    await rpc.request("initialize", {
+    const initialized = await rpc.request("initialize", {
       clientInfo: { name: "yed1z_harness", title: "yed1z", version: "0.2.0" },
       capabilities: { experimentalApi: false, requestAttestation: false }
     }, { signal });
     rpc.notify("initialized");
+    await confirmCodexProfile(rpc, initialized, profile2.env?.CODEX_HOME, signal);
     const reads = await Promise.allSettled([
       (async () => {
         let cursor;
@@ -1858,7 +2865,7 @@ async function inspectCodex(profile2, cwd, signal, timeoutMs) {
           const result2 = record2(await rpc.request("model/list", { ...cursor ? { cursor } : {}, limit: 100, includeHidden: false }, { signal }));
           const rows = Array.isArray(result2.data) ? result2.data : Array.isArray(result2.models) ? result2.models : [];
           for (const raw of rows.slice(0, 100)) {
-            const row = record2(raw), id2 = string(row.model) || string(row.id);
+            const row = record2(raw), id2 = string2(row.model) || string2(row.id);
             if (!id2 || id2.length > 300 || ids.has(id2)) continue;
             ids.add(id2);
             const context = row.contextWindow ?? row.context_window ?? row.maxContextTokens;
@@ -1868,7 +2875,7 @@ async function inspectCodex(profile2, cwd, signal, timeoutMs) {
               ...Number.isSafeInteger(context) && Number(context) > 0 ? { context_window: Number(context) } : {}
             });
           }
-          cursor = string(result2.nextCursor);
+          cursor = string2(result2.nextCursor);
           if (!cursor || cursors.has(cursor)) break;
           cursors.add(cursor);
         }
@@ -1876,7 +2883,8 @@ async function inspectCodex(profile2, cwd, signal, timeoutMs) {
       (async () => {
         const result2 = record2(await rpc.request("account/read", { refreshToken: false }, { signal }));
         const identity = record2(result2.account);
-        account = { label: profile2.name, state: Object.keys(identity).length ? "authenticated" : result2.requiresOpenaiAuth === true ? "unauthenticated" : "unknown" };
+        const authenticated = identity.type === "chatgpt" || identity.type === "apiKey" || identity.type === "amazonBedrock";
+        account = { label: profile2.name, state: authenticated ? "authenticated" : result2.requiresOpenaiAuth === true ? "unauthenticated" : "unknown" };
       })(),
       (async () => {
         try {
@@ -1961,7 +2969,7 @@ async function loginCodex(profile2, cwd, signal, requestTimeoutMs, turnTimeoutMs
     },
     onNotification: (method, params) => {
       if (method !== "account/login/completed") return;
-      const id2 = string(params.loginId);
+      const id2 = string2(params.loginId);
       if (!loginId) {
         if (early.length < 16 && id2) early.push({ id: id2, success: params.success === true });
         return;
@@ -1974,18 +2982,14 @@ async function loginCodex(profile2, cwd, signal, requestTimeoutMs, turnTimeoutMs
       clientInfo: { name: "yed1z_harness", title: "yed1z", version: "0.2.0" },
       capabilities: { experimentalApi: false, requestAttestation: false }
     }, { signal }));
-    if (initialized.codexHome !== home) throw new Error("Codex did not confirm the isolated account directory. Update or configure the official CLI.");
     rpc.notify("initialized");
-    const effective = record2(record2(await rpc.request("config/read", { includeLayers: false }, { signal })).config);
-    if (effective.cli_auth_credentials_store !== "file" || effective.forced_login_method !== "chatgpt") {
-      throw new Error("Codex did not confirm the isolated file credential store and ChatGPT login method.");
-    }
+    await confirmCodexProfile(rpc, initialized, home, signal, true);
     const result2 = record2(await rpc.request("account/login/start", { type: "chatgptDeviceCode" }, { signal }));
-    loginId = string(result2.loginId);
+    loginId = string2(result2.loginId);
     if (!loginId || loginId.length > 512 || /[\x00-\x1f\x7f]/.test(loginId)) throw new Error("Codex returned an invalid login identifier.");
     if (result2.type !== "chatgptDeviceCode") throw new Error("This Codex version did not start the requested device login flow.");
     const verification_url = officialUrl(result2.verificationUrl);
-    const user_code = string(result2.userCode);
+    const user_code = string2(result2.userCode);
     if (!/^[A-Za-z0-9_-]{3,128}$/.test(user_code)) throw new Error("Codex returned an invalid device code.");
     onAuth({ type: "auth", verification_url, user_code, login_id: loginId });
     for (const event of early) if (event.id === loginId) completed.resolve(event.success);
@@ -2034,12 +3038,12 @@ async function inspectAntigravity(options) {
   const run = async () => {
     const initialized = record2(await rpc.request("initialize", {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: true } },
       clientInfo: { name: "yed1z", title: "yed1z Control Room", version: "0.4.0" }
     }, { signal: options.signal }));
     if (initialized.protocolVersion !== 1) throw new Error("Antigravity ACP version is unsupported. Update the official CLI or this adapter.");
-    const authMethods = (Array.isArray(initialized.authMethods) ? initialized.authMethods : []).slice(0, 16).map((value2) => record2(value2)).map((value2) => ({ id: cleanLabel(value2.id), label: cleanLabel(value2.name) })).filter((value2) => value2.id);
-    const capabilities = { modes: ["agent"], login: false, inspection: true, authMethods, approvalBoundary: "official-runtime" };
+    const authMethods = (Array.isArray(initialized.authMethods) ? initialized.authMethods : []).slice(0, 16).map((value2) => record2(value2)).map((value2) => ({ id: cleanLabel(value2.id), label: cleanLabel(value2.name), terminal: value2.type === "terminal" })).filter((value2) => value2.id);
+    const capabilities = { modes: ["agent"], login: authMethods.some((method) => method.terminal), inspection: true, authMethods, approvalBoundary: "official-runtime" };
     let session;
     try {
       session = record2(await rpc.request("session/new", { cwd: directory, mcpServers: [] }, { signal: options.signal }));
@@ -2050,7 +3054,7 @@ async function inspectAntigravity(options) {
         authenticated: false,
         quota: unknownQuota(),
         capabilities,
-        warnings: ["Accesso Antigravity richiesto. Sul coordinator, con lo stesso utente del servizio, esegui agy acp --login e poi Riprova."]
+        warnings: ["Accesso Antigravity richiesto. Completa il login ufficiale nel profilo indicato, poi verifica l\u2019account."]
       };
     }
     if (typeof session.sessionId !== "string" || !session.sessionId) throw new Error("Antigravity did not confirm an ACP session.");
@@ -2079,7 +3083,7 @@ async function inspectAntigravity(options) {
       models.set("current", { id: "current", label: "Modello corrente della CLI Antigravity", capabilities: ["chat", "tools"], capabilitySource: "unknown" });
       warnings.push("La CLI \xE8 autenticata ma non espone un selettore modelli: viene mantenuto il modello corrente della CLI.");
     }
-    warnings.push("Antigravity usa un solo profilo CLI del servizio. Quote numeriche e isolamento multiaccount non sono esposti da questo adapter.");
+    if (!options.connection.isolatedProfilePath) warnings.push("Profilo Antigravity del servizio preesistente. I nuovi account usano profili dedicati.");
     return { models: [...models.values()], authenticated: true, quota: unknownQuota(), capabilities, warnings };
   };
   try {
@@ -2088,6 +3092,83 @@ async function inspectAntigravity(options) {
     rpc.dispose();
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+// src/adapters/antigravity-login.ts
+import { spawn as spawn2 } from "node:child_process";
+async function googleLogin(connection, cwd, signal, onPrompt) {
+  signal.throwIfAborted();
+  await new Promise((resolve, reject) => {
+    const child = spawn2(connection.command ?? "agy", [...connection.args ?? ["acp", "--sandbox", "--disable-telemetry"], "--login"], {
+      cwd,
+      env: runtimeEnvironment(connection.env),
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let pending = "", announced = false, submitted = false;
+    const abort = () => {
+      child.kill("SIGKILL");
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    const fail = (message) => {
+      child.kill("SIGKILL");
+      reject(new AppError(409, "GOOGLE_AUTH", message));
+    };
+    const consume = (chunk) => {
+      if (announced) return;
+      pending += chunk.toString();
+      if (pending.length > 65536) {
+        fail("La CLI Google non ha fornito un indirizzo di accesso valido.");
+        return;
+      }
+      const link = pending.match(/(https:\/\/accounts\.google\.com\/[^\s\x1b]+)(?=[\s\x1b])/);
+      if (!link) return;
+      let url2;
+      try {
+        url2 = new URL(link[1]);
+      } catch {
+        return;
+      }
+      if (url2.origin !== "https://accounts.google.com" || url2.username || url2.password || url2.searchParams.get("response_type") !== "code") return;
+      announced = true;
+      pending = "";
+      const respond = (input) => {
+        if (submitted || signal.aborted || !child.stdin.writable) throw new AppError(409, "LOGIN_STATE", "La richiesta di login \xE8 scaduta.");
+        let code = input.trim();
+        if (/^https?:\/\//.test(code)) {
+          let returned, expected2;
+          try {
+            returned = new URL(code);
+            expected2 = new URL(url2.searchParams.get("redirect_uri") ?? "");
+          } catch {
+            throw new AppError(400, "LOGIN_CODE", "URL di ritorno non valido.");
+          }
+          if (returned.origin !== expected2.origin || returned.pathname !== expected2.pathname || url2.searchParams.has("state") && returned.searchParams.get("state") !== url2.searchParams.get("state"))
+            throw new AppError(400, "LOGIN_CODE", "Usa la pagina di ritorno della richiesta Google aperta.");
+          code = returned.searchParams.get("code") ?? "";
+        }
+        if (!/^[A-Za-z0-9_.~+%/=-]{4,4096}$/.test(code)) throw new AppError(400, "LOGIN_CODE", "Codice di autorizzazione non valido.");
+        submitted = true;
+        child.stdin.end(code + "\n");
+      };
+      onPrompt({ verificationUrl: url2.href, respond });
+    };
+    child.stdout.on("data", consume);
+    child.stderr.on("data", consume);
+    child.stdin.on("error", () => {
+    });
+    child.once("error", () => {
+      signal.removeEventListener("abort", abort);
+      reject(new AppError(409, "GOOGLE_AUTH", "Impossibile avviare il login ufficiale di Antigravity."));
+    });
+    child.once("close", (status2) => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) reject(signal.reason);
+      else if (status2 === 0 && submitted) resolve();
+      else reject(new AppError(409, "GOOGLE_AUTH", "La CLI Google non ha confermato il login. Riapri la verifica per questo account."));
+    });
+  });
 }
 
 // src/adapters/native.ts
@@ -2128,13 +3209,13 @@ async function exclusive(key, signal, action) {
 }
 async function accountKey(connection) {
   if (connection.kind !== "codex" && connection.kind !== "antigravity") throw new Error("This is not an official CLI connection.");
-  if (connection.kind === "antigravity") return "antigravity-global-cli";
-  const configured = connection.env?.CODEX_HOME;
+  if (connection.kind === "antigravity" && !connection.isolatedProfilePath) return "antigravity-global-cli";
+  const configured = connection.kind === "codex" ? connection.env?.CODEX_HOME : connection.isolatedProfilePath;
   if (!configured || !path5.isAbsolute(configured)) throw new Error("Every Codex account requires an isolated absolute CODEX_HOME configured on the server.");
   const info = await lstat2(configured);
   const real = await realpath2(configured);
-  if (!info.isDirectory() || info.isSymbolicLink() || real !== path5.resolve(configured) || process.platform !== "win32" && ((info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid())) throw new Error("Codex account directory must be owned by the service user, private (0700) and not a symlink.");
-  return `codex:${real}`;
+  if (!info.isDirectory() || info.isSymbolicLink() || real !== path5.resolve(configured) || process.platform !== "win32" && ((info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid())) throw new Error("Native account directory must be owned by the service user, private (0700) and not a symlink.");
+  return `${connection.kind}:${real}`;
 }
 function normalizeNativeQuota(value2) {
   const raw = record(value2), result2 = unknownQuota();
@@ -2169,7 +3250,11 @@ async function inspectNative(options) {
 }
 async function loginNative(options) {
   if (options.connection.kind === "antigravity") {
-    throw new Error("Antigravity richiede il login ufficiale sul coordinator: agy acp --login. Dopo l\u2019accesso premi Riprova; il bridge verifica la sessione ACP senza copiare credenziali.");
+    const signal = AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 5 * 6e4)]);
+    return exclusive(await accountKey(options.connection), signal, async () => {
+      await googleLogin(options.connection, options.cwd, signal, options.onAuth);
+      return { authenticated: true, invalidateSessions: false };
+    });
   }
   if (options.connection.kind !== "codex") throw new Error("Guided device login is available only for the official Codex runtime.");
   const key = await accountKey(options.connection);
@@ -2364,29 +3449,78 @@ async function ensureHttpEngine(spec, signal, onStatus = () => {
   }
 }
 
-// src/execution/workspace.ts
+// src/adapters/antigravity-profile.ts
+import { lstatSync, mkdirSync as mkdirSync2, realpathSync } from "node:fs";
 import path6 from "node:path";
+var PROFILE_FLAGS = /^--(?:gemini[-_]dir|app[-_]data[-_]dir|cli_dir_name|cli_log_file|log-file|login|use_stubby_auth|dangerously-skip-permissions)(?:=|$)/;
+var DEFAULT_ARGS = ["acp", "--sandbox", "--disable-telemetry"];
+function privateRuntimeDirectory(directory) {
+  mkdirSync2(directory, { recursive: true, mode: 448 });
+  const info = lstatSync(directory);
+  const canonical = realpathSync(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || canonical !== path6.resolve(directory) || process.platform !== "win32" && ((info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid())) {
+    throw new Error("Native account directory must be owned by the service user, private (0700) and not a symlink.");
+  }
+  return canonical;
+}
+function managedFlags(directory) {
+  return ["--gemini-dir", path6.join(directory, "gemini"), "--app-data-dir", "antigravity-cli"];
+}
+function managedEnvironment(directory) {
+  return {
+    // Override OS credential lookup paths as well as ACP's own data directory.
+    XDG_CONFIG_HOME: privateRuntimeDirectory(path6.join(directory, "config")),
+    XDG_DATA_HOME: privateRuntimeDirectory(path6.join(directory, "data")),
+    XDG_CACHE_HOME: privateRuntimeDirectory(path6.join(directory, "cache")),
+    XDG_STATE_HOME: privateRuntimeDirectory(path6.join(directory, "state")),
+    XDG_RUNTIME_DIR: privateRuntimeDirectory(path6.join(directory, "runtime")),
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=" + path6.join(directory, "runtime", "no-session-bus")
+  };
+}
+function bindAntigravityProfile(connection, location) {
+  const directory = privateRuntimeDirectory(location);
+  const args = connection.args ?? DEFAULT_ARGS;
+  if (args.some((arg) => PROFILE_FLAGS.test(arg))) {
+    throw new Error("Antigravity isolated accounts require an ACP launcher without global profile, login or permission overrides.");
+  }
+  privateRuntimeDirectory(path6.join(directory, "gemini"));
+  return {
+    ...connection,
+    isolatedProfilePath: directory,
+    args: [...args, ...managedFlags(directory)],
+    env: { ...connection.env, ...managedEnvironment(directory) }
+  };
+}
+
+// src/execution/workspace.ts
+import path7 from "node:path";
 import { constants } from "node:fs";
-import { createHash as createHash2 } from "node:crypto";
-import { lstat as lstat3, mkdir, open, readdir as readdir2, realpath as realpath3 } from "node:fs/promises";
+import { createHash as createHash3 } from "node:crypto";
+import { lstat as lstat3, mkdir, open, readdir as readdir2, readlink, realpath as realpath3 } from "node:fs/promises";
 var MAX_FILE_BYTES = 5e5;
-var EXCLUDED = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "venv", ".next", "dist", "build", ".ssh", ".aws", ".azure", ".gnupg", ".cloudflared", ".codex"]);
-var sha256 = (value2) => createHash2("sha256").update(value2).digest("hex");
+var WORKTREE_DIRECTORY = "yed1z-worktrees";
+var EXCLUDED = /* @__PURE__ */ new Set([".git", "node_modules", ".venv", "venv", ".next", "dist", "build", ".ssh", ".aws", ".azure", ".gnupg", ".cloudflared", ".codex", WORKTREE_DIRECTORY]);
+var sha256 = (value2) => createHash3("sha256").update(value2).digest("hex");
 function protectedPath(relative) {
   return relative.split(/[\\/]/).some((part) => EXCLUDED.has(part) || /^\.env(?:\.|$)/i.test(part) && !/^\.env\.(?:example|sample|template)$/i.test(part) || /^(?:id_rsa|id_ed25519|credentials|auth\.json|secrets?\.(?:json|ya?ml|toml))$/i.test(part) || /\.(?:pem|p12|pfx|key)$/i.test(part));
 }
 function relativePath(value2, label3 = "path") {
-  if (typeof value2 !== "string" || !value2 || value2.length > 4096 || value2.includes("\0") || path6.isAbsolute(value2) || value2.includes("\\") || value2.split("/").includes("..") || protectedPath(value2)) {
+  if (typeof value2 !== "string" || !value2 || value2.length > 4096 || value2.includes("\0") || path7.isAbsolute(value2) || value2.includes("\\") || value2.split("/").includes("..") || protectedPath(value2)) {
     throw new Error(`Invalid ${label3}: it must stay inside the configured workspace and cannot include protected credentials.`);
   }
   return value2;
 }
 async function workspaceRoot(configuredRoot, workspace = ".") {
-  if (!path6.isAbsolute(configuredRoot)) throw new Error("The operator must configure an absolute workspace root.");
-  relativePath(workspace, "workspace");
-  const root = await realpath3(configuredRoot), target = path6.resolve(root, workspace);
-  const check = new Workspace(root, new AbortController().signal);
-  await check.resolve(workspace);
+  if (!path7.isAbsolute(configuredRoot)) throw new Error("The operator must configure an absolute workspace root.");
+  const root = await realpath3(configuredRoot), target = path7.resolve(root, workspace);
+  if (/(?:^|\/)\.git\/yed1z-worktrees\/run_[a-f0-9]{32}$/u.test(workspace)) {
+    if (path7.isAbsolute(workspace) || workspace.includes("\\") || workspace.split("/").includes("..") || !target.startsWith(root + path7.sep)) throw new Error("Managed worktree is outside the configured root.");
+    if (await realpath3(target) !== target) throw new Error("Managed worktree must not use a symlink.");
+  } else {
+    relativePath(workspace, "workspace");
+    const check = new Workspace(root, new AbortController().signal);
+    await check.resolve(workspace);
+  }
   if (!(await lstat3(target)).isDirectory()) throw new Error("Configured workspace is not a directory.");
   return target;
 }
@@ -2400,11 +3534,11 @@ var Workspace = class {
   async resolve(relative, missing = false) {
     this.signal.throwIfAborted();
     relativePath(relative);
-    const root = await realpath3(this.root), target = path6.resolve(root, relative);
-    if (target !== root && !target.startsWith(root + path6.sep)) throw new Error("Path escapes the workspace.");
+    const root = await realpath3(this.root), target = path7.resolve(root, relative);
+    if (target !== root && !target.startsWith(root + path7.sep)) throw new Error("Path escapes the workspace.");
     let cursor = root;
-    for (const part of path6.relative(root, target).split(path6.sep).filter(Boolean)) {
-      cursor = path6.join(cursor, part);
+    for (const part of path7.relative(root, target).split(path7.sep).filter(Boolean)) {
+      cursor = path7.join(cursor, part);
       try {
         if ((await lstat3(cursor)).isSymbolicLink()) throw new Error("Symlinks are not allowed in workspace tools.");
       } catch (error) {
@@ -2440,7 +3574,7 @@ var Workspace = class {
           truncated = true;
           break;
         }
-        const absolute = path6.join(folder, entry.name), relative = path6.relative(this.root, absolute).split(path6.sep).join("/");
+        const absolute = path7.join(folder, entry.name), relative = path7.relative(this.root, absolute).split(path7.sep).join("/");
         if (entry.isSymbolicLink() || protectedPath(relative)) continue;
         if (entry.isDirectory() && !entry.name.startsWith(".")) await visit(absolute, depth + 1);
         else if (entry.isFile()) files.push(relative);
@@ -2459,7 +3593,7 @@ var Workspace = class {
       if (error.code !== "ENOENT") throw error;
     }
     if (before !== expectedBefore) throw new Error("File changed during approval. Read it again before writing.");
-    await mkdir(path6.dirname(target), { recursive: true });
+    await mkdir(path7.dirname(target), { recursive: true });
     await this.resolve(relative, true);
     const flags = constants.O_RDWR | (constants.O_NOFOLLOW ?? 0) | (before === void 0 ? constants.O_CREAT | constants.O_EXCL : 0);
     const handle = await open(target, flags, 384);
@@ -2482,14 +3616,64 @@ var Workspace = class {
     }
   }
 };
+async function workspaceDigest(workspace) {
+  const manifest = createHash3("sha256");
+  let entries = 0;
+  let bytes = 0;
+  async function visit(directory, depth) {
+    workspace.signal.throwIfAborted();
+    if (depth > 64) throw new Error("Workspace exceeds the verification snapshot depth limit.");
+    await workspace.resolve(path7.relative(workspace.root, directory) || ".");
+    const children = (await readdir2(directory)).sort();
+    for (const name of children) {
+      const absolute = path7.join(directory, name);
+      const relative = path7.relative(workspace.root, absolute).split(path7.sep).join("/");
+      if (protectedPath(relative)) continue;
+      workspace.signal.throwIfAborted();
+      if (++entries > 3e4) throw new Error("Workspace exceeds the verification snapshot entry limit.");
+      const info = await lstat3(absolute);
+      if (info.isDirectory()) {
+        manifest.update(JSON.stringify(["directory", relative, info.mode & 511]));
+        await visit(absolute, depth + 1);
+        continue;
+      }
+      if (info.isSymbolicLink()) {
+        manifest.update(JSON.stringify(["symlink", relative, await readlink(absolute)]));
+        continue;
+      }
+      if (!info.isFile()) throw new Error("Workspace contains an unsupported entry for a verification snapshot.");
+      bytes += info.size;
+      if (bytes > 512 * 1024 * 1024) throw new Error("Workspace exceeds the verification snapshot byte limit.");
+      const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const opened = await file.stat();
+        if (!opened.isFile() || opened.ino !== info.ino || opened.dev !== info.dev) throw new Error("Workspace entry changed during verification.");
+        const content = createHash3("sha256");
+        if (info.size > 0) {
+          const stream = file.createReadStream({ autoClose: false, signal: workspace.signal, end: info.size - 1 });
+          for await (const chunk of stream) content.update(chunk);
+        }
+        const after = await lstat3(absolute);
+        if (after.ino !== info.ino || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.mode !== info.mode) {
+          throw new Error("Workspace changed while creating the verification snapshot. Retry the check.");
+        }
+        manifest.update(JSON.stringify(["file", relative, info.mode & 511, content.digest("hex")]));
+      } finally {
+        await file.close();
+      }
+    }
+  }
+  await visit(workspace.root, 0);
+  return manifest.digest("hex");
+}
 
 // src/execution/local.ts
 import { lstat as lstat4, mkdir as mkdir2, realpath as realpath4 } from "node:fs/promises";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/execution/process.ts
-import { spawn as spawn2 } from "node:child_process";
-import { createHash as createHash3 } from "node:crypto";
+import { spawn as spawn3 } from "node:child_process";
+import { createHash as createHash4 } from "node:crypto";
 var MAX_OUTPUT = 96e3;
 function cleanEnvironment() {
   const env = {};
@@ -2507,7 +3691,7 @@ async function runProcess(argv, options) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 18e5) throw new Error("Invalid execution timeout.");
   return await new Promise((resolve, reject) => {
     const startedAt = (/* @__PURE__ */ new Date()).toISOString();
-    const child = spawn2(argv[0], argv.slice(1), {
+    const child = spawn3(argv[0], argv.slice(1), {
       cwd: options.cwd,
       shell: false,
       env: cleanEnvironment(),
@@ -2516,8 +3700,8 @@ async function runProcess(argv, options) {
       stdio: ["pipe", "pipe", "pipe"]
     });
     let output = "", size = 0, timedOut = false, cancelled2 = false, stopping = false;
-    const digest = createHash3("sha256");
-    const append = (chunk) => {
+    const digest = createHash4("sha256");
+    const append2 = (chunk) => {
       size += chunk.length;
       digest.update(chunk);
       const text2 = chunk.toString("utf8");
@@ -2555,8 +3739,8 @@ async function runProcess(argv, options) {
       clearTimeout(timer);
       options.signal.removeEventListener("abort", onAbort);
     };
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
+    child.stdout.on("data", append2);
+    child.stderr.on("data", append2);
     child.stdin.on("error", () => {
     });
     child.on("error", (error) => {
@@ -2589,6 +3773,18 @@ function recipe(request, id2) {
   if (!value2) throw new Error("Command recipe is not configured for this target.");
   return value2;
 }
+function recipeDigest(target, kind, recipeId) {
+  const command = (key) => {
+    const value2 = target.commands.find((item) => item.id === key);
+    if (!value2) throw new Error("Command recipe is not configured for this target.");
+    return [value2.id, value2.argv, value2.cwd ?? ".", value2.timeoutMs ?? 9e4, value2.verification === true];
+  };
+  if (kind === "verify") return sha256(JSON.stringify([target.id, target.workspaceRoot, command(recipeId)]));
+  const deployment = target.deployments?.find((item) => item.id === recipeId);
+  if (!deployment) throw new Error("Deployment recipe is not configured for this target.");
+  const health = deployment.health;
+  return sha256(JSON.stringify([target.id, target.workspaceRoot, deployment.id, deployment.verify.map(command), deployment.steps.map(command), deployment.rollback?.map(command) ?? [], health.url, health.expectedStatus ?? 200, health.expectedText, health.timeoutMs ?? 5e3, health.attempts ?? 3]));
+}
 async function runRecipe(request, workspace, command) {
   const cwd = await workspace.resolve(command.cwd ?? ".");
   request.onEvent?.({ type: "execution", targetId: request.target.id, kind: command.verification ? "verify" : "command", message: command.label });
@@ -2605,7 +3801,13 @@ function result(request, startedAt, output, data) {
   return { ok: true, output, data, evidence: [{ kind: request.operation.kind, targetId: request.target.id, workspace: request.workspace ?? ".", startedAt, finishedAt: (/* @__PURE__ */ new Date()).toISOString(), outputSha256: sha256(output) }] };
 }
 function denied() {
-  return { ok: false, output: "Action denied. Do not retry it through another tool or target.", evidence: [] };
+  return { ok: false, denied: true, output: "Action denied. Do not retry it through another tool or target.", evidence: [] };
+}
+async function revision(workspace) {
+  const git = await runProcess(["git", "rev-parse", "--verify", "HEAD"], { cwd: workspace.root, signal: workspace.signal, timeoutMs: 3e3 }).catch(() => void 0);
+  const gitCommit = git?.ok && /^[0-9a-f]{40,64}$/u.test(git.output.trim()) ? git.output.trim() : void 0;
+  const digest = sha256(JSON.stringify([gitCommit, await workspaceDigest(workspace)]));
+  return { digest, gitCommit };
 }
 async function executeLocal(request) {
   request.signal.throwIfAborted();
@@ -2616,7 +3818,7 @@ async function executeLocal(request) {
     return result(request, startedAt, JSON.stringify(data), data);
   }
   if (op.kind === "prepare") {
-    if (!path7.isAbsolute(request.target.workspaceRoot)) throw new Error("Configured workspace root must be absolute.");
+    if (!path8.isAbsolute(request.target.workspaceRoot)) throw new Error("Configured workspace root must be absolute.");
     const base = await realpath4(request.target.workspaceRoot);
     if (!(await lstat4(base)).isDirectory()) throw new Error("Configured workspace root must already be a directory.");
     const relative = request.workspace ?? ".", guard = new Workspace(base, request.signal), destination = await guard.resolve(relative, true);
@@ -2639,17 +3841,24 @@ The operator-configured parent must already exist.`;
     return result(request, startedAt, "Project workspace prepared.", { targetId: request.target.id, workspace: relative, created: true });
   }
   const root = await workspaceRoot(request.target.workspaceRoot, request.workspace), workspace = new Workspace(root, request.signal);
+  if ((op.kind === "verify" || op.kind === "deploy") && op.expectedRecipeDigest && recipeDigest(request.target, op.kind, op.recipeId) !== op.expectedRecipeDigest) {
+    return { ok: false, output: "The recipe installed on the runner differs from the verified definition.", evidence: [] };
+  }
+  if (op.kind === "snapshot") {
+    const data = await revision(workspace);
+    return result(request, startedAt, `Workspace SHA256 ${data.digest}`, data);
+  }
   if (op.kind === "list") {
     const data = await workspace.list(op.directory);
     return result(request, startedAt, data.files.join("\n") + (data.truncated ? "\n[bounded listing truncated]" : ""), data);
   }
   if (op.kind === "read") {
-    const content = await workspace.read(op.path), lines = content.split("\n");
+    const content = await workspace.read(op.path), lines2 = content.split("\n");
     const start = op.startLine ?? 1, end = op.endLine ?? start + 299;
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start > 2e3) throw new Error("Invalid bounded line range.");
-    const output = `SHA256 ${sha256(content)} \xB7 lines ${start}-${Math.min(end, lines.length)} / ${lines.length}
-` + lines.slice(start - 1, end).map((line, index) => `${start + index}: ${line}`).join("\n").slice(0, 96e3);
-    return result(request, startedAt, output, { sha256: sha256(content), totalLines: lines.length });
+    const output = `SHA256 ${sha256(content)} \xB7 lines ${start}-${Math.min(end, lines2.length)} / ${lines2.length}
+` + lines2.slice(start - 1, end).map((line, index) => `${start + index}: ${line}`).join("\n").slice(0, 96e3);
+    return result(request, startedAt, output, { sha256: sha256(content), totalLines: lines2.length });
   }
   if (op.kind === "search") {
     if (typeof op.query !== "string" || !op.query || op.query.length > 2e3) throw new Error("Search requires 1\u20132000 literal characters.");
@@ -2776,14 +3985,22 @@ async function deploy(request, workspace, deployment, startedAt) {
 ${verified.output}`);
     if (!verified.ok) return { ok: false, output: output.join("\n"), evidence };
   }
+  const expectedDigest = request.operation.kind === "deploy" ? request.operation.expectedWorkspaceDigest : void 0;
   const detail = `Target: ${request.target.id}
 Workspace: ${request.workspace ?? "."}
 Release: ${deployment.label}
+Workspace digest: ${expectedDigest ?? "not specified"}
 Verification passed: ${deployment.verify.join(", ")}
 Steps: ${deployment.steps.map((id2) => JSON.stringify(recipe(request, id2).argv)).join("\n")}
 Health: ${deployment.health.url}
 Rollback on failure: ${(deployment.rollback ?? []).join(", ") || "not configured"}`;
+  if (expectedDigest && (await revision(workspace)).digest !== expectedDigest) {
+    return { ok: false, output: "Workspace changed after verification. Reverify the new revision before releasing.", evidence };
+  }
   if (!await approval(request, "deployment", `Deploy ${deployment.label}`, detail)) return { ...denied(), evidence };
+  if (expectedDigest && (await revision(workspace)).digest !== expectedDigest) {
+    return { ok: false, output: "Workspace changed during release approval. No deployment step ran.", evidence };
+  }
   let ok = true, healthStatus, rollback = "not-needed";
   try {
     for (const id2 of deployment.steps) {
@@ -2827,7 +4044,7 @@ ${step.output}`);
 }
 
 // src/execution/remote.ts
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn4 } from "node:child_process";
 var MAX_FRAME = 2e6;
 var RemoteExecutionUncertainError = class extends Error {
   code = "REMOTE_UNCERTAIN";
@@ -2855,10 +4072,10 @@ async function executeRemote(request) {
   request.signal.throwIfAborted();
   const args = sshArguments(request.target);
   return await new Promise((resolve, reject) => {
-    const child = spawn3("ssh", args, { shell: false, env: cleanEnvironment(), detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn4("ssh", args, { shell: false, env: cleanEnvironment(), detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
     let buffer = "", stderr = "", settled = false, done, stopping = false, spawned = false;
     const pending = /* @__PURE__ */ new Set();
-    const uncertain = (error) => spawned && ["prepare", "write", "command", "deploy"].includes(request.operation.kind) ? new RemoteExecutionUncertainError(error instanceof Error ? error.message : "Remote execution outcome unknown.") : error;
+    const uncertain = (error) => spawned && ["prepare", "write", "command", "verify", "deploy"].includes(request.operation.kind) ? new RemoteExecutionUncertainError(error instanceof Error ? error.message : "Remote execution outcome unknown.") : error;
     const stop = () => {
       if (stopping) return;
       stopping = true;
@@ -2977,26 +4194,53 @@ var Catalog = class {
   seed(user) {
     for (const seed of this.config.providers) {
       const previous = this.store.get("provider", seed.id);
-      const { models, secretEnv, activation, loadProbe, ...rest } = seed;
+      const { models, secretEnv, sharedAccount, activation, loadProbe, maxEmbeddingChars, ...rest } = seed;
       const p = { ...rest, ownerId: previous?.ownerId ?? user.id, createdAt: previous?.createdAt ?? now() };
       this.store.put("provider", p);
-      const secret = secretEnv ? process.env[secretEnv] : void 0;
-      const a = this.store.all("account").find((a2) => a2.providerId === p.id && a2.ownerId === p.ownerId && a2.label === "Principale") ?? this.addAccount(user, p.id, "Principale", secret, true);
+      const native = p.kind === "codex" || p.kind === "antigravity";
+      const secret = !native && secretEnv ? process.env[secretEnv] : void 0;
+      const a = this.store.all("account").find((a2) => a2.providerId === p.id && a2.ownerId === p.ownerId && a2.label === "Principale") ?? this.addAccount(user, p.id, "Principale", secret, !native && sharedAccount !== false);
       if (secret) {
         this.store.setSecret(a.id, secret);
         a.hasSecret = true;
         this.store.put("account", a);
       }
       for (const route of this.store.all("model").filter((m) => m.providerId === p.id))
-        this.store.put("model", { ...route, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, enabled: p.enabled && route.discoveryStatus !== "missing" });
+        this.store.put("model", { ...route, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, enabled: p.enabled && !route.archived && route.discoveryStatus !== "missing" && (!native || route.discoveryStatus === "present" || route.discoveryStatus === void 0 && route.enabled) });
       for (const m of models ?? []) {
         const old = this.store.all("model").find((r) => r.accountId === a.id && r.model === m.model);
-        this.store.put("model", { id: old?.id ?? id("mdl"), providerId: p.id, accountId: a.id, label: old?.label ?? m.label, model: m.model, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, contextWindow: old?.contextWindow ?? m.contextWindow, capabilities: old?.capabilities ?? m.capabilities ?? ["chat"], capabilitySource: old?.capabilitySource ?? "operator", discoveryStatus: old?.discoveryStatus, enabled: p.enabled && old?.discoveryStatus !== "missing" });
+        const legacyEmpty = old && !old.capabilitiesOverridden && old.capabilitySource === "operator" && old.discoveryStatus === void 0 && !old.capabilities.length;
+        this.store.put("model", { ...old, id: old?.id ?? id("mdl"), providerId: p.id, accountId: a.id, label: old?.label ?? m.label, model: m.model, nodeIds: p.nodeIds, resourceGroupIds: p.resourceGroupIds, contextWindow: old?.contextWindow ?? m.contextWindow, capabilities: (legacyEmpty ? void 0 : old?.capabilities) ?? m.capabilities ?? ["chat"], capabilitySource: old?.capabilitySource ?? "operator", discoveryStatus: old?.discoveryStatus, enabled: p.enabled && !old?.archived && old?.discoveryStatus !== "missing" && (!native || old?.discoveryStatus === "present" || old?.discoveryStatus === void 0 && old?.enabled === true) });
       }
     }
   }
+  canUseAccount(user, account) {
+    return account.ownerId === user.id || account.shared || account.grantedUserIds?.includes(user.id) === true;
+  }
   accounts(user) {
-    return this.store.all("account").filter((a) => a.ownerId === user.id || a.shared);
+    const accounts = this.store.all("account");
+    return accounts.filter((account) => this.canUseAccount(user, account)).map((account) => {
+      const quota = this.effectiveQuota(account, accounts);
+      const status2 = account.status === "ready" && quota?.cooldownUntil && Date.parse(quota.cooldownUntil) > Date.now() ? "cooldown" : account.status;
+      const { quotaDomain, grantedUserIds, ...published } = account;
+      return { ...published, quota, status: status2, ...account.ownerId === user.id ? { quotaDomain, grantedUserIds } : {} };
+    });
+  }
+  effectiveQuota(account, accounts) {
+    if (!account.quotaDomain) return account.quota;
+    const key = account.quotaDomain.toLowerCase().normalize("NFC");
+    const time = Date.now();
+    const futureReset = (quota) => {
+      const reset = Date.parse(quota.cooldownUntil ?? "");
+      return reset > time ? reset : 0;
+    };
+    return (accounts ?? this.store.all("account")).filter((peer) => peer.ownerId === account.ownerId && peer.quotaDomain?.toLowerCase().normalize("NFC") === key).flatMap((peer) => peer.quota ? [peer.quota] : []).sort((left, right) => futureReset(right) - futureReset(left) || Date.parse(right.observedAt) - Date.parse(left.observedAt))[0] ?? account.quota;
+  }
+  initialProjectRoutes(user) {
+    const providerId = this.config.defaultEmbeddingProviderId;
+    if (!providerId) return {};
+    const route = this.models(user).find((m) => m.providerId === providerId && m.enabled && m.capabilities.includes("embedding"));
+    return route ? { embedding: route.id } : {};
   }
   models(user) {
     const accounts = new Set(this.accounts(user).map((a) => a.id));
@@ -3004,35 +4248,33 @@ var Catalog = class {
   }
   resolve(user, routeId) {
     const route = this.store.require("model", routeId), provider = this.store.require("provider", route.providerId), account = this.store.require("account", route.accountId);
-    assert(account.ownerId === user.id || account.shared, 404, "NOT_FOUND", "Modello non disponibile.");
+    assert(this.canUseAccount(user, account), 404, "NOT_FOUND", "Modello non disponibile.");
     assert(route.enabled && provider.enabled, 409, "DISABLED", "Connessione disabilitata.");
-    assert(!account.quota?.cooldownUntil || Date.parse(account.quota.cooldownUntil) <= Date.now(), 429, "QUOTA", "Account in attesa di ripristino quota. Scegli un altro account o attendi.");
-    return { route, provider, account, connection: this.connection(provider, account), secret: this.store.secret(account.id) };
+    const quota = this.effectiveQuota(account);
+    assert(!quota?.cooldownUntil || Date.parse(quota.cooldownUntil) <= Date.now(), 429, "QUOTA", "Account o dominio quota in attesa di ripristino. Scegli un altro account o attendi.");
+    return { route, provider, account: { ...account, quota }, connection: this.connection(provider, account), secret: this.store.secret(account.id) };
   }
   connection(p, a) {
     const connection = { id: p.id, label: p.label, kind: p.kind, baseUrl: p.baseUrl, accountId: a.id, command: p.command, args: p.args, env: p.env ? { ...p.env } : void 0 };
     if (p.kind === "codex") {
-      const dir = path8.join(this.store.directory, "accounts", a.id);
-      mkdirSync2(dir, { recursive: true, mode: 448 });
-      chmodSync2(dir, 448);
+      const dir = privateRuntimeDirectory(path9.join(this.store.directory, "accounts", a.id));
       connection.env = { ...connection.env, CODEX_HOME: dir };
+    }
+    if (p.kind === "antigravity" && a.nativeProfile === "isolated") {
+      return bindAntigravityProfile(connection, path9.join(this.store.directory, "accounts", a.id, "antigravity"));
     }
     return connection;
   }
   addAccount(user, providerId, label3, secret, shared = false) {
     const p = this.store.require("provider", providerId);
     assert(p.ownerId === user.id || this.config.providers.some((s) => s.id === p.id) || this.store.all("account").some((a2) => a2.providerId === p.id && a2.shared), 404, "NOT_FOUND", "Connessione non disponibile.");
-    if (["codex", "antigravity"].includes(p.kind))
+    const native = p.kind === "codex" || p.kind === "antigravity";
+    if (native) {
       assert(["admin", "operator"].includes(user.role), 403, "TRUSTED_EXECUTION", "CLI riservate a operatori fidati.");
-    assert(!shared || ["admin", "operator"].includes(user.role), 403, "FORBIDDEN", "Condivisione account riservata agli operatori.");
-    if (p.kind === "antigravity") {
-      assert(!this.store.all("account").some((a2) => this.store.get("provider", a2.providerId)?.kind === "antigravity"), 409, "ISOLATION", "Antigravity richiede un profilo CLI dedicato: un solo account nel servizio.");
-      shared = false;
-      assert(p.ownerId === user.id, 403, "ISOLATION", "Antigravity \xE8 riservato al profilo CLI configurato.");
+      assert(!secret, 400, "NATIVE_AUTH", "Per questa CLI usa il login ufficiale.");
     }
-    if (p.kind === "codex")
-      shared = false;
-    const a = { id: id("acc"), providerId, ownerId: user.id, label: label3, shared, status: "unknown", hasSecret: !!secret };
+    assert(!shared || ["admin", "operator"].includes(user.role), 403, "FORBIDDEN", "Condivisione account riservata agli operatori.");
+    const a = { id: id("acc"), providerId, ownerId: user.id, label: label3, shared: !native && shared, status: "unknown", hasSecret: !!secret, ...native ? { nativeProfile: "isolated" } : {} };
     this.store.transaction(() => {
       this.store.put("account", a);
       if (secret)
@@ -3043,11 +4285,18 @@ var Catalog = class {
   quota(account, observation) {
     if (observation.state === "unknown")
       return;
-    const q = { observedAt: observation.observedAt, source: observation.state === "limited" ? "rate-limit" : "provider", remainingRequests: observation.remainingRequests };
+    const q = { observedAt: observation.observedAt, source: observation.state === "limited" ? "rate-limit" : "provider", observationSource: observation.source === "unknown" ? void 0 : observation.source, remainingRequests: observation.remainingRequests };
     if (observation.retryAfterMs !== void 0)
       q.cooldownUntil = new Date(Date.now() + observation.retryAfterMs).toISOString();
     if (observation.buckets?.length)
-      q.windows = observation.buckets.flatMap((b) => b.windows.map((w) => ({ label: `${b.label} \xB7 ${w.name}`, usedPercent: w.usedPercent, ...w.resetsAt ? { resetAt: new Date(w.resetsAt * 1e3).toISOString() } : {} })));
+      q.windows = observation.buckets.flatMap((bucket) => bucket.windows.map((window) => ({
+        label: `${bucket.label} \xB7 ${window.name}`,
+        bucketId: bucket.id,
+        windowName: window.name,
+        windowMinutes: window.windowMinutes,
+        usedPercent: window.usedPercent,
+        ...window.resetsAt && window.resetsAt < 864e10 ? { resetAt: new Date(window.resetsAt * 1e3).toISOString() } : {}
+      })));
     const exhausted = q.windows?.filter((w) => (w.usedPercent ?? 0) >= 100 && w.resetAt).map((w) => Date.parse(w.resetAt)) ?? [];
     if (exhausted.length)
       q.cooldownUntil = new Date(Math.max(...exhausted)).toISOString();
@@ -3087,6 +4336,7 @@ var Catalog = class {
         const recovered = (staticModels ?? []).map((m) => {
           const old = existingModels.find((k) => k.model === m.model);
           return this.store.put("model", {
+            ...old,
             id: old?.id ?? id("mdl"),
             providerId: provider.id,
             accountId,
@@ -3097,7 +4347,7 @@ var Catalog = class {
             contextWindow: old?.contextWindow ?? m.contextWindow,
             maxOutputTokens: old?.maxOutputTokens,
             capabilities: old?.capabilities ?? m.capabilities ?? ["chat"],
-            enabled: provider.enabled
+            enabled: provider.enabled && !old?.archived
           });
         });
         const current2 = this.store.require("account", accountId);
@@ -3122,12 +4372,12 @@ var Catalog = class {
       if (isAuthenticated) {
         for (const old of known) if (!reported.has(old.model)) this.store.put("model", { ...old, discoveryStatus: "missing", enabled: false });
       } else {
-        for (const old of known) this.store.put("model", { ...old, discoveryStatus: "unverified", enabled: true });
+        for (const old of known) this.store.put("model", { ...old, discoveryStatus: "unverified", enabled: false });
       }
       if (result2.models.length) {
         return result2.models.map((m) => {
           const old = known.find((k) => k.model === m.id), keepDeclaration = old?.capabilitySource === "operator" && !m.capabilities.length;
-          return this.store.put("model", { id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled });
+          return this.store.put("model", { ...old, id: old?.id ?? id("mdl"), providerId: provider.id, accountId, label: m.label, model: m.id, nodeIds: provider.nodeIds, resourceGroupIds: provider.resourceGroupIds, contextWindow: m.contextWindow ?? old?.contextWindow, maxOutputTokens: old?.maxOutputTokens, capabilities: keepDeclaration ? old.capabilities : m.capabilities, capabilitySource: keepDeclaration ? "operator" : m.capabilitySource, discoveryStatus: isAuthenticated ? "present" : "unverified", enabled: provider.enabled && isAuthenticated && !old?.archived });
         });
       }
       return this.store.all("model").filter((m) => m.accountId === accountId);
@@ -3139,10 +4389,19 @@ var Catalog = class {
   }
   async login(user, accountId, onAuth, signal) {
     assert(["admin", "operator"].includes(user.role), 403, "TRUSTED_EXECUTION", "CLI riservate a operatori fidati.");
-    const a = this.store.own(user, "account", accountId), p = this.store.require("provider", a.providerId);
-    await loginNative({ connection: this.connection(p, a), cwd: this.store.directory, signal, onAuth: (e) => onAuth({ verificationUri: e.verificationUrl, userCode: e.userCode }) });
-    a.status = "ready";
-    this.store.put("account", a);
+    const account = this.store.own(user, "account", accountId);
+    const provider = this.store.require("provider", account.providerId);
+    const result2 = await loginNative({
+      connection: this.connection(provider, account),
+      cwd: this.store.directory,
+      signal,
+      onAuth: (event) => onAuth({ verificationUri: event.verificationUrl, userCode: event.userCode, respond: event.respond })
+    });
+    assert(result2.authenticated, 409, "NATIVE_AUTH", "Il runtime ufficiale non ha confermato il login.");
+    const current = this.store.require("account", accountId);
+    current.status = "unknown";
+    delete current.quota;
+    this.store.put("account", current);
   }
   succeeded(account, observation) {
     if (observation) this.quota(account, observation);
@@ -3157,7 +4416,8 @@ var Catalog = class {
       const lease = await new RouteRouter(this).reserve({ user, preferredRouteId: routeId, purpose: "embedding", strategy: "pinned", priority: "background", maxWaitMs: 5e3, signal });
       try {
         await this.activate(lease.provider.id, signal);
-        const result2 = await embed({ connection: lease.connection, model: lease.route.model, secret: lease.secret, texts, signal });
+        const maxEmbeddingChars = this.config.providers.find((provider) => provider.id === lease.provider.id)?.maxEmbeddingChars;
+        const result2 = await embed({ connection: lease.connection, model: lease.route.model, secret: lease.secret, texts, signal, maxEmbeddingChars });
         this.succeeded(lease.account);
         return result2.vectors;
       } finally {
@@ -3204,7 +4464,7 @@ var Catalog = class {
             data = normalizeTelemetry(result2.data, { id: node.id });
           } else {
             assert(spec.url, 400, "CONFIG", "URL telemetria mancante.");
-            data = await sampleTelemetry({ id: node.id, url: spec.url, gatewayNodeKey: spec.key }, signal);
+            data = await sampleTelemetry({ id: node.id, url: spec.url, secret: spec.secretEnv ? process.env[spec.secretEnv] : void 0, gatewayNodeKey: spec.key }, signal);
           }
           const previous = this.telemetry.get(node.id), previousNetwork = previous?.details?.network ?? [];
           const elapsed = data.observedAt && previous?.observedAt ? (Date.parse(data.observedAt) - Date.parse(previous.observedAt)) / 1e3 : 0;
@@ -3230,17 +4490,48 @@ var Catalog = class {
   }
 };
 
+// src/probe.ts
+async function probeInference(connection, options) {
+  const catalog = await discoverModels(connection, options.secret, options.signal);
+  const models = catalog.models.map((m) => m.id);
+  const result2 = { models, catalogWarnings: catalog.warnings, quota: catalog.quota.state };
+  if (!options.generate) return result2;
+  const model = options.model ?? catalog.models.find((m) => !m.capabilities.includes("embedding") || m.capabilities.includes("chat"))?.id;
+  assert(model && models.includes(model), 400, "MODEL", "Modello di chat assente dal catalogo.");
+  let chunks = 0;
+  const turn = await complete({
+    connection,
+    model: { id: model, maxOutputTokens: 192, temperature: 0 },
+    secret: options.secret,
+    signal: options.signal,
+    messages: [{ role: "user", content: "Return just the two letters OK. /no_think" }],
+    onText: () => {
+      chunks++;
+    }
+  });
+  return { ...result2, inference: {
+    model,
+    textReceived: Boolean(turn.text.trim()),
+    exactOK: turn.text.trim() === "OK",
+    chunks,
+    usage: turn.usage ?? null,
+    ttftMs: turn.metrics.ttftMs ?? null,
+    totalMs: turn.metrics.totalMs,
+    finishReason: turn.finishReason ?? null
+  } };
+}
+
 // src/migration.ts
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
-import { lstatSync, realpathSync, statSync } from "node:fs";
-import path9 from "node:path";
+import { lstatSync as lstatSync2, realpathSync as realpathSync2, statSync } from "node:fs";
+import path10 from "node:path";
 var MAX_BODY = 12 * 1024 * 1024;
 var MAX_MESSAGES = 4096;
 var MAX_CONVERSATIONS = 512;
 var EPOCH = "1970-01-01T00:00:00.000Z";
-var object2 = (value2) => value2 !== null && typeof value2 === "object" && !Array.isArray(value2) ? value2 : {};
+var object3 = (value2) => value2 !== null && typeof value2 === "object" && !Array.isArray(value2) ? value2 : {};
 var finite = (value2) => typeof value2 === "number" && Number.isFinite(value2) && value2 >= 0 ? value2 : void 0;
-var count3 = (value2) => Number.isSafeInteger(value2) && Number(value2) >= 0 ? Number(value2) : void 0;
+var count4 = (value2) => Number.isSafeInteger(value2) && Number(value2) >= 0 ? Number(value2) : void 0;
 function date(value2, fallback) {
   return typeof value2 === "string" && value2.length <= 100 && /^\d{4}-\d{2}-\d{2}T/.test(value2) && Number.isFinite(Date.parse(value2)) ? value2 : fallback;
 }
@@ -3248,16 +4539,16 @@ function label2(value2, fallback, max = 200) {
   return typeof value2 === "string" && value2.trim() ? value2.replace(/[\x00-\x1f\x7f]/g, "").slice(0, max) : fallback;
 }
 function legacyMetrics(value2) {
-  const data = object2(value2), usage = object2(data.usage), timing = object2(data.timing), context = object2(data.context), sources = object2(data.sources);
+  const data = object3(value2), usage2 = object3(data.usage), timing = object3(data.timing), context = object3(data.context), sources = object3(data.sources);
   const result2 = { source: "legacy-reported" };
   const copy = (key, value3, integer3 = false) => {
-    const n = integer3 ? count3(value3) : finite(value3);
+    const n = integer3 ? count4(value3) : finite(value3);
     if (n !== void 0) result2[key] = n;
   };
-  copy("inputTokens", usage.input_tokens ?? data.inputTokens, true);
-  copy("outputTokens", usage.output_tokens ?? data.outputTokens, true);
-  copy("cachedInputTokens", usage.cached_input_tokens ?? data.cachedInputTokens, true);
-  copy("totalTokens", usage.total_tokens ?? data.totalTokens, true);
+  copy("inputTokens", usage2.input_tokens ?? data.inputTokens, true);
+  copy("outputTokens", usage2.output_tokens ?? data.outputTokens, true);
+  copy("cachedInputTokens", usage2.cached_input_tokens ?? data.cachedInputTokens, true);
+  copy("totalTokens", usage2.total_tokens ?? data.totalTokens, true);
   copy("ttftMs", timing.ttft_ms ?? data.ttftMs);
   copy("durationMs", timing.total_ms ?? data.durationMs);
   copy("decodeTokensPerSecond", timing.decode_tokens_per_second ?? data.decodeTokensPerSecond);
@@ -3273,7 +4564,7 @@ function text(value2) {
   if (typeof value2 === "string") return value2;
   if (!Array.isArray(value2) || value2.length > MAX_MESSAGES) return "";
   return value2.flatMap((part) => {
-    const item = object2(part);
+    const item = object3(part);
     return [void 0, "text", "input_text", "output_text"].includes(item.type) && typeof item.text === "string" ? [item.text] : [];
   }).join("\n");
 }
@@ -3297,7 +4588,7 @@ function normalize(data, key, updated, active, owner, projectId) {
   const messages = [];
   let bytes = 0;
   for (let index = 0; index < data.messages.length; index++) {
-    const item = object2(data.messages[index]), originalRole = item.role;
+    const item = object3(data.messages[index]), originalRole = item.role;
     if (!["user", "assistant", "system", "tool"].includes(String(originalRole))) {
       warning("unsupported_message");
       continue;
@@ -3338,10 +4629,10 @@ function importLegacy(options) {
   const actualOwner = store.require("user", options.owner.id);
   assert(actualOwner.role !== "viewer", 403, "FORBIDDEN", "Importazione non consentita al profilo lettore.");
   store.projectFor(actualOwner, projectId);
-  const requested = path9.resolve(str(options.databasePath, "Database legacy", 8e3));
-  const info = lstatSync(requested);
+  const requested = path10.resolve(str(options.databasePath, "Database legacy", 8e3));
+  const info = lstatSync2(requested);
   assert(info.isFile() && !info.isSymbolicLink(), 400, "LEGACY_DATABASE", "Seleziona un database legacy regolare, non un collegamento.");
-  const sourcePath = realpathSync(requested), destinationPath = realpathSync(path9.join(store.directory, "control.sqlite"));
+  const sourcePath = realpathSync2(requested), destinationPath = realpathSync2(path10.join(store.directory, "control.sqlite"));
   const destination = statSync(destinationPath);
   assert(!(info.dev === destination.dev && info.ino === destination.ino), 400, "LEGACY_DATABASE", "Il database sorgente deve essere distinto dal database di destinazione.");
   const source = new DatabaseSync2(sourcePath, { readOnly: true, allowExtension: false });
@@ -3374,8 +4665,8 @@ function importLegacy(options) {
       let normalized;
       try {
         const parsed = JSON.parse(row.body);
-        assert(Object.keys(object2(parsed)).length, 400, "LEGACY_RECORD", "JSON conversazione non valido.");
-        normalized = normalize(object2(parsed), stableKey, row.updated_at, row.active_turn !== null, actualOwner, projectId);
+        assert(Object.keys(object3(parsed)).length, 400, "LEGACY_RECORD", "JSON conversazione non valido.");
+        normalized = normalize(object3(parsed), stableKey, row.updated_at, row.active_turn !== null, actualOwner, projectId);
       } catch {
         result2.skipped++;
         addWarning("invalid_records");
@@ -3418,6 +4709,133 @@ function importLegacy(options) {
   return result2;
 }
 
+// src/gateway-migration.ts
+import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
+function object4(value2) {
+  assert(value2 !== null && typeof value2 === "object" && !Array.isArray(value2), 400, "GATEWAY_IMPORT", "Formato JSON dell\u2019importazione non valido.");
+  return value2;
+}
+function read(path12, kind) {
+  try {
+    const file = statSync2(path12);
+    assert(file.isFile() && file.size <= 16 * 1024 * 1024, 400, "GATEWAY_IMPORT", "File di importazione non valido.");
+    const raw = readFileSync3(path12, "utf8");
+    return { data: object4(JSON.parse(raw)), digest: hash(raw) };
+  } catch {
+    throw new AppError(400, "GATEWAY_IMPORT", `File ${kind} non leggibile o non valido.`);
+  }
+}
+function token(value2) {
+  const key = typeof value2 === "string" ? value2.trim() : "";
+  assert(/^[a-zA-Z0-9_-]{1,1024}$/.test(key), 400, "GATEWAY_IMPORT", "L\u2019archivio contiene una chiave incompatibile con il formato Bearer.");
+  return key;
+}
+function assignments(data) {
+  const keys = /* @__PURE__ */ new Map();
+  if (data.keys !== void 0) {
+    assert(Array.isArray(data.keys), 400, "GATEWAY_IMPORT", "Lista delle chiavi legacy non valida.");
+    for (const value2 of data.keys) keys.set(hash(token(value2)), void 0);
+  }
+  const owners = data.users === void 0 ? Object.fromEntries(Object.entries(data).filter(([field]) => field !== "keys" && field !== "ip_map")) : object4(data.users);
+  const add = (value2, owner) => {
+    assert(owner.trim().length > 0 && owner.length <= 200 && !/[\x00-\x1f\x7f]/.test(owner), 400, "GATEWAY_IMPORT", "Proprietario legacy non valido.");
+    const digest = hash(token(value2)), existing = keys.get(digest);
+    assert(!existing || existing === owner, 409, "GATEWAY_IMPORT_CONFLICT", "L\u2019archivio assegna una chiave a pi\xF9 proprietari.");
+    keys.set(digest, owner);
+  };
+  for (const [key, entry] of Object.entries(owners)) {
+    if (typeof entry === "string") add(key, entry);
+    else {
+      const account = object4(entry);
+      if (account.key !== void 0) add(account.key, key);
+      if (account.keys !== void 0) {
+        assert(Array.isArray(account.keys), 400, "GATEWAY_IMPORT", "Lista delle chiavi di un proprietario non valida.");
+        for (const value2 of account.keys) add(value2, key);
+      }
+    }
+  }
+  return keys;
+}
+function counts(data, fields) {
+  const source = data === void 0 ? {} : object4(data);
+  return Object.fromEntries(fields.flatMap((field) => Number.isSafeInteger(source[field]) && Number(source[field]) >= 0 ? [[field, Number(source[field])]] : []));
+}
+function usage(data) {
+  const totals = counts(data.totals, ["total_tokens", "total_requests", "deepseek_tokens", "qwen_tokens"]);
+  const daily = object4(data.daily_tokens ?? {});
+  const days = Object.fromEntries(Object.keys(daily).sort().flatMap((day) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return [];
+    const date2 = /* @__PURE__ */ new Date(day + "T00:00:00Z");
+    if (!Number.isFinite(date2.getTime()) || date2.toISOString().slice(0, 10) !== day) return [];
+    const values = counts(daily[day], ["total", "deepseek", "qwen"]);
+    return Object.keys(values).length ? [[day, values]] : [];
+  }));
+  return { totals, days };
+}
+function importGateway(options) {
+  const { store, keysPath, ownersPath, statsPath, usageOwnerId, apply = false } = options;
+  assert(keysPath || statsPath, 400, "GATEWAY_IMPORT", "Indica il file chiavi e/o il file statistiche da importare.");
+  assert(Boolean(keysPath) === Boolean(ownersPath), 400, "GATEWAY_IMPORT", "Per le chiavi serve un file proprietari con nome legacy esatto e ID utente yed1z.");
+  assert(Boolean(statsPath) === Boolean(usageOwnerId), 400, "GATEWAY_IMPORT", "Per le statistiche serve l\u2019ID dell\u2019amministratore che conserva l\u2019archivio privato.");
+  const keys = keysPath && ownersPath ? assignments(read(keysPath, "chiavi").data) : /* @__PURE__ */ new Map();
+  const owners = ownersPath ? read(ownersPath, "proprietari").data : {};
+  const principals = new Map(store.all("user").map((user) => [user.id, user]));
+  const mapped = /* @__PURE__ */ new Map();
+  const targets = /* @__PURE__ */ new Set();
+  for (const [legacy, target] of Object.entries(owners)) {
+    assert(typeof target === "string" && principals.has(target) && !targets.has(target), 400, "GATEWAY_IMPORT", "Ogni proprietario legacy deve avere un ID utente yed1z esistente e distinto.");
+    mapped.set(legacy, target);
+    targets.add(target);
+  }
+  const stats = statsPath ? read(statsPath, "statistiche") : void 0;
+  const usageOwner = usageOwnerId ? principals.get(usageOwnerId) : void 0;
+  assert(!usageOwnerId || usageOwner?.role === "admin", 400, "GATEWAY_IMPORT", "Lo storico aggregato deve essere assegnato a un amministratore esistente.");
+  const importedUsage = stats && usageOwner ? usage(stats.data) : void 0;
+  return store.transaction(() => {
+    const byOwner = /* @__PURE__ */ new Map();
+    let unmapped = 0;
+    const find = store.db.prepare("SELECT user_id,kind FROM auth WHERE hash=?");
+    const insert = store.db.prepare("INSERT INTO auth (hash,user_id,kind,expires) VALUES (?,?,'key',NULL)");
+    for (const [digest, legacy] of keys) {
+      const ownerId = legacy === void 0 ? void 0 : mapped.get(legacy);
+      if (!legacy || !ownerId) {
+        unmapped++;
+        continue;
+      }
+      const tally = byOwner.get(legacy) ?? { imported: 0, existing: 0, revoked: 0 };
+      byOwner.set(legacy, tally);
+      const existing = find.get(digest);
+      const id2 = "legacy_gateway_auth_" + digest;
+      const receipt = store.get("legacy-gateway-key", id2);
+      assert(!existing || existing.kind === "key" && existing.user_id === ownerId, 409, "GATEWAY_IMPORT_CONFLICT", "Una chiave appartiene gi\xE0 a un\u2019identit\xE0 o sessione diversa.");
+      assert(!receipt || receipt.ownerId === ownerId, 409, "GATEWAY_IMPORT_CONFLICT", "Una precedente importazione assegna una chiave a un altro utente.");
+      if (existing) tally.existing++;
+      else if (receipt) tally.revoked++;
+      else {
+        tally.imported++;
+        if (apply) insert.run(digest, ownerId);
+      }
+      if (apply && !receipt) store.put("legacy-gateway-key", { id: id2, ownerId, sourceOwner: legacy, importedAt: now() });
+    }
+    let historicalUsage;
+    if (stats && usageOwner && importedUsage) {
+      const id2 = "legacy_gateway_usage_" + hash(usageOwner.id + "\0" + JSON.stringify(importedUsage));
+      const existing = !!store.get("legacy-gateway-usage", id2);
+      historicalUsage = { days: Object.keys(importedUsage.days).length, action: existing ? "existing" : apply ? "imported" : "planned" };
+      if (apply && !existing) store.put("legacy-gateway-usage", {
+        id: id2,
+        ownerId: usageOwner.id,
+        source: "legacy-gateway-stats",
+        quality: "legacy-reported",
+        sourceDigest: stats.digest,
+        importedAt: now(),
+        ...importedUsage
+      });
+    }
+    return { applied: apply, keys: { byOwner: Object.fromEntries(byOwner), unmapped }, ...historicalUsage ? { historicalUsage } : {} };
+  });
+}
+
 // src/cli.ts
 function argumentsMap(argv) {
   const map = /* @__PURE__ */ new Map();
@@ -3432,13 +4850,15 @@ function argumentsMap(argv) {
 async function main() {
   process.umask(63);
   const command = process.argv[2] ?? "help", args = argumentsMap(process.argv.slice(3));
-  const directory = path10.resolve(args.get("state") ?? process.env.YED1Z_STATE_DIR ?? "state");
+  const directory = path11.resolve(args.get("state") ?? process.env.YED1Z_STATE_DIR ?? "state");
   if (command === "help") {
-    process.stdout.write(`yed1z Control Room 0.4.0
+    process.stdout.write(`yed1z Control Room 1.0.0-rc.1
 
 node dist/cli.mjs init --name funboy [--workspace /path/to/projects] [--config examples/strix-cluster.json] [--state ./state]
 node dist/cli.mjs user-add --name cooper --role operator
 node dist/cli.mjs import --database /old/portal.sqlite --legacy-user funboy --user USER_ID --project PROJECT_ID
+node dist/cli.mjs import-gateway --state /copy/state --keys /old/api_keys.json --owners /copy/owners.json [--stats /old/stats.json --usage-owner ADMIN_ID] [--apply]
+node dist/cli.mjs probe --kind gemrouter --url URL/v1 --key-env GEMROUTER_API_KEY --generate [--model MODEL]
 node dist/cli.mjs backup --out /backup/control.sqlite
 
 Avvia: node dist/server.mjs
@@ -3446,17 +4866,33 @@ Le operazioni CLI sullo stato richiedono il coordinator fermo. Non modificano se
 `);
     return;
   }
-  mkdirSync3(directory, { recursive: true, mode: 448 });
+  if (command === "probe") {
+    const kind = args.get("kind") ?? "openai-compatible";
+    assert(kind === "gemrouter" || kind === "openai-compatible" || kind === "ollama" || kind === "gemini" || kind === "openai-responses", 400, "PROBE", "Protocollo di inferenza non valido.");
+    const envName = args.get("key-env");
+    if (envName) assert(process.env[envName], 400, "PROBE", "La variabile della chiave \xE8 vuota.");
+    const result2 = await probeInference({ id: "probe", label: "Endpoint", kind, baseUrl: args.get("url") }, {
+      signal: AbortSignal.timeout(12e4),
+      model: args.get("model"),
+      generate: args.has("generate"),
+      secret: envName ? process.env[envName] : void 0
+    });
+    process.stdout.write(JSON.stringify(result2, null, 2) + "\n");
+    if ("inference" in result2 && !result2.inference?.textReceived) process.exitCode = 1;
+    return;
+  }
+  if (command === "import-gateway") assert(existsSync2(path11.join(directory, "control.sqlite")) && existsSync2(path11.join(directory, "master.key")), 400, "GATEWAY_IMPORT", "Indica una directory di stato esistente e completa.");
+  else mkdirSync3(directory, { recursive: true, mode: 448 });
   if (command === "init") {
-    const file = path10.join(directory, "config.json");
+    const file = path11.join(directory, "config.json");
     let config2;
     if (existsSync2(file))
       config2 = loadConfig(file);
     else {
-      config2 = args.has("config") ? loadConfig(path10.resolve(args.get("config"))) : defaultConfig();
+      config2 = args.has("config") ? loadConfig(path11.resolve(args.get("config"))) : defaultConfig();
       if (args.has("workspace")) {
-        const root = path10.resolve(args.get("workspace"));
-        assert(statSync2(root).isDirectory(), 400, "WORKSPACE", "La directory workspace deve esistere.");
+        const root = path11.resolve(args.get("workspace"));
+        assert(statSync3(root).isDirectory(), 400, "WORKSPACE", "La directory workspace deve esistere.");
         config2.targets.push({ id: "coordinator", kind: "local", nodeId: "strix01", workspaceRoot: root, commands: [{ id: "npm-test", label: "Test npm", argv: ["npm", "test"], verification: true, timeoutMs: 12e4 }, { id: "npm-build", label: "Build npm", argv: ["npm", "run", "build"], verification: true, timeoutMs: 12e4 }] });
       }
       writeFileSync2(file, JSON.stringify(config2, null, 2) + "\n", { flag: "wx", mode: 384 });
@@ -3476,7 +4912,7 @@ Chiave di accesso (mostrata una volta): ${created.token}
       const catalog = new Catalog(store2, config2, new Scheduler(config2.resourceGroups));
       catalog.seed(owner);
       if (!store2.all("project").length) {
-        const p = { id: id("prj"), ownerId: owner.id, memberIds: [], name: "Il mio progetto", description: "Definisci obiettivo, criteri di verifica e destinazione del rilascio.", routes: {}, verifyRecipeIds: [], createdAt: now(), updatedAt: now() };
+        const p = { id: id("prj"), ownerId: owner.id, memberIds: [], name: "Il mio progetto", description: "Definisci obiettivo, criteri di verifica e destinazione del rilascio.", routes: catalog.initialProjectRoutes(owner), verifyRecipeIds: [], createdAt: now(), updatedAt: now() };
         if (config2.targets[0]) {
           p.targetId = config2.targets[0].id;
           p.workspace = ".";
@@ -3503,7 +4939,7 @@ Ruolo: ${role}
 Chiave (una sola visualizzazione): ${created.token}
 `);
     } else if (command === "backup") {
-      const destination = path10.resolve(args.get("out") ?? "control-backup.sqlite");
+      const destination = path11.resolve(args.get("out") ?? "control-backup.sqlite");
       assert(!existsSync2(destination), 409, "EXISTS", "Destinazione gi\xE0 esistente.");
       await store.backup(destination);
       process.stdout.write(`Backup DB: ${destination}
@@ -3512,7 +4948,15 @@ Conserva separatamente master.key, accounts/, artifacts/ e config.json con perme
     } else if (command === "import") {
       assert(args.get("database") && args.get("legacy-user") && args.get("user") && args.get("project"), 400, "ARGUMENT", "Servono --database --legacy-user --user --project.");
       const owner = store.require("user", args.get("user"));
-      const result2 = importLegacy({ store, databasePath: path10.resolve(args.get("database")), owner, projectId: args.get("project"), legacyOwner: args.get("legacy-user") });
+      const result2 = importLegacy({ store, databasePath: path11.resolve(args.get("database")), owner, projectId: args.get("project"), legacyOwner: args.get("legacy-user") });
+      process.stdout.write(JSON.stringify(result2, null, 2) + "\n");
+    } else if (command === "import-gateway") {
+      const inputPath = (flag) => {
+        const value2 = args.get(flag);
+        return value2 === void 0 ? void 0 : path11.resolve(value2);
+      };
+      assert(!args.has("apply") || args.get("apply") === "true", 400, "GATEWAY_IMPORT", "Usa --apply per eseguire l\u2019importazione.");
+      const result2 = importGateway({ store, keysPath: inputPath("keys"), ownersPath: inputPath("owners"), statsPath: inputPath("stats"), usageOwnerId: args.get("usage-owner"), apply: args.has("apply") });
       process.stdout.write(JSON.stringify(result2, null, 2) + "\n");
     } else
       throw new Error("Comando sconosciuto. Usa help.");
@@ -3520,7 +4964,7 @@ Conserva separatamente master.key, accounts/, artifacts/ e config.json con perme
     store.close();
   }
 }
-if (process.argv[1] && existsSync2(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync2(process.argv[1])).href)
+if (process.argv[1] && existsSync2(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync3(process.argv[1])).href)
   main().catch((error) => {
     process.stderr.write(safeError(error) + "\n");
     process.exitCode = 1;

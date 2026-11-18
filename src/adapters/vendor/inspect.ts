@@ -1,6 +1,6 @@
 import type { Profile } from './core/types.ts';
 import { JsonRpcProcess, RpcMethodError, record, string, bounded } from './backends/rpc.ts';
-import { codexArgs } from './backends/codex-profile.ts';
+import { codexArgs, confirmCodexProfile } from './backends/codex-profile.ts';
 
 type Data = Record<string, unknown>;
 export interface ObservedModel { id: string; name: string; context_window?: number; }
@@ -52,11 +52,12 @@ export async function inspectCodex(profile: Profile, cwd: string, signal: AbortS
     onRequest: async () => { throw new RpcMethodError('Inspection does not authorize tools or interactive actions.'); },
   });
   const run = async () => {
-    await rpc.request('initialize', {
+    const initialized = await rpc.request('initialize', {
       clientInfo: { name: 'yed1z_harness', title: 'yed1z', version: '0.2.0' },
       capabilities: { experimentalApi: false, requestAttestation: false },
     }, { signal });
     rpc.notify('initialized');
+    await confirmCodexProfile(rpc, initialized, profile.env?.CODEX_HOME, signal);
     // Each read is independent; unavailable quota does not erase a valid model catalog.
     const reads = await Promise.allSettled([
       (async () => {
@@ -82,7 +83,8 @@ export async function inspectCodex(profile: Profile, cwd: string, signal: AbortS
       (async () => {
         const result = record(await rpc.request('account/read', { refreshToken: false }, { signal }));
         const identity = record(result.account);
-        account = { label: profile.name, state: Object.keys(identity).length ? 'authenticated' : result.requiresOpenaiAuth === true ? 'unauthenticated' : 'unknown' };
+        const authenticated = identity.type === 'chatgpt' || identity.type === 'apiKey' || identity.type === 'amazonBedrock';
+        account = { label: profile.name, state: authenticated ? 'authenticated' : result.requiresOpenaiAuth === true ? 'unauthenticated' : 'unknown' };
       })(),
       (async () => {
         try { quota = quotaSnapshot(await rpc.request('account/rateLimits/read', {}, { signal })); }

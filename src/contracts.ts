@@ -9,7 +9,12 @@ export interface RoutingPreferences {
     maxWaitMs?: number;
 }
 export type Role = 'admin' | 'operator' | 'member' | 'viewer';
+export interface Appearance {
+    theme?: 'dark' | 'light' | 'system';
+    motion?: 'on' | 'off';
+}
 export interface User {
+    appearance?: Appearance;
     id: string;
     name: string;
     role: Role;
@@ -24,6 +29,7 @@ export interface NodeConfig {
     telemetry?: {
         url?: string;
         kind: 'node-agent' | 'gateway' | 'native';
+        secretEnv?: string;
         targetId?: string;
         key?: string;
     };
@@ -84,12 +90,17 @@ export interface Quota {
     cooldownUntil?: string;
     windows?: Array<{
         label: string;
+        bucketId?: string;
+        windowName?: string;
+        windowMinutes?: number;
         usedPercent?: number;
         resetAt?: string;
     }>;
     source: 'provider' | 'rate-limit';
+    observationSource?: 'provider-headers' | 'official-runtime';
 }
 export interface Account {
+    grantedUserIds?: string[];
     id: string;
     providerId: string;
     ownerId: string;
@@ -97,9 +108,14 @@ export interface Account {
     shared: boolean;
     status: 'unknown' | 'ready' | 'cooldown' | 'error';
     quota?: Quota;
+    /** Explicit operator mapping. A label only groups accounts under the same owner. */
+    quotaDomain?: string;
     hasSecret: boolean;
+    nativeProfile?: 'isolated' | 'service';
 }
 export interface ModelRoute {
+    capabilitiesOverridden?: boolean;
+    archived?: boolean;
     id: string;
     providerId: string;
     accountId: string;
@@ -111,7 +127,7 @@ export interface ModelRoute {
     maxOutputTokens?: number;
     capabilities: string[];
     capabilitySource?: 'provider' | 'operator' | 'unknown';
-    discoveryStatus?: 'present' | 'missing';
+    discoveryStatus?: 'present' | 'missing' | 'unverified';
     enabled: boolean;
 }
 export interface Project {
@@ -122,6 +138,7 @@ export interface Project {
     description: string;
     targetId?: string;
     workspace?: string;
+    workspaceIsolation?: 'shared' | 'git-worktree';
     routes: {
         primary?: string;
         coder?: string;
@@ -176,6 +193,7 @@ export interface ChatMessage {
     actions?: ChatMessageAction[];
 }
 export interface Conversation {
+    branch?: { conversationId: string; messageId: string; createdAt: string };
     id: string;
     projectId: string;
     ownerId: string;
@@ -187,6 +205,77 @@ export interface Conversation {
 }
 export type RunStatus = 'queued' | 'planning' | 'executing' | 'reviewing' | 'verifying' | 'awaiting_release' | 'deploying' | 'succeeded' | 'failed' | 'paused' | 'cancelled' | 'interrupted' | 'blocked';
 export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'blocked';
+export interface TaskAttempt {
+    id: string;
+    number: number;
+    status: 'running' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled';
+    requestedRouteId: string;
+    routeId?: string;
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+    evidenceIds?: string[];
+}
+export interface RunOperation {
+    id: string;
+    taskId: string;
+    attemptId?: string;
+    kind: 'write' | 'command' | 'verify' | 'deploy' | 'native' | 'promotion' | 'cleanup';
+    label: string;
+    digest: string;
+    state: 'dispatched' | 'awaiting_approval' | 'running' | 'succeeded' | 'failed' | 'denied' | 'uncertain' | 'reconciled';
+    workspaceDigest?: string;
+    startedAt: string;
+    finishedAt?: string;
+    approvalIds?: string[];
+    evidenceId?: string;
+    reconciliation?: { outcome: 'applied' | 'not_applied' | 'rolled_back'; note: string; actorId: string; decidedAt: string };
+}
+export interface RunSpec {
+    capturedAt: string;
+    targetId?: string;
+    workspace?: string;
+    workspaceIsolation?: Project['workspaceIsolation'];
+    routes: Project['routes'];
+    verifyRecipeIds: string[];
+    deploymentRecipeId?: string;
+    definitionDigest?: string;
+}
+export interface VerificationReceipt {
+    digest: string;
+    workspaceDigest: string;
+    definitionDigest: string;
+    gitCommit?: string;
+    candidateCommit?: string;
+    verifiedAt: string;
+    evidenceIds: string[];
+    artifactId?: string;
+}
+export interface RunCheckpoint {
+    iteration: number;
+    plannerTaskId?: string;
+    taskIds?: string[];
+    reviewTaskId?: string;
+    verifyTaskId?: string;
+    verificationWorkspaceDigest?: string;
+}
+export interface RunWorktree {
+    workspace: string;
+    baseCommit: string;
+    sourceRef?: string;
+    sourceRepository: string;
+    state: 'preparing' | 'active' | 'verified' | 'promoted' | 'removed';
+    createdAt: string;
+    candidateCommit?: string;
+    candidateRef?: string;
+    changedFiles?: string[];
+    reviewArtifactId?: string;
+    promotedRef?: string;
+    promotedDigest?: string;
+    promotedAt?: string;
+    promotedBy?: string;
+    removedAt?: string;
+}
 export interface AgentTask {
     id: string;
     runId: string;
@@ -198,6 +287,7 @@ export interface AgentTask {
     status: TaskStatus;
     control?: 'paused';
     attempt: number;
+    attempts?: TaskAttempt[];
     output?: string;
     error?: string;
     startedAt?: string;
@@ -216,6 +306,13 @@ export interface Run {
     conversationId: string;
     ownerId: string;
     goal: string;
+    sourceMessageId?: string;
+    parentRunId?: string;
+    spec?: RunSpec;
+    checkpoint?: RunCheckpoint;
+    operations?: RunOperation[];
+    verification?: VerificationReceipt;
+    worktree?: RunWorktree;
     mode: 'chat' | 'mission';
     requestedMode?: RequestedMode;
     intent?: 'conversation' | 'work' | 'service';
@@ -262,12 +359,16 @@ export interface Approval {
     projectId: string;
     runId: string;
     taskId?: string;
-    kind: 'write' | 'command' | 'release' | 'native' | 'memory';
+    kind: 'write' | 'command' | 'release' | 'native' | 'memory' | 'promotion' | 'cleanup';
     title: string;
     detail: string;
     status: 'pending' | 'approved' | 'denied' | 'expired';
     createdAt: string;
     expiresAt: string;
+    operationId?: string;
+    digest?: string;
+    decidedAt?: string;
+    decidedBy?: string;
 }
 export interface Artifact {
     id: string;
@@ -296,6 +397,53 @@ export interface Memory {
     updatedAt: string;
     indexed?: boolean;
 }
+export interface KnowledgeSource {
+    id: string;
+    title: string;
+    kind: 'memory' | 'attachment';
+    scope: 'private' | 'project';
+    revision?: number;
+    sourceHash: string;
+}
+export interface KnowledgeCitation {
+    sourceId: string;
+    passageId: string;
+    revision?: number;
+    sourceHash: string;
+    excerptHash: string;
+    scope: KnowledgeSource['scope'];
+    start: number;
+    end: number;
+}
+export interface KnowledgePassage {
+    id: string;
+    title: string;
+    text: string;
+    kind: KnowledgeSource['kind'];
+    score: number;
+    method: 'lexical' | 'hybrid' | 'vector' | 'related';
+    citation: KnowledgeCitation;
+    signals: {
+        matchingTerms: string[];
+        semanticSimilarity?: number;
+        semanticAlignment?: number;
+        slots?: Array<{ slot: number; weight: number }>;
+        relatedTo?: string;
+    };
+}
+export interface KnowledgeSearchResult {
+    results: KnowledgePassage[];
+    report: {
+        mode: 'lexical' | 'hybrid';
+        scannedPassages: number;
+        scannedSources: number;
+        consideredPassages: number;
+        usedChars: number;
+        maxChars: number;
+        truncated: boolean;
+        embeddingStatus: 'not-configured' | 'not-indexed' | 'unavailable' | 'incompatible' | 'used';
+    };
+}
 export interface ContextSource {
     id: string;
     kind: 'instruction' | 'history' | 'memory' | 'attachment' | 'task';
@@ -303,6 +451,9 @@ export interface ContextSource {
     estimatedTokens: number;
     included: boolean;
     reason: string;
+    revision?: number;
+    sha256?: string;
+    citation?: KnowledgeCitation;
 }
 export interface ContextReport {
     budgetTokens: number;

@@ -86,15 +86,24 @@ Un catalogo OpenAI compatibile può restituire soltanto gli ID dei modelli. Una
 route con capacità sconosciute può essere provata in chat, mantenendo lo stato
 `unknown`; il catalogo non viene arricchito con capacità inventate. Un modello
 dichiarato soltanto embedding non è eleggibile per chat. I requisiti espliciti
-`embedding` e `tools` restano vincolanti. Nelle missioni HTTP, se il provider
-non dichiara supporto tool, l'orchestratore emette un avviso e può tentare il
-protocollo standard: il supporto effettivo deve essere collaudato.
+`embedding` e `tools` restano vincolanti. Nelle missioni HTTP un coder richiede
+una route con capacità `tools`. Pianificazione, ricerca e revisione possono
+usare route testuali e ricevono il contesto disponibile. Ricevono strumenti in
+sola lettura quando la route dichiara `tools`. I runtime nativi usano i propri
+strumenti e le autorizzazioni configurate.
 
 Le quote sono osservazioni del provider o del runtime ufficiale. Richieste
 residue, percentuali e finestre restano assenti quando non disponibili. Un
 429 può registrare `Retry-After`; un limite senza scadenza utilizzabile imposta
 un cooldown prudenziale di 60 secondi. Non è una misura della quota residua.
 Il budget locale del run è separato dal saldo commerciale dell'account.
+
+In `auto`, un HTTP 429 esplicito alla prima chiamata del task, prima di testo,
+tool o effetti precedenti, permette fino a due selezioni alternative HTTP nello
+stesso task. L'account che ha restituito il 429 viene escluso dalla selezione e
+il contesto viene ricomposto per il modello scelto. La richiesta consuma il
+budget di chiamate e i tentativi restano nel registro. I task `pinned` e quelli
+con runtime nativo richiedono un intervento esplicito.
 
 ## 2. Dual Strix, CUDA e account: prenotazione atomica
 

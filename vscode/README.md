@@ -1,17 +1,8 @@
 # yed1z Control Room per VS Code
 
-Installa il VSIX 0.4 e usa **yed1z: Collega il gateway** per indicare l'origine
-del control plane e la tua chiave personale. Il server deve essere alla versione
-0.4: il VSIX da solo non aggiorna il portale né i nodi.
+Installa il VSIX 1.0.0-rc.1, poi scegli **yed1z: Collega il gateway** e inserisci l’origine del coordinator e la tua chiave personale. Per il servizio condiviso l’origine è `https://yed1z.ai`.
 
-La vista condivide progetti, conversazioni, squadra, allegati, memoria e monitor
-con il browser. L'identificativo `funboy.haloforge` rimane invariato per aggiornare
-le installazioni precedenti. Le conversazioni sono sul server, non nel webview.
-
-La 0.4 aggiunge tema HUD comune alla dashboard, modalità Auto, collegamento guidato
-dei provider, stato dei modelli e alternative di routing autorizzate. La UI è lo
-stesso bundle del portale; il collaudo grafico su VS Code reale resta un gate del
-rilascio nell'infrastruttura dell'operatore.
+Apri **Percorso del progetto** per seguire i task della squadra, i rami della conversazione e i risultati di test e build. **Modelli e account** permette di collegare provider, profili e nodi. In **Aspetto** puoi scegliere tema e movimento. Progetti, conversazioni e preferenze sono condivisi con il portale Web. L’identificativo dell’estensione è `funboy.haloforge`.
 
 La chiave del gateway è conservata nel SecretStorage dell'host VS Code. In
 Remote SSH, URL localhost e storage dell'estensione sono relativi a quell'host.

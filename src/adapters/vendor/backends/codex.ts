@@ -1,5 +1,5 @@
 import type { ExternalBackend, ExternalRequest, ExternalResult, Usage } from '../core/types.ts';
-import { codexArgs } from './codex-profile.ts';
+import { codexArgs, confirmCodexProfile } from './codex-profile.ts';
 import { quotaSnapshot } from '../inspect.ts';
 import {
   JsonRpcProcess, RpcMethodError, approveOnce, bounded, cancelled, deferred, preview, record, string,
@@ -51,6 +51,9 @@ export class CodexBackend implements ExternalBackend {
     const messages = new Map<string, string>();
     const toolItems = new Map<string, Data>();
     const early: Array<[string, Data]> = [];
+    const workspaceTools = request.workspaceTools;
+    const toolNames = new Map(workspaceTools?.definitions.map(tool => [`yed1z_${tool.name}`, tool]) ?? []);
+    let workspaceCalls = 0;
 
     const append = (id: string, text: string) => {
       if (!text || finished) return;
@@ -125,11 +128,11 @@ export class CodexBackend implements ExternalBackend {
         const id = string(item.id);
         const type = string(item.type);
         if (type === 'agentMessage' && method === 'item/completed' && id && !messages.has(id)) append(id, string(item.text));
-        const supportedTools = ['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch', 'imageView', 'collabAgentToolCall'];
+        const supportedTools = ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'webSearch', 'imageView', 'collabAgentToolCall'];
         if (supportedTools.includes(type)) {
           if (method === 'item/started' && toolItems.size < 256) toolItems.set(id, item);
           const cmd = typeof item.command === 'string' ? item.command : undefined;
-          const status = string(item.status) ?? (method === 'item/started' ? 'inProgress' : 'completed');
+          const status = type === 'dynamicToolCall' && item.success === false ? 'failed' : string(item.status) ?? (method === 'item/started' ? 'inProgress' : 'completed');
           const detail = preview({ status, command: item.command, cwd: item.cwd, tool: item.tool, server: item.server }).slice(0, 4000);
           request.onEvent({ type: 'tool', name: type, detail });
           if (method === 'item/completed' || !toolItems.has(id)) {
@@ -162,12 +165,23 @@ export class CodexBackend implements ExternalBackend {
 
     const rpc = new JsonRpcProcess({
       label: 'Codex', command: request.profile.command || 'codex',
-      args: codexArgs(request.profile),
+      args: codexArgs(request.profile, false, Boolean(workspaceTools)),
       cwd: request.cwd, env: request.profile.env,
       requestTimeoutMs: this.options.requestTimeoutMs,
       omitJsonRpcVersion: true,
       onNotification: notification,
       onRequest: async (method, params) => {
+        if (method === 'item/tool/call' && workspaceTools) {
+          const reply = (success: boolean, text: string) => ({ success, contentItems: [{ type: 'inputText', text: text.slice(0, 96000) }] });
+          if (!capturing || signal.aborted || params.namespace) return reply(false, 'Workspace tool is not available for this turn.');
+          await bounded(turnReady.promise, signal, this.options.requestTimeoutMs, 'Codex turn acknowledgement');
+          if (params.threadId !== threadId || params.turnId !== turnId || finished) return reply(false, 'Workspace tool request is outside the active turn.');
+          const tool = toolNames.get(string(params.tool));
+          if (!tool || workspaceCalls >= 64) return reply(false, 'Workspace tool is unavailable or its call limit was reached.');
+          workspaceCalls++;
+          const result = await workspaceTools.execute(tool.name, record(params.arguments), signal);
+          return reply(result.ok, result.output);
+        }
         if (method === 'mcpServer/elicitation/request') return { action: 'decline', content: null };
         if (method === 'item/permissions/requestApproval') {
           // Do not grant an unfamiliar filesystem/network permission profile by accident.
@@ -201,11 +215,12 @@ export class CodexBackend implements ExternalBackend {
 
     const run = async (): Promise<ExternalResult> => {
       request.onEvent({ type: 'status', text: 'Connecting to the official Codex runtime…' });
-      await rpc.request('initialize', {
+      const initialized = await rpc.request('initialize', {
         clientInfo: { name: 'haloforge_vscode', title: 'HaloForge', version: '0.1.0' },
-        capabilities: { experimentalApi: false, requestAttestation: false },
+        capabilities: { experimentalApi: Boolean(workspaceTools), requestAttestation: false },
       }, { signal });
       rpc.notify('initialized');
+      await confirmCodexProfile(rpc, initialized, request.profile.env?.CODEX_HOME, signal, false, workspaceTools ? request.cwd : undefined);
       const model = request.profile.model.trim();
       const modelOverride = model && model !== 'default' && model !== 'current' ? { model } : {};
       const policy = {
@@ -218,6 +233,7 @@ export class CodexBackend implements ExternalBackend {
       const thread = record(await rpc.request(request.resumeId ? 'thread/resume' : 'thread/start', {
         ...policy,
         ...(request.resumeId ? { threadId: request.resumeId, excludeTurns: true } : {}),
+        ...(!request.resumeId && workspaceTools ? { dynamicTools: [...toolNames].map(([name, tool]) => ({ type: 'function', name, description: tool.description, inputSchema: tool.parameters, deferLoading: false })) } : {}),
       }, { signal }));
       // The resume key is thread.id, not sessionId (which can name the root of a fork tree).
       threadId = string(record(thread.thread).id);
