@@ -314,6 +314,8 @@ def get_aireward_active_model() -> str | None:
                 return "qwen38-strata"
             if "deepseek" in mod.lower():
                 return "ds41-strata"
+            if "glm" in mod.lower():
+                return "glm-5.3-flash"
     except Exception:
         pass
     return None
@@ -706,6 +708,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 pre_tps = 24.5
                 ttft = 2450
                 dspark_acc = 100.0
+            elif active_air == "glm-5.3-flash":
+                dec_tps = 31.3
+                pre_tps = 1203.9
+                ttft = 220
+                dspark_acc = None
 
             speed = {"decode_tps": dec_tps, "prefill_tps": pre_tps, "ttft_ms": ttft, "dspark_acc": dspark_acc}
 
@@ -794,6 +801,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "context_length": 131072,
                     "max_input_tokens": 124928,
                     "max_output_tokens": 6144
+                },
+                {
+                    "id": "glm-5.3-flash",
+                    "object": "model",
+                    "created": 1793760000,
+                    "owned_by": "aireward-llm",
+                    "name": "GLM-5.3 Flash Maya-XS (RTX 3090 @ 31 tok/s)",
+                    "context_length": 32768,
+                    "max_input_tokens": 32768,
+                    "max_output_tokens": 8192
                 }
             ]
             self.send_json(200, {"object": "list", "data": models_data})

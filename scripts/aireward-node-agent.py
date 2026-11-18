@@ -167,7 +167,7 @@ def get_hardware_telemetry() -> dict:
 
 
 def is_strata_running() -> tuple[str, str, dict, int]:
-    """Check if Strata server is alive on port 8080 or 8085."""
+    """Check if Strata / Maya server is alive on port 8080 or 8085."""
     for port in (8080, 8085):
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.5)
@@ -177,7 +177,14 @@ def is_strata_running() -> tuple[str, str, dict, int]:
             conn.close()
             if resp.status == 200:
                 parsed = json.loads(data)
-                active = "qwen3.8-flash-next-iq3_s" if "qwen" in data.lower() else ("deepseek-v4.1-flash" if "deepseek" in data.lower() else "custom")
+                if "glm" in data.lower():
+                    active = "glm-5.3-flash"
+                elif "qwen" in data.lower():
+                    active = "qwen3.8-flash-next-iq3_s"
+                elif "deepseek" in data.lower():
+                    active = "deepseek-v4.1-flash"
+                else:
+                    active = "custom"
                 return "running", active, parsed, port
         except Exception:
             pass
@@ -185,7 +192,10 @@ def is_strata_running() -> tuple[str, str, dict, int]:
     p1 = subprocess.run(["pgrep", "-f", "engine/strata"], capture_output=True)
     p2 = subprocess.run(["pgrep", "-f", "strata-dsv41"], capture_output=True)
     p3 = subprocess.run(["pgrep", "-f", "serve/server.py"], capture_output=True)
-    if p1.returncode == 0 or p2.returncode == 0 or p3.returncode == 0:
+    p4 = subprocess.run(["pgrep", "-f", "project-maya"], capture_output=True)
+    p5 = subprocess.run(["pgrep", "-f", "build/maya"], capture_output=True)
+    p6 = subprocess.run(["pgrep", "-f", "maya.py"], capture_output=True)
+    if any(p.returncode == 0 for p in (p1, p2, p3, p4, p5, p6)):
         return "starting", f"{ACTIVE_MODEL_NAME} (loading)", {}, 8080
 
     return "idle", "none", {}, 8080
@@ -196,6 +206,8 @@ def stop_strata_engine():
     subprocess.run(["pkill", "-f", "serve/server.py"], capture_output=True)
     subprocess.run(["pkill", "-f", "engine/strata"], capture_output=True)
     subprocess.run(["pkill", "-f", "strata-dsv41"], capture_output=True)
+    subprocess.run(["pkill", "-f", "build/maya"], capture_output=True)
+    subprocess.run(["pkill", "-f", "maya.py"], capture_output=True)
     if ENGINE_PROCESS:
         try:
             ENGINE_PROCESS.terminate()
@@ -224,15 +236,47 @@ def start_strata_engine(target_model: str) -> tuple[bool, str]:
             if not config_path.exists():
                 config_path = STRATA_REPO / "strata-iq3_s.json"
             ACTIVE_MODEL_NAME = "qwen3.8-flash-next-iq3_s"
-        elif target_model in ("deepseek", "deepseek41", "ds41", "iq2_xxs"):
-            for candidate in STRATA_REPO.glob("strata-*dsv41*.json"):
-                config_path = candidate
-                break
+        elif target_model in ("deepseek", "deepseek41", "ds41", "iq2_xxs", "kirei"):
+            kirei_cfg = Path("/home/funboy/KireiStrataDS41-CUDA3090/config/cuda3090-optimized.json")
+            if kirei_cfg.exists():
+                config_path = kirei_cfg
+            else:
+                for candidate in STRATA_REPO.glob("strata-*dsv41*.json"):
+                    config_path = candidate
+                    break
             if not config_path:
                 for candidate in STRATA_REPO.glob("strata-*deepseek*.json"):
                     config_path = candidate
                     break
             ACTIVE_MODEL_NAME = "deepseek-v4.1-flash"
+        elif target_model in ("glm", "glm5", "glm53", "glm-5.3", "glm-5.3-flash", "glm53-flash", "maya", "maya-xs"):
+            maya_repo = Path("/home/funboy/project-maya")
+            maya_cfg = maya_repo / "maya-maya-xs-iq1_s.json"
+            if not maya_cfg.exists():
+                return False, f"Configurazione Maya GLM per '{target_model}' non trovata in {maya_repo}"
+
+            ACTIVE_MODEL_NAME = "glm-5.3-flash"
+            engine_port = STRATA_PORT
+            cmd = [
+                str(maya_repo / ".venv" / "bin" / "python"),
+                str(maya_repo / "maya.py"),
+                "--config", str(maya_cfg),
+                "--port", str(engine_port),
+                "--host", "0.0.0.0",
+                "--plain",
+            ]
+            launch_env = dict(os.environ)
+            launch_env["CUDA_VISIBLE_DEVICES"] = "0"
+            log_file = open(str(maya_repo / "maya-service.log"), "a")
+            ENGINE_PROCESS = subprocess.Popen(
+                cmd,
+                cwd=str(maya_repo),
+                env=launch_env,
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True
+            )
+            return True, f"Avvio di {ACTIVE_MODEL_NAME} su Project Maya in corso (porta {engine_port})"
 
         if not config_path or not config_path.exists():
             return False, f"Configurazione per '{target_model}' non trovata in {STRATA_REPO}"
@@ -257,10 +301,21 @@ def start_strata_engine(target_model: str) -> tuple[bool, str]:
             "--host", "0.0.0.0",
             "--port", str(engine_port),
         ]
+        launch_env = dict(os.environ)
+        if any(k in target_model for k in ("deepseek", "ds41", "kirei")):
+            launch_env["DS4_STREAM"] = "1"
+            launch_env["DS4_STREAM_WIN"] = "1"
+            launch_env["DS4_LAND"] = "1"
+            launch_env["DS4_STREAM_FORCE"] = "1"
+            launch_env["OMP_NUM_THREADS"] = "6"
+            launch_env["CUDA_VISIBLE_DEVICES"] = "0"
+            cmd = ["taskset", "-c", "0-11"] + cmd
+
         log_file = open("/home/funboy/strata-repo/strata-server.log", "a")
         ENGINE_PROCESS = subprocess.Popen(
             cmd,
             cwd=str(STRATA_REPO),
+            env=launch_env,
             stdout=log_file,
             stderr=log_file,
             start_new_session=True
@@ -336,6 +391,20 @@ class NodeAgentHandler(BaseHTTPRequestHandler):
                         "name": "DeepSeek V4.1 Flash Strata CUDA (RTX 3090 + MoE Resident)",
                         "status": "testing",
                         "context_tokens": 131072
+                    },
+                    {
+                        "id": "glm-5.3-flash",
+                        "object": "model",
+                        "name": "GLM-5.3-Flash Maya-XS (RTX 3090 @ 32 tok/s · In-Memory 68GB)",
+                        "status": "available",
+                        "context_tokens": 32768
+                    },
+                    {
+                        "id": "glm53-flash",
+                        "object": "model",
+                        "name": "GLM-5.3-Flash Maya-XS (Strix Cluster Gateway Alias)",
+                        "status": "available",
+                        "context_tokens": 32768
                     }
                 ]
             })

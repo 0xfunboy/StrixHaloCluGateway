@@ -765,11 +765,13 @@ function updateMatrixButtons(data) {
   const strixQw = document.getElementById('btn-switch-strix-qwen');
   const airQw = document.getElementById('btn-switch-air-qwen');
   const airDs = document.getElementById('btn-switch-air-ds41');
+  const airGlm = document.getElementById('btn-switch-air-glm');
 
   if (strixDs) strixDs.classList.toggle('active', data.active_strix === 'deepseek');
   if (strixQw) strixQw.classList.toggle('active', data.active_strix === 'qwen');
   if (airQw) airQw.classList.toggle('active', data.active_aireward === 'qwen38-strata');
   if (airDs) airDs.classList.toggle('active', data.active_aireward === 'ds41-strata');
+  if (airGlm) airGlm.classList.toggle('active', data.active_aireward === 'glm-5.3-flash' || data.active_aireward === 'glm');
 
   const summary = document.getElementById('cfs-active-summary');
   if (summary) {
@@ -824,7 +826,8 @@ function setAdminUnlocked(unlocked, token = null) {
     { id: 'btn-switch-strix-ds41', tag: 'lock-tag-strix-ds41' },
     { id: 'btn-switch-strix-qwen', tag: 'lock-tag-strix-qwen' },
     { id: 'btn-switch-air-qwen', tag: 'lock-tag-air-qwen' },
-    { id: 'btn-switch-air-ds41', tag: 'lock-tag-air-ds41' }
+    { id: 'btn-switch-air-ds41', tag: 'lock-tag-air-ds41' },
+    { id: 'btn-switch-air-glm', tag: 'lock-tag-air-glm' }
   ];
 
   btnIds.forEach(({ id, tag }) => {
@@ -1024,7 +1027,7 @@ async function switchModel(target, model) {
 
   const btnId = target === 'strix' 
     ? (model === 'deepseek' ? 'btn-switch-strix-ds41' : 'btn-switch-strix-qwen')
-    : (model === 'deepseek' ? 'btn-switch-air-ds41' : 'btn-switch-air-qwen');
+    : (model === 'deepseek' ? 'btn-switch-air-ds41' : (model === 'glm' ? 'btn-switch-air-glm' : 'btn-switch-air-qwen'));
   const btn = document.getElementById(btnId);
   if (btn) btn.classList.add('loading');
 

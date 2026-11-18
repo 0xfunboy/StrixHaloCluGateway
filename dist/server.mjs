@@ -6057,7 +6057,8 @@ var legacy = {
   "strix-qwen": ["qwen38-uncensored-gufo", "qwen", "qwen38", "qwen3.8", "qwen-38b", "qwen38-uncensored"],
   "strix-deepseek": ["ds41-abliterated-q2-imatrix", "deepseek", "deepseek-v4.1", "deepseek-v4.1-flash", "ds41", "ds4.1"],
   "cuda-qwen": ["qwen38-strata-100tps", "qwen-strata", "strata-qwen", "qwen38-strata", "qwen3.8-flash-next-iq3_s", "qwen-100tps", "qwen-rtx3090"],
-  "cuda-deepseek": ["ds41-strata-cuda", "ds41-strata", "strata-ds41", "deepseek-strata", "deepseek-v4.1-flash-ist-das-2.00bpw", "deepseek-rtx3090", "kirei-strata-cuda3090", "kirei-strata"]
+  "cuda-deepseek": ["ds41-strata-cuda", "ds41-strata", "strata-ds41", "deepseek-strata", "deepseek-v4.1-flash-ist-das-2.00bpw", "deepseek-rtx3090", "kirei-strata-cuda3090", "kirei-strata"],
+  "cuda-glm": ["glm-5.3-flash", "glm53-flash", "glm-5.3", "glm5.3", "glm", "glm5", "maya-glm", "glm-rtx3090"]
 };
 function aliasRoutes(config2, models) {
   const aliases = /* @__PURE__ */ new Map();
@@ -8331,7 +8332,8 @@ var Application = class {
       stats.daily_tokens = Object.fromEntries(this.store.db.prepare(`
                 SELECT substr(u.created,1,10) AS day,sum(coalesce(input_tokens,0)+coalesce(output_tokens,0)) AS total,
                 sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%qwen%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS qwen,
-                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%deepseek%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS deepseek
+                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%deepseek%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS deepseek,
+                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%glm%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS glm
                 FROM inference_usage u LEFT JOIN entities e ON e.id=u.route WHERE u.created>=date('now','-30 days') AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
                 GROUP BY 1 ORDER BY 1`).all().map((r) => [String(r.day), r]));
       stats.recent_sessions = actor.isGuest ? [] : this.store.db.prepare(`
@@ -8342,7 +8344,7 @@ var Application = class {
         active_model: strix ?? cuda ?? active2[0]?.label ?? null,
         activeEngines: active2,
         active_strix: strix ?? null,
-        active_aireward: cuda === "qwen" ? "qwen38-strata" : cuda === "deepseek" ? "ds41-strata" : null,
+        active_aireward: cuda === "qwen" ? "qwen38-strata" : cuda === "deepseek" ? "ds41-strata" : cuda === "glm" ? "glm-5.3-flash" : null,
         speeds: { decode_tps: latest?.decode_tps ?? null, prefill_tps: latest?.prefill_tps ?? null, ttft_ms: latest?.ttft_ms ?? null, dspark_acc: null },
         in_flight: this.inFlightCount,
         server_time: now(),

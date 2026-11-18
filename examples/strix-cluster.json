@@ -77,6 +77,12 @@
       "models":[{"model":"deepseek-v4.1-flash","label":"DeepSeek · Strata CUDA","contextWindow":131072,"capabilities":["chat","tools"]}],
       "activation":{"switchUrl":"http://192.168.178.47:8090/switch","stop":{"url":"http://192.168.178.47:8090/stop","healthUrl":"http://192.168.178.47:8090/health"},"body":{"model":"deepseek"},"modelsUrl":"http://192.168.178.47:8085/v1/models","expectedModel":"deepseek-v4.1-flash","timeoutMs":300000}
     },
+    {
+      "id":"cuda-glm","label":"GLM-5.3 · RTX 3090","kind":"openai-compatible","tag":"local","baseUrl":"http://192.168.178.47:8080/v1","enabled":true,
+      "nodeIds":["aireward"],"resourceGroupIds":["cuda3090-memory"],
+      "models":[{"model":"glm-5.3-flash","label":"GLM-5.3 Flash · Project Maya","contextWindow":32768,"capabilities":["chat","tools"]}],
+      "activation":{"switchUrl":"http://192.168.178.47:8090/switch","stop":{"url":"http://192.168.178.47:8090/stop","healthUrl":"http://192.168.178.47:8090/health"},"body":{"model":"glm"},"modelsUrl":"http://192.168.178.47:8080/v1/models","expectedModel":"glm-5.3-flash","timeoutMs":300000}
+    },
     {"id":"codex","label":"Codex ufficiale","kind":"codex","command":"codex","enabled":true,"nodeIds":[],"resourceGroupIds":[]}
   ]
 }

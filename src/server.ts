@@ -315,7 +315,8 @@ export class Application {
             stats.daily_tokens = Object.fromEntries(this.store.db.prepare(`
                 SELECT substr(u.created,1,10) AS day,sum(coalesce(input_tokens,0)+coalesce(output_tokens,0)) AS total,
                 sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%qwen%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS qwen,
-                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%deepseek%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS deepseek
+                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%deepseek%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS deepseek,
+                sum(CASE WHEN lower(json_extract(e.data,'$.model')) LIKE '%glm%' THEN coalesce(input_tokens,0)+coalesce(output_tokens,0) END) AS glm
                 FROM inference_usage u LEFT JOIN entities e ON e.id=u.route WHERE u.created>=date('now','-30 days') AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
                 GROUP BY 1 ORDER BY 1`).all().map(r => [String(r.day), r]));
             stats.recent_sessions = actor.isGuest ? [] : this.store.db.prepare(`
@@ -323,7 +324,7 @@ export class Application {
                 FROM inference_usage u LEFT JOIN entities e ON e.id=u.route WHERE u.owner=? ORDER BY u.created DESC LIMIT 15`).all(actor.user.id)
                 .map(row => ({ ...row, user: actor.user.name, app: 'API', status: 'COMPLETED' }));
             json(res, 200, { ...state, active_model: strix ?? cuda ?? active[0]?.label ?? null, activeEngines: active,
-                active_strix: strix ?? null, active_aireward: cuda === 'qwen' ? 'qwen38-strata' : cuda === 'deepseek' ? 'ds41-strata' : null,
+                active_strix: strix ?? null, active_aireward: cuda === 'qwen' ? 'qwen38-strata' : cuda === 'deepseek' ? 'ds41-strata' : cuda === 'glm' ? 'glm-5.3-flash' : null,
                 speeds: { decode_tps: latest?.decode_tps ?? null, prefill_tps: latest?.prefill_tps ?? null, ttft_ms: latest?.ttft_ms ?? null, dspark_acc: null },
                 in_flight: this.inFlightCount, server_time: now(), upstreamTelemetry: state.telemetry });
             return;
